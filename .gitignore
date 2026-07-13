@@ -1,0 +1,17 @@
+.DS_Store
+*.log
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# --- Claude / AI tooling ---
+.claude/settings.local.json
+.claude/.system/
+.claude/skills/.system/
+.claude/handoffs/
+
+# Agent scratch probe files (must never be committed)
+probe*.cjs
+probe*.mjs
+_probe*
