@@ -38,7 +38,7 @@ import {
   type Result,
 } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
-import { deleteNodeDelta, edgesInto, edgesOf, invert, makeEdge } from './space.js';
+import { deleteNodeDelta, edgesInto, edgesOf, invert, makeEdge, mergeDelta } from './space.js';
 import { closureIds } from './closure.js';
 import type { GroupStore, GroupStoreCapabilities, GroupStoreChange } from './store.js';
 
@@ -390,14 +390,7 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
       'seed two spellings of one tag',
     );
     const before = await store.load();
-    // Merge `todo` into `to-do`: re-point todo's memberships (skipping one to-do already has), then
-    // tombstone todo with every edge that touched it.
-    const has = new Set(edgesOf(before, n('to-do')).map((e) => e.child));
-    const repointed = edgesOf(before, n('todo'))
-      .filter((e) => !has.has(e.child))
-      .map((e) => edge('to-do', e.child));
-    const del = deleteNodeDelta(before, n('todo'));
-    const merge: EdgeDelta = { ...del, added: [...repointed, edge('work', 'to-do')] };
+    const merge = mergeDelta(before, n('todo'), n('to-do'));
     const merged = expectOk(await store.apply(merge), 'the merge');
     equal(edgesOf(merged, n('to-do')).map((e) => e.child).sort(), ['a', 'b', 'c'], 'to-do after the merge');
     expectOk(await store.apply(invert(before, merge)), 'undo the merge');

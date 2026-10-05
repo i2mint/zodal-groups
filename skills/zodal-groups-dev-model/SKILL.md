@@ -81,6 +81,7 @@ interface EdgeDelta {                          // the ONE write primitive
 applyDelta(space, delta): Result<GroupSpace>   // validates profile + acyclicity + families, all-or-nothing
 invert(space, delta): EdgeDelta                // undo, for free — and EXACT (see below)
 deleteNodeDelta(space, id): EdgeDelta          // touching edges + the tombstone
+mergeDelta(space, from, into): EdgeDelta       // re-point from's edges (skip duplicates) + tombstone from
 validateProfile(space, profile?): Violation[]  // re-validate a whole space (foreign data, "would it fit?")
 inferProfile(space): { profile, violations, evidence }   // the tightest fitting profile (D27)
 ```

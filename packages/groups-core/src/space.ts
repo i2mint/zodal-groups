@@ -790,6 +790,54 @@ export function deleteNodeDelta<P>(space: GroupSpace<P>, id: NodeId): EdgeDelta 
   };
 }
 
+export interface MergeOptions {
+  /** Id for a re-pointed edge. Defaults to `makeEdge`'s minted ids. */
+  readonly mintId?: (parent: NodeId, child: NodeId, kind: string) => EdgeId;
+}
+
+/**
+ * The delta that merges `from` into `into` — "`todo` and `to-do` are the same tag":
+ *
+ * 1. every membership of `from` (its members, and the groups it is in) is re-pointed to `into`,
+ *    keeping the edge's kind, label, order and meta;
+ * 2. a re-pointed edge `into` already has (same other end, same kind) is skipped, not doubled, and
+ *    the edge between `from` and `into` themselves is dropped rather than made a self-edge;
+ * 3. `from` is deleted with a tombstone (`deleteNodeDelta`), so `invert` undoes the whole merge.
+ *
+ * `into` keeps its own label and payload; `from`'s live on only in the tombstone. A merge that
+ * would close a cycle (`into` sits below `from` through a third group) is refused by `applyDelta`
+ * with the path, like any other cyclic delta. `into` is created bare if it does not exist (a
+ * rename by merge). Returns an empty delta for an unknown `from`.
+ *
+ * @throws when `from === into` — a caller bug, not a no-op to paper over.
+ */
+export function mergeDelta<P>(space: GroupSpace<P>, from: NodeId, into: NodeId, options: MergeOptions = {}): EdgeDelta {
+  if (from === into) throw new Error(`mergeDelta: cannot merge ${from} into itself.`);
+  if (!space.nodes.has(from)) return { added: [], removed: [] };
+  const mint = (parent: NodeId, child: NodeId, kind: string) => options.mintId?.(parent, child, kind);
+  const has = (parent: NodeId, child: NodeId, kind: string) =>
+    edgesInto(space, child).some((x) => x.parent === parent && x.kind === kind);
+  const carry = (e: Edge) => ({
+    kind: e.kind,
+    ...(e.label !== undefined ? { label: e.label } : {}),
+    ...(e.order !== undefined ? { order: e.order } : {}),
+    ...(e.meta !== undefined ? { meta: e.meta } : {}),
+  });
+
+  const added: Edge[] = [];
+  for (const e of edgesOf(space, from)) {
+    if (e.child === into || has(into, e.child, e.kind)) continue;
+    const id = mint(into, e.child, e.kind);
+    added.push(makeEdge(into, e.child, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+  }
+  for (const e of edgesInto(space, from)) {
+    if (e.parent === into || has(e.parent, into, e.kind)) continue;
+    const id = mint(e.parent, into, e.kind);
+    added.push(makeEdge(e.parent, into, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+  }
+  return { ...deleteNodeDelta(space, from), added };
+}
+
 /** Delete a node entirely, and every edge touching it. This *is* destructive — but invertible. */
 export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpace<P>> {
   return applyDelta(space, deleteNodeDelta(space, id));
