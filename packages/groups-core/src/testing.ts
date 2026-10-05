@@ -316,6 +316,17 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     equal(edgesInto(await store.load(), n('task-1')).map((e) => e.parent), ['todo'], 'task-1 parents after the refusal');
   });
 
+  add('a malformed write is refused, and the store still loads', async ({ store }) => {
+    const before = await seeded(store);
+    expectRefused(
+      await store.apply({ upsertNodes: [{ id: n('status'), family: { maxPerItem: 1.5 } }] }),
+      'invalidFamilyRule',
+      'a fractional family cap',
+    );
+    expectRefused(await store.apply({ upsertNodes: [{ id: n('x'), label: 5 as never }] }), 'malformed', 'a numeric label');
+    sameSpace(await store.load(), before, 'load() after the refused writes');
+  });
+
   add('a tombstone with an edge still attached is refused (danglingEdge)', async ({ store }) => {
     const before = await seeded(store);
     const reading = before.nodes.get(n('reading'))!;

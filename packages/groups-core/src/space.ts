@@ -30,6 +30,7 @@ import {
 } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
 import { familyViolations, hasFamilyAtOrAbove } from './family.js';
+import { edgeProblem, isFamilyRule, nodeProblem } from './structure.js';
 
 // ── construction ────────────────────────────────────────────────────────────
 
@@ -270,7 +271,23 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   const forward = cloneIndex(space.forward);
   const inverse = cloneIndex(space.inverse);
 
+  // Structure first: anything accepted here must load back from a snapshot (see `structure.ts`).
+  const violations: Violation[] = [];
   for (const node of delta.upsertNodes ?? []) {
+    const family = (node as { family?: unknown }).family;
+    if (family !== undefined && !isFamilyRule(family)) {
+      violations.push({
+        code: 'invalidFamilyRule',
+        node: node.id,
+        message: `${node.id}: a family rule must be { maxPerItem: an integer ≥ 1 }, got ${JSON.stringify(family)}.`,
+      });
+      continue;
+    }
+    const problem = nodeProblem(node);
+    if (problem) {
+      violations.push({ code: 'malformed', node: node.id, message: `Node ${JSON.stringify(node.id)} is malformed — ${problem}.` });
+      continue;
+    }
     nodes.set(node.id, mergeNode(nodes.get(node.id), node));
   }
 
@@ -286,13 +303,17 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   for (const id of delta.removed ?? []) unlink(id);
 
   const staged: GroupSpace<P> = { ...space, nodes, edges, forward, inverse };
-  const violations: Violation[] = [];
   const added = delta.added ?? [];
   const futureGroups = new Set(added.map((e) => e.parent));
   const groupNess: GroupPredicate = (id) => isGroup(staged, id) || futureGroups.has(id);
   const becomingReported = new Set<NodeId>();
 
   for (const edge of added) {
+    const problem = edgeProblem(edge);
+    if (problem) {
+      violations.push({ code: 'malformed', edge, message: `Edge ${JSON.stringify(edge?.id)} is malformed — ${problem}.` });
+      continue;
+    }
     // An edge re-using an existing id replaces it; drop the old one from the indexes first, so a
     // replacement under a different parent cannot leave a stale index entry behind.
     unlink(edge.id);

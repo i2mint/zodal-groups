@@ -150,7 +150,7 @@ export interface Edge {
  * names particular nodes. See reconciliation D26.
  */
 export interface FamilyRule {
-  /** At most this many of the family's values per item. `1` ⇒ exclusive. */
+  /** At most this many of the family's values per item: an integer ≥ 1 (`isFamilyRule`). `1` ⇒ exclusive. */
   readonly maxPerItem: number;
 }
 
@@ -267,12 +267,17 @@ export interface Violation {
     | 'selfEdge'
     | 'duplicateEdge'
     | 'danglingEdge'
-    | 'maxPerFamily';
+    | 'maxPerFamily'
+    | 'invalidFamilyRule'
+    | 'malformed';
   readonly message: string;
   readonly edge?: Edge;
   /** For `maxPerFamily`: the family root whose rule the item would break. */
   readonly family?: NodeId;
-  /** For `maxPerFamily`: the item. For `danglingEdge`: the removed node still referenced. */
+  /**
+   * The node the violation is about: for `maxPerFamily` the item; for `danglingEdge` the removed
+   * node still referenced; for `invalidFamilyRule` / `malformed` the offending node.
+   */
   readonly node?: NodeId;
   /** For `maxPerFamily`: the family's values the item would fall under (more than allowed). */
   readonly values?: readonly NodeId[];

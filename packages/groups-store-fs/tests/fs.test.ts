@@ -108,6 +108,18 @@ describe('a corrupt manifest is an error, never an empty space', () => {
   });
 });
 
+describe('a write can never brick the store', () => {
+  it('a family rule the manifest could not load back is refused on write', async () => {
+    const store = createFsGroupStore({ path });
+    await store.apply({ added: [e('g', 'i')] });
+    for (const maxPerItem of [1.5, 0, -1, Number.NaN]) {
+      const r = await store.apply({ upsertNodes: [{ id: n('g'), family: { maxPerItem } }] });
+      expect(r.ok).toBe(false);
+    }
+    await expect(createFsGroupStore({ path }).load()).resolves.toBeDefined();
+  });
+});
+
 describe('profile violations in stored data', () => {
   it('load does not enforce the profile (read path); writes still do', async () => {
     // A manifest a person edited: an item in two folders, which `filesystem` forbids.

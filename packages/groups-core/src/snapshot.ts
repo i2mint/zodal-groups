@@ -11,6 +11,7 @@
 
 import type { Edge, EdgeId, GroupSpace, Node, NodeId } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
+import { edgeProblem, nodeProblem } from './structure.js';
 
 /** A space without its indexes or profile: what a store persists. */
 export interface GroupSnapshot<P = unknown> {
@@ -73,19 +74,21 @@ export function fromSnapshot<P>(snapshot: GroupSnapshot<P>, options: FromSnapsho
  * Check that an unknown value (parsed JSON, an IndexedDB record…) has the snapshot's structure, and
  * return it typed. Throws a `TypeError` naming the first offending path (`edges[3].parent: …`).
  *
- * Structure only — ids are strings, optional fields have the right type, ids are unique. Profile
- * rules are not checked here (see the module docstring).
+ * Structure only — the same `nodeProblem` / `edgeProblem` checks `applyDelta` applies on write, so
+ * anything a store wrote loads back — plus unique ids. Profile rules are not checked here (see the
+ * module docstring).
  */
 export function parseSnapshot<P = unknown>(value: unknown): GroupSnapshot<P> {
   const fail = (path: string, problem: string): never => {
     throw new TypeError(`${path}: ${problem}`);
   };
+  /** `nodeProblem`/`edgeProblem` say `"field: problem"`, or `"expected an object"` for the item. */
+  const at = (base: string, problem: string): never => {
+    const field = /^(\w+): (.*)$/s.exec(problem);
+    return field ? fail(`${base}.${field[1]}`, field[2]!) : fail(base, problem);
+  };
   const isObject = (v: unknown): v is Record<string, unknown> =>
     typeof v === 'object' && v !== null && !Array.isArray(v);
-  const str = (v: unknown, path: string, { optional = false } = {}): void => {
-    if (v === undefined && optional) return;
-    if (typeof v !== 'string' || (!optional && v === '')) fail(path, `expected a non-empty string, got ${JSON.stringify(v)}`);
-  };
 
   if (!isObject(value)) fail('snapshot', 'expected an object with `nodes` and `edges` arrays');
   const v = value as Record<string, unknown>;
@@ -97,30 +100,20 @@ export function parseSnapshot<P = unknown>(value: unknown): GroupSnapshot<P> {
 
   const nodeIds = new Set<string>();
   (v.nodes as unknown[]).forEach((n, i) => {
-    const at = `nodes[${i}]`;
-    if (!isObject(n)) return fail(at, 'expected an object');
-    str(n.id, `${at}.id`);
-    if (nodeIds.has(n.id as string)) fail(`${at}.id`, `duplicate node id ${JSON.stringify(n.id)}`);
-    nodeIds.add(n.id as string);
-    str(n.label, `${at}.label`, { optional: true });
-    if (n.family !== undefined) {
-      const f = n.family;
-      if (!isObject(f) || !(Number.isInteger(f.maxPerItem) && (f.maxPerItem as number) >= 0)) {
-        fail(`${at}.family`, `expected { maxPerItem: a non-negative integer }, got ${JSON.stringify(f)}`);
-      }
-    }
+    const problem = nodeProblem(n);
+    if (problem) at(`nodes[${i}]`, problem);
+    const id = (n as { id: string }).id;
+    if (nodeIds.has(id)) fail(`nodes[${i}].id`, `duplicate node id ${JSON.stringify(id)}`);
+    nodeIds.add(id);
   });
 
   const edgeIds = new Set<string>();
   (v.edges as unknown[]).forEach((e, i) => {
-    const at = `edges[${i}]`;
-    if (!isObject(e)) return fail(at, 'expected an object');
-    for (const key of ['id', 'parent', 'child', 'kind'] as const) str(e[key], `${at}.${key}`);
-    if (edgeIds.has(e.id as string)) fail(`${at}.id`, `duplicate edge id ${JSON.stringify(e.id)}`);
-    edgeIds.add(e.id as string);
-    str(e.label, `${at}.label`, { optional: true });
-    str(e.order, `${at}.order`, { optional: true });
-    if (e.meta !== undefined && !isObject(e.meta)) fail(`${at}.meta`, 'expected an object');
+    const problem = edgeProblem(e);
+    if (problem) at(`edges[${i}]`, problem);
+    const id = (e as { id: string }).id;
+    if (edgeIds.has(id)) fail(`edges[${i}].id`, `duplicate edge id ${JSON.stringify(id)}`);
+    edgeIds.add(id);
   });
 
   return value as unknown as GroupSnapshot<P>;

@@ -85,6 +85,9 @@ export {
   type CreateSpaceOptions,
 } from './space.js';
 
+// ── structure: the one node/edge validator for write and read ──────────────
+export { isFamilyRule, nodeProblem, edgeProblem } from './structure.js';
+
 // ── families: per-family cardinality ────────────────────────────────────────
 export { familyValuesOf, familyViolations, hasFamilyAtOrAbove } from './family.js';
 
