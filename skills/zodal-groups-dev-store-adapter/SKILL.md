@@ -60,7 +60,14 @@ The kit (31 cases) checks: empty load; persistence with consistent `forward`/`in
 
 ### The fs adapter's hardening (the bar for any file-backed store)
 
-Sidecar manifest JSON (`{ format: 'zodal-groups/manifest', version: 1, revision, nodes, edges }`, 2-space indent, trailing newline — diffable); temp file in the same dir + `fsync` + `rename` (atomic); parent dir created; saves queued per resolved path **across instances in the process** (no cross-process locking — documented); every op re-reads the file (sees hand edits); a corrupt manifest (invalid JSON, empty, wrong `format`, newer `version`, malformed node/edge) is a `ManifestError` naming the file, for `load` *and* `apply`, and is never overwritten; a failed write rejects without poisoning the queue.
+- Sidecar manifest JSON (`{ format: 'zodal-groups/manifest', version: 1, revision, nodes, edges }`, 2-space indent, trailing newline — diffable).
+- Atomic: temp file in the same dir (exclusive create, pid in the name) + `fsync` + `rename`, then `fsync` the directory (best effort).
+- Everything keyed on the **real path** (`realTarget`): one save queue per real file across instances in the process, so a symlinked directory cannot split the queue; a symlinked manifest stays a symlink and its target is replaced.
+- **Another process is detected, not overwritten**: the manifest is re-read just before the rename; if it changed since this write read it, nothing is written and `apply` returns `conflict`. Detection, not locking — the check-to-rename window is microseconds, not zero.
+- The file mode is kept (`0600` stays `0600`); `mode` sets it for a new manifest.
+- Temp files a dead process left (`.<manifest>.<pid>.<n>.tmp`, pid not running) are swept once per manifest per process.
+- Unknown top-level fields are preserved; older versions go through a `migrations` map keyed by version (`MANIFEST_MIGRATIONS` + the `migrations` option); a version with no migration is a `ManifestError`.
+- A corrupt manifest (invalid JSON, empty, wrong `format`, newer `version`, malformed node/edge) is a `ManifestError` naming the file, for `load` *and* `apply`, and is never overwritten; a failed write rejects without poisoning the queue.
 
 ## The insight that makes this tractable: there are TWO graphs
 
