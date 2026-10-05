@@ -41,6 +41,8 @@ import { resolveProfile, type GroupProfile, type ProfileName } from './profile.j
 import { deleteNodeDelta, edgesInto, edgesOf, invert, makeEdge, mergeDelta } from './space.js';
 import { closureIds } from './closure.js';
 import type { GroupStore, GroupStoreCapabilities, GroupStoreChange } from './store.js';
+import type { GroupSnapshot } from './snapshot.js';
+import { detectCycles } from './closure.js';
 
 /** What `make` is given. */
 export interface GroupStoreContext {
@@ -53,6 +55,12 @@ export interface GroupStoreContext {
   readonly backing: string;
   /** Pass this to the store's listener-error hook, if it has one, so the kit's throwing listener stays quiet. */
   readonly onListenerError: (error: unknown) => void;
+  /**
+   * When present, the store must open holding exactly this snapshot, written AS IS to its backing —
+   * not validated, as if a foreign tool had written it (D8: data may break the profile, or even be
+   * cyclic, and must still load). Only given to the first `make` of a case.
+   */
+  readonly seed?: GroupSnapshot;
 }
 
 export interface GroupStoreContractOptions {
@@ -207,9 +215,26 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
   }
   type Body = (h: Harness) => Promise<void>;
   type Gate = (probe: { caps: GroupStoreCapabilities; subscribes: boolean }) => string | undefined;
-  const cases: { name: string; body: Body; profile: ProfileName | GroupProfile; gate?: Gate }[] = [];
-  const add = (name: string, body: Body, opts: { profile?: ProfileName | GroupProfile; gate?: Gate } = {}) =>
-    cases.push({ name, body, profile: opts.profile ?? 'polyhierarchy', ...(opts.gate ? { gate: opts.gate } : {}) });
+  interface CaseSpec {
+    name: string;
+    body: Body;
+    profile: ProfileName | GroupProfile;
+    gate?: Gate;
+    seed?: GroupSnapshot;
+  }
+  const cases: CaseSpec[] = [];
+  const add = (
+    name: string,
+    body: Body,
+    opts: { profile?: ProfileName | GroupProfile; gate?: Gate; seed?: GroupSnapshot } = {},
+  ) =>
+    cases.push({
+      name,
+      body,
+      profile: opts.profile ?? 'polyhierarchy',
+      ...(opts.gate ? { gate: opts.gate } : {}),
+      ...(opts.seed ? { seed: opts.seed } : {}),
+    });
 
   const persistent: Gate = () => (options.persistent ? undefined : 'store is not persistent (options.persistent is not true)');
   const subscribes: Gate = (p) => (p.subscribes ? undefined : 'store has no subscribe (it is optional)');
@@ -453,6 +478,88 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     equal(edgesOf(await store.load(), n('bucket')).length, count, 'members of bucket after concurrent applies');
   });
 
+  // ── shapes a naive store gets wrong ───────────────────────────────────────
+
+  add('a diamond keeps its closure when one route is removed', async ({ store }) => {
+    // X ⊃ A ⊃ C and X ⊃ B ⊃ C. Removing A ⊃ C must leave C inside X (via B): a closure table that
+    // deletes (X, C) on any route's removal — the path_count/DRed bug — fails here.
+    expectOk(
+      await store.apply({ added: [edge('X', 'A'), edge('X', 'B'), edge('A', 'C'), edge('B', 'C'), edge('C', 'item')] }),
+      'the diamond',
+    );
+    expectOk(await store.apply({ removed: [edgeId('A>C')] }), 'remove A ⊃ C');
+    const space = await store.load();
+    const want: string[] = [...closureIds(space, n('X'))].sort();
+    for (const id of ['C', 'item']) if (!want.includes(id)) fail(`closure of X lost ${id} after removing one route (${show(want)})`);
+    if (store.closureIds) equal([...(await store.closureIds(n('X')))].sort(), want, 'native closureIds(X)');
+  });
+
+  add('two edge kinds between the same pair are two edges', async ({ store }) => {
+    // D3: the edge is reified and carries its kind. A store keyed on (parent, child) collapses them.
+    const partOf = edge('car', 'wheel', { kind: 'part_of', id: edgeId('car>wheel:part_of') });
+    const isA = edge('car', 'wheel', { kind: 'is_a', id: edgeId('car>wheel:is_a') });
+    expectOk(await store.apply({ added: [partOf, isA] }), 'part_of and is_a between car and wheel');
+    equal(edgesOf(await store.load(), n('car')).map((e) => e.kind).sort(), ['is_a', 'part_of'], 'kinds car → wheel');
+    expectOk(await store.apply({ removed: [partOf.id] }), 'remove the part_of edge');
+    equal(edgesOf(await store.load(), n('car')).map((e) => e.kind), ['is_a'], 'kinds car → wheel after removing part_of');
+  });
+
+  add(
+    'foreign data loads as it is — cyclic and profile-breaking — and stays writable',
+    async ({ store }) => {
+      const space = await store.load();
+      equal(space.edges.size, 4, 'edges loaded from the foreign snapshot');
+      equal(space.revision, 7, 'revision loaded from the foreign snapshot');
+      equal(space.nodes.get(n('a')), { id: 'a', label: 'A' }, 'node a');
+      indexesConsistent(space, 'the foreign space');
+      if (!detectCycles(space).length) fail('the seeded cycle a → b → a was not loaded');
+      expectOk(await store.apply({ added: [edge('docs', 'note.txt')] }), 'a valid write on top of foreign data');
+      expectRefused(await store.apply({ added: [edge('f3', 'x')] }), 'maxParentsPerItem', 'a write that breaks the profile further');
+    },
+    {
+      profile: 'filesystem',
+      seed: {
+        nodes: [{ id: n('a'), label: 'A' }],
+        // a ⊃ b ⊃ a is a cycle; x in two folders breaks `filesystem`. The write path would refuse both.
+        edges: [edge('a', 'b'), edge('b', 'a'), edge('f1', 'x'), edge('f2', 'x')],
+        revision: 7,
+      },
+    },
+  );
+
+  add('load() hands out a view the caller cannot use to change the store', async ({ store }) => {
+    await seeded(store);
+    const space = await store.load();
+    const before = show(normalize(space));
+    try {
+      (space.nodes as Map<NodeId, Node>).set(n('intruder'), { id: n('intruder') });
+    } catch {
+      /* a read-only view may throw — that is fine */
+    }
+    try {
+      (space.forward.get(n('reading')) as Set<string> | undefined)?.clear();
+    } catch {
+      /* likewise */
+    }
+    equal(show(normalize(await store.load())), before, 'load() after mutating a loaded space');
+    indexesConsistent(await store.load(), 'load() after mutating a loaded space');
+  });
+
+  add(
+    'two instances on one backing, writing concurrently, lose nothing',
+    async ({ store, reopen }) => {
+      const other = await reopen();
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, i) => (i % 2 ? store : other).apply({ added: [edge('bucket', `item-${i}`)] })),
+      );
+      const revisions = results.map((r, i) => expectOk(r, `concurrent apply #${i}`).revision);
+      equal(new Set(revisions).size, 20, 'distinct revisions');
+      equal(edgesOf(await store.load(), n('bucket')).length, 20, 'members of bucket (instance 1)');
+      equal(edgesOf(await other.load(), n('bucket')).length, 20, 'members of bucket (instance 2)');
+    },
+    { gate: persistent },
+  );
+
   // ── honesty ───────────────────────────────────────────────────────────────
 
   add('capabilities are well-formed', async ({ caps }) => {
@@ -461,10 +568,6 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     if (typeof c.maintainedOnInsert !== 'boolean') fail(`closure.maintainedOnInsert: expected a boolean, got ${show(c.maintainedOnInsert)}`);
     if (!['exact', 'rebuild', 'unsupported'].includes(c.maintainedOnDelete)) {
       fail(`closure.maintainedOnDelete: expected 'exact' | 'rebuild' | 'unsupported', got ${show(c.maintainedOnDelete)}`);
-    }
-    if (typeof caps.serverFacetCounts !== 'boolean') fail(`serverFacetCounts: expected a boolean, got ${show(caps.serverFacetCounts)}`);
-    if (!['n-plus-one', 'unsupported'].includes(caps.disjunctiveFacetCounts)) {
-      fail(`disjunctiveFacetCounts: expected 'n-plus-one' | 'unsupported', got ${show(caps.disjunctiveFacetCounts)}`);
     }
     if (typeof caps.ordering !== 'boolean') fail(`ordering: expected a boolean, got ${show(caps.ordering)}`);
   });
@@ -564,10 +667,11 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
   try {
     probe = { caps: probeStore.getCapabilities(), subscribes: typeof probeStore.subscribe === 'function' };
   } finally {
+    await probeStore.dispose?.();
     await options.dispose?.({ backing: probeBacking });
   }
 
-  return cases.map(({ name, body, profile, gate }) => {
+  return cases.map(({ name, body, profile, gate, seed }) => {
     const skip = options.skip?.[name] ?? gate?.(probe);
     const out: ContractCase = {
       name,
@@ -579,14 +683,21 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
           backing,
           onListenerError: (e) => errors.push(e),
         };
+        const opened: GroupStore[] = [];
+        const open = async (withSeed: boolean) => {
+          const store = await options.make(withSeed && seed ? { ...ctx, seed } : ctx);
+          opened.push(store);
+          return store;
+        };
         let failure: unknown;
         try {
-          const store = await options.make(ctx);
-          await body({ store, reopen: async () => options.make(ctx), caps: store.getCapabilities(), errors });
+          const store = await open(true);
+          await body({ store, reopen: () => open(false), caps: store.getCapabilities(), errors });
         } catch (err) {
           failure = err;
         }
         try {
+          for (const store of opened) await store.dispose?.();
           await options.dispose?.({ backing });
         } catch (err) {
           if (failure === undefined) failure = err; // a case's own violation wins

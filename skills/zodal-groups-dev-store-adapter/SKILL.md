@@ -24,6 +24,7 @@ interface GroupStore<P = unknown> {
   getCapabilities(): GroupStoreCapabilities;               // the D19 record, below
   closureIds?(group: NodeId): Promise<NodeId[]>;           // present IFF closure.read === 'native'
   subscribe?(listener: (c: GroupStoreChange) => void): () => void;  // isolate throwing listeners
+  dispose?(): void | Promise<void>;
 }
 ```
 
@@ -42,7 +43,10 @@ Shipped: `createMemoryGroupStore()` in groups-core (the default — real, not a 
 import { groupStoreContract } from '@zodal/groups-core/testing';
 
 const cases = await groupStoreContract({
-  make: ({ profile, backing, onListenerError }) => createMyStore({ profile, location: locFor(backing), onListenerError }),
+  make: async ({ profile, backing, onListenerError, seed }) => {
+    if (seed) await writeRaw(locFor(backing), seed);   // foreign data, straight to the backing — never via apply
+    return createMyStore({ profile, location: locFor(backing), onListenerError });
+  },
   persistent: true,               // two makes with one `backing` open the same data → enables reopen cases
   dispose: ({ backing }) => cleanUp(locFor(backing)),
   // skip: { 'case name': 'why' }  — a documented deviation, never a silent one
@@ -52,7 +56,7 @@ describe('my adapter: GroupStore contract', () => {
 });
 ```
 
-The kit (20 cases) checks: empty load, persistence with consistent `forward`/`inverse`, removals, edge kind/label/order/meta and node label/payload/family round-trips, revision monotonic and unchanged on refusal, cycle refused **with a path of real edges** and nothing written, all-or-nothing refusal, family rule, `danglingEdge`, `invert` round-trip, tombstone and merge undo, 25 concurrent applies all kept, capability well-formedness and closure honesty, subscribe semantics and listener isolation, and (persistent) reopen sees every write and every refusal leaves data untouched. `packages/groups-core/tests/store.test.ts` proves it fails a store that skips validation, lies about native closure, or loses concurrent writes.
+The kit (31 cases) checks: empty load; persistence with consistent `forward`/`inverse`; removals; edge kind/label/order/meta and node label/payload/family round-trips; revision monotonic and unchanged on refusal; cycle refused **with a path of real edges** and nothing written; all-or-nothing refusal; family rule; malformed writes refused (the store still loads); `danglingEdge`; the returned inverse round-trips; tombstone and merge undo; stale undo refused (`staleTombstone`, `nodeExists`); `apply`'s returned revision/inverse/space; `expectedRevision` → `conflict`; the two review scenarios (compensation after another writer used the created node; undo after another writer's rename); 25 concurrent applies; a diamond keeps its closure; two kinds on one pair; foreign cyclic data loads (`ctx.seed`); a loaded space cannot mutate the store; two instances writing concurrently (persistent); capability well-formedness and closure honesty; subscribe semantics and listener isolation; and (persistent) reopen sees every write and every refusal leaves data untouched. `packages/groups-core/tests/store.test.ts` proves it fails a store that skips validation, lies about native closure, or loses concurrent writes.
 
 ### The fs adapter's hardening (the bar for any file-backed store)
 
@@ -124,12 +128,11 @@ interface GroupStoreCapabilities {
     maintainedOnInsert: boolean;
     maintainedOnDelete: 'exact' | 'rebuild' | 'unsupported';
   };
-  serverFacetCounts: boolean;
-  /** Correct DISJUNCTIVE facet counts need N+1 queries. Architectural, not a flag. */
-  disjunctiveFacetCounts: 'n-plus-one' | 'unsupported';
-  ordering: boolean;
+  ordering: boolean;                                      // the kit checks `order` round-trips
 }
 ```
+
+Facet-count flags (server counts; disjunctive counts need N+1 queries — architectural, not a flag) are **not** in the record until a store offers an optional `facetCounts` method the kit can test (D28 amendment). Add them with the first server-side adapter.
 
 ## Per-backend notes (each of these is a real, verified constraint)
 

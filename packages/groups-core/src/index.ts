@@ -110,6 +110,7 @@ export {
   toSnapshot,
   fromSnapshot,
   parseSnapshot,
+  readonlySpace,
   type FromSnapshotOptions,
   type GroupSnapshot,
 } from './snapshot.js';

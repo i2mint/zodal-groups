@@ -375,6 +375,13 @@ The skill's sketch is now real code in groups-core (`store.ts`): `load()`, `appl
 - A stale `expectedRevision` is refused with a `conflict` violation (`expectedRevision`, `actualRevision`) and writes nothing — so a compensation or undo applied with the revision it came from can never clobber a newer write. (a) becomes a clean `conflict` the caller can act on (re-read, compensate minimally); (b) is refused.
 - `commitDelta(space, delta, options)` in groups-core is that serialized-section logic for any store holding a space in memory; change notifications carry the `inverse` too.
 
+**Amendment (PR review): a smaller, fully tested capability record; a stronger kit.**
+
+- **`serverFacetCounts` and `disjunctiveFacetCounts` are removed** from `GroupStoreCapabilities` until a store has a method that serves them: a flag no method backs is a promise the kit cannot test. They come back together with an optional `facetCounts` method (and `membersOf`/`groupsOf` for incremental loading) when the first server-side adapter (Supabase) needs them. `closure` (backed by the optional `closureIds`) and `ordering` (backed by the `order` round-trip) stay.
+- **`dispose?()`** on `GroupStore`; the kit disposes every store it opens.
+- **`load()` must not hand out the store's own mutable state.** The memory store returns `readonlySpace(space)` — an O(1) Proxy view whose maps and index sets throw on mutation.
+- **The kit (31 cases) adds:** a diamond (`X ⊃ A ⊃ C`, `X ⊃ B ⊃ C`, remove `A ⊃ C`, `C` must stay inside `X` — the naive closure-table delete); foreign data through a new `ctx.seed` (a cyclic, profile-breaking snapshot written straight to the backing must load, D8); two edge kinds on one `(parent, child)` pair (D3 — catches a store keyed on the pair); two instances on one backing writing concurrently; and a mutation attempt through a loaded space.
+
 ### 8.5 Group-ness on the end state; becoming a group (D29)
 
 Two holes in edge validation, found while making undo exact. (1) Edges were validated in list order, with group-ness as of that moment, so re-adding a deleted group's edges could pass or fail depending on whether its parent edges or its member edges came first. (2) A node that *becomes* a group (gets its first member) had its existing memberships checked only as an item's: under `flatTags`, tagging `holiday` with `travel` and then tagging a photo with `holiday` produced a tag inside a tag; under `labels`, an item in two labels could become a two-parent label.

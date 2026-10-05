@@ -45,6 +45,7 @@ import {
   parseSnapshot,
   toSnapshot,
   type GroupProfile,
+  type GroupSnapshot,
   type GroupSpace,
   type GroupStore,
   type GroupStoreChange,
@@ -197,10 +198,7 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
     return fromSnapshot(snapshot, { profile });
   };
 
-  const serialize = (space: GroupSpace<P>): string => {
-    const { revision, nodes, edges } = toSnapshot(space);
-    return `${JSON.stringify({ format: MANIFEST_FORMAT, version: MANIFEST_VERSION, revision, nodes, edges }, null, indent)}\n`;
-  };
+  const serialize = (space: GroupSpace<P>): string => serializeManifest(toSnapshot(space), { indent });
 
   return {
     path,
@@ -219,5 +217,19 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
       }),
     getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
     subscribe: (listener) => listeners.add(listener),
+    dispose: () => listeners.clear(),
   };
+}
+
+/**
+ * A snapshot as manifest text — what the store writes. Exported for tools that seed or migrate a
+ * manifest without going through `apply` (an importer, a test fixture of foreign data).
+ */
+export function serializeManifest(
+  snapshot: GroupSnapshot,
+  options: { readonly indent?: number | string; readonly extra?: Readonly<Record<string, unknown>> } = {},
+): string {
+  const { revision = 0, nodes, edges } = snapshot;
+  const manifest = { ...(options.extra ?? {}), format: MANIFEST_FORMAT, version: MANIFEST_VERSION, revision, nodes, edges };
+  return `${JSON.stringify(manifest, null, options.indent ?? 2)}\n`;
 }

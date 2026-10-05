@@ -18,7 +18,8 @@ import {
 } from '../src/index.js';
 
 const cases = await groupStoreContract({
-  make: ({ profile, onListenerError }) => createMemoryGroupStore({ profile, onListenerError }),
+  make: ({ profile, onListenerError, seed }) =>
+    createMemoryGroupStore({ profile, onListenerError, ...(seed ? { snapshot: seed } : {}) }),
 });
 
 describe('createMemoryGroupStore: GroupStore contract', () => {
@@ -26,9 +27,10 @@ describe('createMemoryGroupStore: GroupStore contract', () => {
 
   it('skips only the persistence cases, and says why', () => {
     const skipped = cases.filter((c) => c.skip);
-    expect(skipped.map((c) => c.name)).toEqual([
-      'a reopened store sees every write, tombstones included',
+    expect(skipped.map((c) => c.name).sort()).toEqual([
       'a refused write leaves the persisted data untouched',
+      'a reopened store sees every write, tombstones included',
+      'two instances on one backing, writing concurrently, lose nothing',
     ]);
     for (const c of skipped) expect(c.skip).toMatch(/not persistent/);
   });
@@ -48,7 +50,7 @@ describe('createMemoryGroupStore', () => {
   it('reports client-side, exact closure and no server facet counts', () => {
     const caps = createMemoryGroupStore().getCapabilities();
     expect(caps.closure).toEqual({ read: 'client', maintainedOnInsert: true, maintainedOnDelete: 'exact' });
-    expect(caps.serverFacetCounts).toBe(false);
+    expect(Object.keys(caps).sort()).toEqual(['closure', 'ordering']);
   });
 
   it('routes a throwing listener to onListenerError', async () => {

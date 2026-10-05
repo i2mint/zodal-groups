@@ -118,3 +118,65 @@ export function parseSnapshot<P = unknown>(value: unknown): GroupSnapshot<P> {
 
   return value as unknown as GroupSnapshot<P>;
 }
+
+// ── read-only views ─────────────────────────────────────────────────────────
+
+const MUTATORS: ReadonlySet<PropertyKey> = new Set(['set', 'add', 'delete', 'clear']);
+
+/**
+ * `target` with its mutating methods replaced by ones that throw. A Proxy rather than a wrapper
+ * class, so every read method — including ones newer lib versions add — keeps working, and nothing
+ * is copied.
+ */
+function readOnly<T extends object>(target: T, overrides: Readonly<Record<PropertyKey, unknown>> = {}): T {
+  return new Proxy(target, {
+    get(t, prop) {
+      if (MUTATORS.has(prop)) {
+        return () => {
+          throw new TypeError('This space is a read-only view held by a store; change it by applying a delta.');
+        };
+      }
+      if (Object.prototype.hasOwnProperty.call(overrides, prop)) return overrides[prop];
+      const value = Reflect.get(t, prop, t);
+      return typeof value === 'function' ? value.bind(t) : value;
+    },
+  });
+}
+
+/** A read-only index map whose sets are read-only too (wrapped lazily, on the way out). */
+function readOnlyIndex(index: ReadonlyMap<NodeId, ReadonlySet<EdgeId>>): ReadonlyMap<NodeId, ReadonlySet<EdgeId>> {
+  const wrap = (set: ReadonlySet<EdgeId>) => readOnly(set);
+  function* entries(): Generator<[NodeId, ReadonlySet<EdgeId>]> {
+    for (const [key, set] of index) yield [key, wrap(set)];
+  }
+  function* values(): Generator<ReadonlySet<EdgeId>> {
+    for (const set of index.values()) yield wrap(set);
+  }
+  return readOnly(index, {
+    get: (key: NodeId) => {
+      const set = index.get(key);
+      return set === undefined ? undefined : wrap(set);
+    },
+    entries,
+    values,
+    [Symbol.iterator]: entries,
+    forEach: (callback: (value: ReadonlySet<EdgeId>, key: NodeId, map: unknown) => void, thisArg?: unknown) =>
+      index.forEach((set, key) => callback.call(thisArg, wrap(set), key, index)),
+  });
+}
+
+/**
+ * A view of `space` whose maps and index sets cannot be mutated, even through a cast — what a store
+ * hands out from `load()` when it keeps the space itself in memory. O(1): nothing is copied.
+ * Nodes and edges are shared objects, typed `readonly`; treat them as immutable.
+ */
+export function readonlySpace<P>(space: GroupSpace<P>): GroupSpace<P> {
+  return Object.freeze({
+    profile: space.profile,
+    revision: space.revision,
+    nodes: readOnly(space.nodes),
+    edges: readOnly(space.edges),
+    forward: readOnlyIndex(space.forward),
+    inverse: readOnlyIndex(space.inverse),
+  });
+}

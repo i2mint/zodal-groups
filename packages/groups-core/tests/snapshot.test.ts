@@ -63,3 +63,19 @@ describe('parseSnapshot names the first problem', () => {
     expect(parseSnapshot(value)).toBe(value);
   });
 });
+
+describe('readonlySpace', () => {
+  it('reads like the space, refuses every mutation, and works as input to the pure functions', async () => {
+    const { readonlySpace, applyDelta, childrenOf } = await import('../src/index.js');
+    const space = createGroupSpace({ edges: [e('g', 'a'), e('g', 'b')] });
+    const view = readonlySpace(space);
+    expect(view.nodes.size).toBe(3);
+    expect([...view.forward.get(n('g'))!].sort()).toEqual(['g>a', 'g>b']);
+    expect(() => (view.nodes as Map<unknown, unknown>).set('x', {})).toThrow(/read-only/);
+    expect(() => (view.forward.get(n('g')) as Set<unknown>).clear()).toThrow(/read-only/);
+    for (const [, set] of view.inverse) expect(() => (set as Set<unknown>).add('x')).toThrow(/read-only/);
+    const next = applyDelta(view, { added: [e('g', 'c')] });
+    expect(next.ok && childrenOf(next.value, n('g')).sort()).toEqual(['a', 'b', 'c']);
+    expect(space.edges.size).toBe(2); // the original is untouched
+  });
+});

@@ -33,6 +33,7 @@
 import type { EdgeDelta, Edge, GroupSpace, Node, NodeId, Result } from './model.js';
 import type { GroupProfile, ProfileName } from './profile.js';
 import { applyDelta, createGroupSpace, invert } from './space.js';
+import { fromSnapshot, readonlySpace, type GroupSnapshot } from './snapshot.js';
 
 /**
  * Honest capability reporting — a record, not a boolean (D19).
@@ -58,15 +59,14 @@ export interface GroupStoreCapabilities {
      */
     readonly maintainedOnDelete: 'exact' | 'rebuild' | 'unsupported';
   };
-  /** Does the backend count facet values itself? */
-  readonly serverFacetCounts: boolean;
   /**
-   * Correct DISJUNCTIVE facet counts need one query per selected facet with that facet's own filter
-   * removed (N+1). That is architectural, not a flag: `'n-plus-one'` if the store can run them,
-   * `'unsupported'` if not.
+   * Does the store persist `Edge.order` (and keep binary, not locale, collation for it)? The kit
+   * checks it: a store that says `true` must round-trip `order`.
+   *
+   * (Facet-count flags — server-side counts, disjunctive N+1 counts — are deliberately absent until
+   * a store has a method that serves them: a flag no method backs is a promise nobody can test.
+   * They return with an optional `facetCounts` method and a kit case; see reconciliation D28.)
    */
-  readonly disjunctiveFacetCounts: 'n-plus-one' | 'unsupported';
-  /** Does the store persist `Edge.order` (and keep binary, not locale, collation for it)? */
   readonly ordering: boolean;
 }
 
@@ -142,13 +142,13 @@ export interface GroupStore<P = unknown> {
   closureIds?(group: NodeId): Promise<NodeId[]>;
   /** Optional change stream. Returns an unsubscribe function. */
   subscribe?(listener: (change: GroupStoreChange) => void): () => void;
+  /** Release what the store holds (listeners, handles, connections). Optional; idempotent. */
+  dispose?(): void | Promise<void>;
 }
 
 /** The capabilities of a store that holds the whole space in memory and walks closure client-side. */
 export const CLIENT_SIDE_CAPABILITIES: GroupStoreCapabilities = Object.freeze({
   closure: Object.freeze({ read: 'client', maintainedOnInsert: true, maintainedOnDelete: 'exact' }),
-  serverFacetCounts: false,
-  disjunctiveFacetCounts: 'n-plus-one',
   ordering: true,
 }) as GroupStoreCapabilities;
 
@@ -159,12 +159,15 @@ export const CLIENT_SIDE_CAPABILITIES: GroupStoreCapabilities = Object.freeze({
  */
 export function createListenerSet<C>(
   onListenerError: (error: unknown) => void = defaultListenerError,
-): { add(listener: (change: C) => void): () => void; emit(change: C): void } {
+): { add(listener: (change: C) => void): () => void; emit(change: C): void; clear(): void } {
   const listeners = new Set<(change: C) => void>();
   return {
     add(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    clear() {
+      listeners.clear();
     },
     emit(change) {
       for (const listener of [...listeners]) {
@@ -188,6 +191,11 @@ export interface MemoryGroupStoreOptions<P> {
   /** Seed data, validated against the profile (throws if it violates it, like `createGroupSpace`). */
   readonly nodes?: readonly Node<P>[];
   readonly edges?: readonly Edge[];
+  /**
+   * Seed with a snapshot AS IS — not validated, as if a foreign tool had written it (D8: the read
+   * path must work on data that breaks the profile). Exclusive with `nodes`/`edges`.
+   */
+  readonly snapshot?: GroupSnapshot<P>;
   /** Where a throwing `subscribe` listener's error goes. Defaults to `console.error`. */
   readonly onListenerError?: (error: unknown) => void;
 }
@@ -198,12 +206,22 @@ export interface MemoryGroupStoreOptions<P> {
  * `GroupStore`-shaped seam should default to when nothing needs to outlive the page.
  */
 export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOptions<P> = {}): GroupStore<P> {
-  let space = createGroupSpace<P>({
+  const profileOptions = {
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
     ...(options.overrides ? { overrides: options.overrides } : {}),
-    ...(options.nodes ? { nodes: options.nodes } : {}),
-    ...(options.edges ? { edges: options.edges } : {}),
-  });
+  };
+  if (options.snapshot && (options.nodes || options.edges)) {
+    throw new Error('createMemoryGroupStore: pass either `snapshot` or `nodes`/`edges`, not both.');
+  }
+  let space = options.snapshot
+    ? fromSnapshot<P>(options.snapshot, profileOptions)
+    : createGroupSpace<P>({
+        ...profileOptions,
+        ...(options.nodes ? { nodes: options.nodes } : {}),
+        ...(options.edges ? { edges: options.edges } : {}),
+      });
+  // What callers get: a read-only view, so nobody can mutate the store's state through `load()`.
+  let view = readonlySpace(space);
   const listeners = createListenerSet<GroupStoreChange>(options.onListenerError);
 
   return {
@@ -211,17 +229,18 @@ export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOpt
       return space.profile;
     },
     async load() {
-      return space;
+      return view;
     },
-    async apply(delta, options) {
-      const result = commitDelta(space, delta, options);
-      if (result.ok) {
-        space = result.value.space;
-        listeners.emit({ delta, inverse: result.value.inverse, revision: space.revision });
-      }
-      return result;
+    async apply(delta, applyOptions) {
+      const result = commitDelta(space, delta, applyOptions);
+      if (!result.ok) return result;
+      space = result.value.space;
+      view = readonlySpace(space);
+      listeners.emit({ delta, inverse: result.value.inverse, revision: space.revision });
+      return { ok: true, value: { ...result.value, space: view } };
     },
     getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
     subscribe: (listener) => listeners.add(listener),
+    dispose: () => listeners.clear(),
   };
 }
