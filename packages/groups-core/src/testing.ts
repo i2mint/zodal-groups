@@ -214,7 +214,10 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
   const persistent: Gate = () => (options.persistent ? undefined : 'store is not persistent (options.persistent is not true)');
   const subscribes: Gate = (p) => (p.subscribes ? undefined : 'store has no subscribe (it is optional)');
 
-  const seeded = async (store: GroupStore): Promise<GroupSpace> => expectOk(await store.apply(SEED), 'seed delta');
+  const seeded = async (store: GroupStore): Promise<GroupSpace> => {
+    expectOk(await store.apply(SEED), 'seed delta');
+    return store.load();
+  };
 
   // ── loading and writing ───────────────────────────────────────────────────
 
@@ -336,7 +339,7 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
 
   // ── undo: invert round-trips through the store ────────────────────────────
 
-  add('applying invert(delta) restores the space exactly', async ({ store }) => {
+  add('the inverse apply returns restores the space exactly', async ({ store }) => {
     const before = await seeded(store);
     const delta: EdgeDelta = {
       added: [edge('archive', 'novel.epub'), edge('inbox', 'fresh.txt')], // inbox, fresh.txt are new
@@ -346,20 +349,22 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
         { id: n('notes.md'), label: 'Notes' }, // a field it did not have
       ],
     };
-    const after = expectOk(await store.apply(delta), 'the delta');
-    if (!after.nodes.has(n('inbox'))) fail('the delta should have created node inbox');
-    expectOk(await store.apply(invert(before, delta)), 'its inverse');
-    sameSpace(await store.load(), before, 'load() after apply + invert');
+    const applied = expectOk(await store.apply(delta), 'the delta');
+    if (!(await store.load()).nodes.has(n('inbox'))) fail('the delta should have created node inbox');
+    equal(applied.inverse, invert(before, delta), 'the returned inverse vs invert(before, delta)');
+    expectOk(await store.apply(applied.inverse, { expectedRevision: applied.revision }), 'its inverse');
+    sameSpace(await store.load(), before, 'load() after apply + inverse');
   });
 
   add("deleting a group is undone by its tombstone: label, payload and edges come back", async ({ store }) => {
     const before = await seeded(store);
     const del = deleteNodeDelta(before, n('reading'));
     equal(del.removedNodes?.map((x) => x.id), ['reading'], 'deleteNodeDelta tombstones');
-    const gone = expectOk(await store.apply(del), 'delete reading');
+    const applied = expectOk(await store.apply(del), 'delete reading');
+    const gone = await store.load();
     if (gone.nodes.has(n('reading'))) fail('reading survived its delete');
     if (edgesInto(gone, n('paper.pdf')).length) fail('paper.pdf is still in a group after reading was deleted');
-    expectOk(await store.apply(invert(before, del)), 'undo the delete');
+    expectOk(await store.apply(applied.inverse, { expectedRevision: applied.revision }), 'undo the delete');
     const restored = await store.load();
     sameSpace(restored, before, 'load() after undoing the delete');
     equal(restored.nodes.get(n('reading')), { id: 'reading', label: 'Reading', payload: { colour: 'blue' } }, 'the restored node');
@@ -391,13 +396,52 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     );
     const before = await store.load();
     const merge = mergeDelta(before, n('todo'), n('to-do'));
-    const merged = expectOk(await store.apply(merge), 'the merge');
-    equal(edgesOf(merged, n('to-do')).map((e) => e.child).sort(), ['a', 'b', 'c'], 'to-do after the merge');
-    expectOk(await store.apply(invert(before, merge)), 'undo the merge');
+    const applied = expectOk(await store.apply(merge), 'the merge');
+    equal(edgesOf(await store.load(), n('to-do')).map((e) => e.child).sort(), ['a', 'b', 'c'], 'to-do after the merge');
+    expectOk(await store.apply(applied.inverse, { expectedRevision: applied.revision }), 'undo the merge');
     sameSpace(await store.load(), before, 'load() after undoing the merge');
   });
 
   // ── concurrency ───────────────────────────────────────────────────────────
+
+  add('apply returns the new revision, the exact inverse, and (if any) the space load() would give', async ({ store }) => {
+    const before = await seeded(store);
+    const delta: EdgeDelta = { added: [edge('inbox', 'paper.pdf')] };
+    const applied = expectOk(await store.apply(delta), 'apply');
+    const loaded = await store.load();
+    equal(applied.revision, loaded.revision, 'returned revision vs load().revision');
+    if (!(applied.revision > before.revision)) fail(`revision did not advance: ${before.revision} → ${applied.revision}`);
+    equal(applied.inverse, invert(before, delta), 'returned inverse');
+    if (applied.space) sameSpace(applied.space, loaded, 'returned space vs load()');
+  });
+
+  add('expectedRevision: the current revision is accepted; a stale one is refused (conflict), writing nothing', async ({ store }) => {
+    const r1 = expectOk(await store.apply({ added: [edge('g', 'a')] }), 'first write').revision;
+    expectOk(await store.apply({ added: [edge('g', 'b')] }, { expectedRevision: r1 }), 'a write at the current revision');
+    const before = await store.load();
+    const v = expectRefused(await store.apply({ added: [edge('g', 'c')] }, { expectedRevision: r1 }), 'conflict', 'a write at a stale revision');
+    equal([v.expectedRevision, v.actualRevision], [r1, before.revision], '[expectedRevision, actualRevision]');
+    sameSpace(await store.load(), before, 'load() after the conflict');
+    equal((await store.load()).revision, before.revision, 'revision after the conflict');
+  });
+
+  add("a compensating undo after another writer used the created node is refused, not half-applied", async ({ store }) => {
+    // Writer A files i1 under a new group q3; writer B then files q3 under plans; A's record write
+    // fails and A compensates with the inverse it was given.
+    const a = expectOk(await store.apply({ added: [edge('q3', 'i1')] }), 'A: i1 into a new q3');
+    expectOk(await store.apply({ added: [edge('plans', 'q3')] }), 'B: q3 into plans');
+    const before = await store.load();
+    expectRefused(await store.apply(a.inverse, { expectedRevision: a.revision }), 'conflict', "A's compensation");
+    sameSpace(await store.load(), before, "load() after A's refused compensation");
+  });
+
+  add("an undo with a stale expectedRevision never overwrites another writer's change", async ({ store }) => {
+    expectOk(await store.apply({ upsertNodes: [{ id: n('g'), label: 'G' }], added: [edge('g', 'x')] }), 'seed');
+    const a = expectOk(await store.apply({ upsertNodes: [{ id: n('g'), label: 'A says' }] }), 'A renames g');
+    expectOk(await store.apply({ upsertNodes: [{ id: n('g'), label: 'B says' }] }), 'B renames g');
+    expectRefused(await store.apply(a.inverse, { expectedRevision: a.revision }), 'conflict', "A's undo");
+    equal((await store.load()).nodes.get(n('g'))?.label, 'B says', "g's label after A's refused undo");
+  });
 
   add('concurrent applies are serialized: none is lost', async ({ store }) => {
     const count = 25;
@@ -456,6 +500,7 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
       expectRefused(await store.apply({ added: [edge('b', 'a')] }), 'cycle', 'a cyclic delta');
       equal(seen.length, 1, 'notifications');
       equal(seen[0]!.revision, r.revision, 'notified revision');
+      equal(seen[0]!.inverse, r.inverse, 'notified inverse');
       equal(seen[0]!.delta.added?.map((e) => e.id), ['a>b'], 'notified delta');
       off();
       expectOk(await store.apply({ added: [edge('a', 'c')] }), 'apply after unsubscribe');
@@ -489,9 +534,10 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
       const before = await seeded(store);
       const del = deleteNodeDelta(before, n('research'));
       const after = expectOk(await store.apply(del), 'delete research');
+      const expected = await store.load();
       const other = await reopen();
       const loaded = await other.load();
-      sameSpace(loaded, after, 'a reopened store');
+      sameSpace(loaded, expected, 'a reopened store');
       equal(loaded.revision, after.revision, 'revision of a reopened store');
       indexesConsistent(loaded, 'a reopened store');
       expectOk(await other.apply(invert(before, del)), 'undo through the reopened store');

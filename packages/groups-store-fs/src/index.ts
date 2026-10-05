@@ -38,8 +38,8 @@
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
-  applyDelta,
   CLIENT_SIDE_CAPABILITIES,
+  commitDelta,
   createListenerSet,
   fromSnapshot,
   parseSnapshot,
@@ -206,12 +206,15 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
     path,
     profile,
     load: () => enqueue(path, read),
-    apply: (delta) =>
+    apply: (delta, applyOptions) =>
       enqueue(path, async () => {
-        const result = applyDelta(await read(), delta);
+        // Read, check the revision, compute the inverse and apply — all inside the queue, against
+        // the state actually on disk (B1: an inverse computed from an earlier read undoes the
+        // wrong state).
+        const result = commitDelta(await read(), delta, applyOptions);
         if (!result.ok) return result;
-        await io.write(path, serialize(result.value));
-        listeners.emit({ delta, revision: result.value.revision });
+        await io.write(path, serialize(result.value.space));
+        listeners.emit({ delta, inverse: result.value.inverse, revision: result.value.revision });
         return result;
       }),
     getCapabilities: () => CLIENT_SIDE_CAPABILITIES,

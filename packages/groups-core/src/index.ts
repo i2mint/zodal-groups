@@ -116,11 +116,14 @@ export {
 export {
   createMemoryGroupStore,
   createListenerSet,
+  commitDelta,
   CLIENT_SIDE_CAPABILITIES,
   type GroupStore,
   type GroupStoreCapabilities,
   type GroupStoreChange,
   type MemoryGroupStoreOptions,
+  type StoreApplied,
+  type StoreApplyOptions,
 } from './store.js';
 
 // ── closure ─────────────────────────────────────────────────────────────────

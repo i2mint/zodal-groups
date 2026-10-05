@@ -280,7 +280,8 @@ export interface Violation {
     | 'malformed'
     | 'staleTombstone'
     | 'nodeExists'
-    | 'edgeIdExists';
+    | 'edgeIdExists'
+    | 'conflict';
   readonly message: string;
   readonly edge?: Edge;
   /** For `maxPerFamily`: the family root whose rule the item would break. */
@@ -292,6 +293,9 @@ export interface Violation {
   readonly node?: NodeId;
   /** For `maxPerFamily`: the family's values the item would fall under (more than allowed). */
   readonly values?: readonly NodeId[];
+  /** For `conflict`: the revision the writer expected, and the one the store is at. */
+  readonly expectedRevision?: number;
+  readonly actualRevision?: number;
   /**
    * For `cycle`: the offending path, so the UI can say *why*. Under polyhierarchy a cycle can close
    * through an off-screen branch, so a bare `false` is indistinguishable from a bug. Never omit it.

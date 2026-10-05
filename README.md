@@ -88,8 +88,9 @@ A `GroupStore` loads a space, applies deltas (validated, atomically) and reports
 import { createFsGroupStore } from '@zodal/groups-store-fs';
 
 const store = createFsGroupStore({ path: './photos/.groups.json', profile: 'labels' });
-await store.apply(delta);          // → { ok: true, value: space } or { ok: false, violations }
-const space = await store.load();  // hand it to any projection
+const r = await store.apply(delta);  // → { ok: true, value: { revision, inverse } } or { ok: false, violations }
+if (r.ok) await store.apply(r.value.inverse, { expectedRevision: r.value.revision });  // a safe undo: refused if someone wrote since
+const space = await store.load();    // hand it to any projection
 ```
 
 Deleting a group is undoable too: the delta carries the deleted node as a tombstone, so `invert` brings back its label, payload and edges. Writing an adapter? Run the shared contract kit, `groupStoreContract` from `@zodal/groups-core/testing`.

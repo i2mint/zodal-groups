@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import { ContractViolation, groupStoreContract } from '../src/testing.js';
 import {
-  applyDelta,
+  commitDelta,
+  invert,
   CLIENT_SIDE_CAPABILITIES,
   createMemoryGroupStore,
   fromSnapshot,
@@ -84,8 +85,9 @@ describe('the contract kit catches a store that breaks the contract', () => {
         load: async () => space,
         apply: async (delta) => {
           const s = toSnapshot(space);
-          space = fromSnapshot({ nodes: s.nodes, edges: [...s.edges, ...(delta.added ?? [])] }, { profile });
-          return { ok: true, value: space };
+          const inverse = invert(space, delta);
+          space = fromSnapshot({ nodes: s.nodes, edges: [...s.edges, ...(delta.added ?? [])], revision: space.revision + 1 }, { profile });
+          return { ok: true, value: { revision: space.revision, inverse, space } };
         },
         getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
       } satisfies GroupStore;
@@ -116,8 +118,8 @@ describe('the contract kit catches a store that breaks the contract', () => {
         apply: async (delta) => {
           const base = space; // read…
           await new Promise((r) => setTimeout(r, 1)); // …yield…
-          const result = applyDelta(base, delta); // …write from a stale read: lost updates
-          if (result.ok) space = result.value;
+          const result = commitDelta(base, delta); // …write from a stale read: lost updates
+          if (result.ok) space = result.value.space;
           return result;
         },
         getCapabilities: () => CLIENT_SIDE_CAPABILITIES,

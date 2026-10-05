@@ -5,10 +5,16 @@
  *
  * 1. **`load()`** — the persisted space (nodes + edges, with its indexes). Not validated against the
  *    profile: it is the read path, and stored data may predate the profile (D8).
- * 2. **`apply(delta)`** — validate an `EdgeDelta` against the profile and the acyclicity invariant,
- *    persist it atomically, and resolve to the same `Result` as `applyDelta`. A violation (a cycle,
- *    a profile cap, a family rule) is an ordinary outcome and comes back as `{ ok: false }` with the
- *    offending path; only an I/O failure rejects the promise.
+ * 2. **`apply(delta, { expectedRevision? })`** — validate an `EdgeDelta` against the profile and
+ *    the acyclicity invariant, persist it atomically, and resolve to `{ revision, inverse, space? }`.
+ *    The **inverse is computed inside the store's serialized section, against the state the delta
+ *    was actually applied to** — a caller computing it from its own earlier read would undo against
+ *    the wrong state. `expectedRevision` is optimistic concurrency: if the store has moved on, the
+ *    write is refused with a `conflict` violation and nothing is written (so a compensating undo
+ *    can never clobber another writer's change). `space` is optional because a backend over a large
+ *    membership relation cannot return the whole space without reading it all (D10). A violation
+ *    is an ordinary outcome (`{ ok: false }`, with the offending path for a cycle); only an I/O
+ *    failure rejects the promise.
  * 3. **`getCapabilities()`** — what the backend does natively, as a record rather than a boolean
  *    (D19): above all, what happens to closure on *delete*.
  *
@@ -26,7 +32,7 @@
 
 import type { EdgeDelta, Edge, GroupSpace, Node, NodeId, Result } from './model.js';
 import type { GroupProfile, ProfileName } from './profile.js';
-import { applyDelta, createGroupSpace } from './space.js';
+import { applyDelta, createGroupSpace, invert } from './space.js';
 
 /**
  * Honest capability reporting — a record, not a boolean (D19).
@@ -67,7 +73,57 @@ export interface GroupStoreCapabilities {
 /** A change notification from a store. */
 export interface GroupStoreChange {
   readonly delta: EdgeDelta;
+  /** The delta that undoes this change, against the state it was applied to. */
+  readonly inverse: EdgeDelta;
   readonly revision: number;
+}
+
+/** Options for `GroupStore.apply`. */
+export interface StoreApplyOptions {
+  /**
+   * Apply only if the store is at exactly this revision; otherwise refuse with `conflict` and write
+   * nothing. Pass the revision your undo or compensation was computed against.
+   */
+  readonly expectedRevision?: number;
+}
+
+/** What a successful `GroupStore.apply` returns. */
+export interface StoreApplied<P = unknown> {
+  /** The store's revision after this write. */
+  readonly revision: number;
+  /** Undoes exactly this write. Apply it with `expectedRevision: revision` to undo safely. */
+  readonly inverse: EdgeDelta;
+  /** The whole new space — only from a store that holds it anyway (memory, a manifest). */
+  readonly space?: GroupSpace<P>;
+}
+
+/**
+ * The in-memory heart of a store's `apply`: check `expectedRevision`, compute the inverse against
+ * `space`, apply. A store calls it inside its serialized section, on the state it just read.
+ */
+export function commitDelta<P>(
+  space: GroupSpace<P>,
+  delta: EdgeDelta,
+  options: StoreApplyOptions = {},
+): Result<StoreApplied<P> & { readonly space: GroupSpace<P> }> {
+  const expected = options.expectedRevision;
+  if (expected !== undefined && expected !== space.revision) {
+    return {
+      ok: false,
+      violations: [
+        {
+          code: 'conflict',
+          expectedRevision: expected,
+          actualRevision: space.revision,
+          message: `The store is at revision ${space.revision}, not ${expected}: another write landed first. Nothing was written; re-read and retry.`,
+        },
+      ],
+    };
+  }
+  const inverse = invert(space, delta);
+  const result = applyDelta(space, delta);
+  if (!result.ok) return result;
+  return { ok: true, value: { revision: result.value.revision, inverse, space: result.value } };
 }
 
 /** The persistence contract. See the module docstring. */
@@ -76,8 +132,11 @@ export interface GroupStore<P = unknown> {
   readonly profile: GroupProfile;
   /** The persisted space. Waits for any `apply` already in flight. */
   load(): Promise<GroupSpace<P>>;
-  /** Validate, persist atomically, and return the new space — or the violations, writing nothing. */
-  apply(delta: EdgeDelta): Promise<Result<GroupSpace<P>>>;
+  /**
+   * Validate and persist atomically; return the new revision and the exact inverse — or the
+   * violations (including `conflict` for a stale `expectedRevision`), writing nothing.
+   */
+  apply(delta: EdgeDelta, options?: StoreApplyOptions): Promise<Result<StoreApplied<P>>>;
   getCapabilities(): GroupStoreCapabilities;
   /** Present iff `getCapabilities().closure.read === 'native'`: `group` plus its descendants. */
   closureIds?(group: NodeId): Promise<NodeId[]>;
@@ -154,11 +213,11 @@ export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOpt
     async load() {
       return space;
     },
-    async apply(delta) {
-      const result = applyDelta(space, delta);
+    async apply(delta, options) {
+      const result = commitDelta(space, delta, options);
       if (result.ok) {
-        space = result.value;
-        listeners.emit({ delta, revision: space.revision });
+        space = result.value.space;
+        listeners.emit({ delta, inverse: result.value.inverse, revision: space.revision });
       }
       return result;
     },
