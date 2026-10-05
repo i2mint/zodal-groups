@@ -373,6 +373,13 @@ Two holes in edge validation, found while making undo exact. (1) Edges were vali
 
 **Decision.** Within a delta, whether an edge's child is a group is judged on the delta's end state (it is a group if the delta gives it a member). And when an edge makes its parent a group, the parent's existing memberships are checked against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`), reported once per node per delta.
 
+**Amendment (PR review): both directions, and only membership counts.**
+
+- **The mirror case.** A group that loses its last member *becomes an item*, and its memberships are then held to the item rules (`maxParentsPerItem`, `maxGroupsPerItem`, `groupsMayContainItems`, and family rules). Under `polyhierarchy` with `maxParentsPerItem: 1`, deleting the only member of a two-parent group is refused, naming the group — before, it succeeded and left a space `validateProfile` rejected. This follows from D5 (group-ness *is* having members), so an emptied group really is an item.
+- **Only membership kinds make a group or a parent.** An associative kind (declared `symmetric`, i.e. `related`) is "see also", not "is in": it makes nobody a group, counts as nobody's parent, and skips the structural rules. The criterion is *not* "transitive", as first proposed in review: `instance_of` is non-transitive yet hierarchical (Z39.19's BTI), and a class with instances is a group. `isMembershipKind` and `membershipParentCount` are exported; `isGroup` uses them.
+- **One cause, one violation.** When nesting is forbidden outright (`groupsMayContainGroups: false`), `maxDepth` is not reported for the same edge as well.
+- **`Groups.undo()` pops only after the undo applies.** A refused undo used to drop its history entry, so the next undo silently skipped to an older one.
+
 ---
 
 ## REFERENCES

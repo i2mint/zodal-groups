@@ -56,3 +56,82 @@ describe('a node that becomes a group is held to the group rules', () => {
     expect(g.add('video', 'holiday').ok).toBe(true);
   });
 });
+
+describe('only membership (non-associative) kinds make a node a group (S2)', () => {
+  const rel = (parent: string, child: string) => ({ id: `${parent}~${child}` as never, parent: parent as never, child: child as never, kind: 'related' });
+
+  it('labels: a related link to a group is not a second parent', () => {
+    const g = defineGroups({ profile: 'labels' });
+    g.add('x', 'm2');
+    g.add('m2', 'p'); // m2 is a label with one parent
+    const r = g.apply({ added: [rel('m', 'm2')] });
+    expect(r.ok).toBe(true);
+  });
+
+  it('flatTags: a related link between two tags is not nesting', () => {
+    const g = defineGroups({ profile: 'flatTags' });
+    g.add('photo', 'holiday');
+    g.add('photo2', 'travel');
+    const r = g.apply({ added: [rel('holiday', 'travel')] });
+    expect(r.ok).toBe(true);
+  });
+
+  it('a node whose only out-edges are associative is not a group', async () => {
+    const { isGroup, nodeId } = await import('../src/index.js');
+    const g = defineGroups();
+    g.apply({ added: [rel('a', 'b')] });
+    expect(isGroup(g.space, nodeId('a'))).toBe(false);
+  });
+});
+
+describe('a group that loses its last member becomes an item, held to the item rules (S1)', () => {
+  const seed = () => {
+    const g = defineGroups({ profile: 'polyhierarchy', overrides: { maxParentsPerItem: 1 } });
+    const e = (parent: string, child: string) => ({ id: `${parent}>${child}` as never, parent: parent as never, child: child as never, kind: 'contains' });
+    expect(g.apply({ added: [e('p1', 'g'), e('p2', 'g'), e('g', 'i')] }).ok).toBe(true); // g is a group: 2 parents fine
+    return g;
+  };
+
+  it('deleting the last member of a two-parent group is refused, naming the group', () => {
+    const g = seed();
+    const r = g.destroy('i');
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.violations[0]!.code).toBe('maxParentsPerItem');
+      expect(r.violations[0]!.node).toBe('g');
+    }
+    expect(validateProfile(g.space)).toEqual([]);
+  });
+
+  it('is allowed once the group is down to one parent', () => {
+    const g = seed();
+    expect(g.remove('g', 'p2').ok).toBe(true);
+    expect(g.destroy('i').ok).toBe(true);
+    expect(validateProfile(g.space)).toEqual([]);
+  });
+});
+
+describe('one cause, one violation', () => {
+  it('flatTags: nesting a tag reports groupsMayContainGroups only, not also maxDepth', () => {
+    const g = defineGroups({ profile: 'flatTags' });
+    g.add('photo', 'holiday');
+    const r = g.add('holiday', 'travel');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations.map((v) => v.code)).toEqual(['groupsMayContainGroups']);
+  });
+});
+
+describe('a refused undo keeps its history entry', () => {
+  it('does not skip to an older entry', () => {
+    // An asymmetric disjointness makes one undo legitimately refusable for a single writer.
+    const kinds = { contains: { transitive: true, acyclic: true }, x: { transitive: false, disjointWith: ['contains'] } };
+    const g = defineGroups({ profile: 'polyhierarchy', overrides: { edgeKinds: kinds } });
+    expect(g.add('c', 'p', { kind: 'x' }).ok).toBe(true);
+    expect(g.add('c', 'p').ok).toBe(true); // contains is not disjoint with x
+    const xEdge = [...g.space.edges.values()].find((e) => e.kind === 'x')!;
+    expect(g.apply({ removed: [xEdge.id] }).ok).toBe(true);
+    expect(g.undo()).toBe(false); // re-adding x next to contains is refused
+    expect(g.undo()).toBe(false); // ...and stays refused: the entry was kept, not dropped
+    expect(g.parents('c')).toEqual(['p']); // the contains edge was not undone by mistake
+  });
+});

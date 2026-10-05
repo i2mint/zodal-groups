@@ -127,9 +127,40 @@ export const childrenOf = (space: GroupSpace, parent: NodeId): NodeId[] =>
 export const parentsOf = (space: GroupSpace, child: NodeId): NodeId[] =>
   edgesInto(space, child).map((e) => e.parent);
 
-/** A node is a *group* iff something is in it. Group-ness is data, not type. */
-export const isGroup = (space: GroupSpace, id: NodeId): boolean =>
-  (space.forward.get(id)?.size ?? 0) > 0;
+/**
+ * Is this edge kind a **membership** (hierarchical) kind? Every kind is, except the associative
+ * ones — those declared `symmetric`, like `related` ("see also", not "is in"). Undeclared kinds
+ * (foreign data) count as membership, the conservative reading for projections.
+ *
+ * Not "transitive": `instance_of` is non-transitive yet hierarchical (Z39.19's BTI) — a class with
+ * instances is a group of them.
+ */
+export const isMembershipKind = (profile: GroupProfile, kind: string): boolean =>
+  profile.edgeKinds[kind]?.symmetric !== true;
+
+/**
+ * A node is a *group* iff something is in it — through a membership kind. Group-ness is data, not
+ * type; an associative link (`related`) makes nobody a group.
+ */
+export function isGroup(space: GroupSpace, id: NodeId): boolean {
+  const out = space.forward.get(id);
+  if (!out) return false;
+  for (const edgeId of out) {
+    const edge = space.edges.get(edgeId);
+    if (edge && isMembershipKind(space.profile, edge.kind)) return true;
+  }
+  return false;
+}
+
+/** How many groups a node is directly in — membership kinds only (a `related` link is no parent). */
+export function membershipParentCount(space: GroupSpace, id: NodeId): number {
+  let count = 0;
+  for (const edgeId of space.inverse.get(id) ?? []) {
+    const edge = space.edges.get(edgeId);
+    if (edge && isMembershipKind(space.profile, edge.kind)) count += 1;
+  }
+  return count;
+}
 
 /** Nodes with no parents — the browse entry points. */
 export function rootsOf(space: GroupSpace): NodeId[] {
@@ -304,7 +335,7 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
 
   const staged: GroupSpace<P> = { ...space, nodes, edges, forward, inverse };
   const added = delta.added ?? [];
-  const futureGroups = new Set(added.map((e) => e.parent));
+  const futureGroups = new Set(added.filter((e) => isMembershipKind(space.profile, e.kind)).map((e) => e.parent));
   const groupNess: GroupPredicate = (id) => isGroup(staged, id) || futureGroups.has(id);
   const becomingReported = new Set<NodeId>();
 
@@ -347,9 +378,25 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
     nodes.delete(node.id);
   }
 
+  // A group that lost its last member is an ITEM now, and its memberships are an item's: hold them
+  // to the item rules (the mirror image of "becoming a group" in `checkEdge`).
+  const becameItems: NodeId[] = [];
+  if (!violations.length) {
+    const lostMembers = new Set<NodeId>();
+    for (const id of delta.removed ?? []) {
+      const edge = space.edges.get(id);
+      if (edge) lostMembers.add(edge.parent);
+    }
+    for (const id of lostMembers) {
+      if (!nodes.has(id) || !isGroup(space, id) || isGroup(staged, id)) continue;
+      becameItems.push(id);
+      violations.push(...itemRuleViolations(staged, id));
+    }
+  }
+
   // Per-family cardinality is a property of the END state (which values an item falls under), so it
   // is checked once the structure is known to be sound.
-  if (!violations.length) violations.push(...familyViolations(staged, delta));
+  if (!violations.length) violations.push(...familyViolations(staged, delta, becameItems));
 
   if (violations.length) return { ok: false, violations };
 
@@ -434,9 +481,13 @@ function checkEdge<P>(
     }
   }
 
-  const childIsGroup = groupNess(edge.child);
+  // An associative link (`related`) is not membership: none of the structural rules below apply.
+  if (!isMembershipKind(p, edge.kind)) return out;
 
-  if (childIsGroup && !p.groupsMayContainGroups) {
+  const childIsGroup = groupNess(edge.child);
+  const nestingForbidden = childIsGroup && !p.groupsMayContainGroups;
+
+  if (nestingForbidden) {
     out.push({
       code: 'groupsMayContainGroups',
       message: `Profile '${p.name}' forbids groups inside groups (${edge.child} is a group).`,
@@ -452,7 +503,7 @@ function checkEdge<P>(
   }
 
   // Parent-count caps. A node's cap depends on whether it is itself a group.
-  const currentParents = space.inverse.get(edge.child)?.size ?? 0;
+  const currentParents = membershipParentCount(space, edge.child);
   const cap = childIsGroup ? p.maxParentsPerGroup : p.maxParentsPerItem;
   if (cap !== null && currentParents + 1 > cap) {
     out.push({
@@ -473,7 +524,8 @@ function checkEdge<P>(
   // Depth of the GROUP hierarchy. `maxDepth: 0` means flat — no group may sit inside another —
   // while still permitting an item to be tagged, which is exactly the flat-tagging case.
   // Putting a plain item into a group adds no nesting, so it is never capped by `maxDepth`.
-  if (p.maxDepth !== null && kindDef.transitive && childIsGroup) {
+  // (Skipped when nesting is forbidden outright: one cause, one violation.)
+  if (p.maxDepth !== null && kindDef.transitive && childIsGroup && !nestingForbidden) {
     const resulting = depthAbove(space, edge.parent) + 1 + groupDepthBelow(space, edge.child, groupNess);
     if (resulting > p.maxDepth) {
       out.push({
@@ -489,7 +541,7 @@ function checkEdge<P>(
   // group rules too — or `flatTags` breaks in two innocent steps (tag `holiday` with `travel`, then
   // tag a photo with `holiday`).
   if (!isGroup(space, edge.parent) && !becomingReported.has(edge.parent)) {
-    const parents = space.inverse.get(edge.parent)?.size ?? 0;
+    const parents = membershipParentCount(space, edge.parent);
     const before = out.length;
     if (parents > 0 && !p.groupsMayContainGroups) {
       out.push({
@@ -507,7 +559,7 @@ function checkEdge<P>(
         node: edge.parent,
       });
     }
-    if (p.maxDepth !== null && parents > 0) {
+    if (p.maxDepth !== null && parents > 0 && p.groupsMayContainGroups) {
       const resulting = depthAbove(space, edge.parent);
       if (resulting > p.maxDepth) {
         out.push({
@@ -521,6 +573,31 @@ function checkEdge<P>(
     if (out.length > before) becomingReported.add(edge.parent);
   }
 
+  return out;
+}
+
+/** The item rules, for a node that just stopped being a group. */
+function itemRuleViolations<P>(space: GroupSpace<P>, id: NodeId): Violation[] {
+  const p = space.profile;
+  const parents = membershipParentCount(space, id);
+  const out: Violation[] = [];
+  const lost = `${id} lost its last member, so it is an item now`;
+  if (parents > 0 && !p.groupsMayContainItems) {
+    out.push({ code: 'groupsMayContainItems', node: id, message: `${lost}, and profile '${p.name}' forbids items inside groups.` });
+  }
+  if (p.maxParentsPerItem !== null && parents > p.maxParentsPerItem) {
+    out.push({
+      code: 'maxParentsPerItem',
+      node: id,
+      message: `${lost} with ${parents} parents; profile '${p.name}' allows an item ${p.maxParentsPerItem}. Remove it from a group first.`,
+    });
+  } else if (p.maxGroupsPerItem !== null && parents > p.maxGroupsPerItem) {
+    out.push({
+      code: 'maxGroupsPerItem',
+      node: id,
+      message: `${lost} in ${parents} groups; profile '${p.name}' allows an item ${p.maxGroupsPerItem}.`,
+    });
+  }
   return out;
 }
 

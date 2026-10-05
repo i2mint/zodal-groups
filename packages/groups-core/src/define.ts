@@ -217,10 +217,12 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     },
 
     undo() {
-      const delta = history.pop();
+      const delta = history[history.length - 1];
       if (!delta) return false;
       const result = applyDelta(space, delta);
+      // A refused undo keeps its entry: popping it would make the next undo skip to an older one.
       if (!result.ok) return false;
+      history.pop();
       space = result.value;
       for (const listener of listeners) listener({ delta, revision: space.revision });
       return true;

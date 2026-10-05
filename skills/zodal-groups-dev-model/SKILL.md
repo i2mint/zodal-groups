@@ -159,9 +159,9 @@ Deleting a node is a delta like any other: `deleteNodeDelta(space, id)` = every 
 
 `Node.family = { maxPerItem }` makes that node a family root; its *values* are its direct subgroups. An item may fall under at most `maxPerItem` values — counted as **branches** (ancestors), not edges: `Done` + `Done/Archived` is one value (one board column). Checked by `applyDelta` on the END state, after the structural checks, over the items the delta could have moved; reported as `maxPerFamily` with `family`, `node` (the item) and `values`. `canAddTo` includes it. It is on the node, not the profile, because families are run-time data and profiles are reusable presets (see D26 for the D5/D14 argument). Test: `tests/family.test.ts`.
 
-## Group-ness on the end state; becoming a group (D29)
+## Group-ness on the end state; becoming a group — and an item (D29)
 
-Within one delta, "is the child a group?" is judged on the delta's end state, so the order of `added` never matters. And an edge that gives a node its **first member** re-checks that node's existing memberships against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`) — otherwise `flatTags` breaks in two steps (tag `holiday` with `travel`; then tag a photo with `holiday`). Test: `tests/becoming-a-group.test.ts`.
+Within one delta, "is the child a group?" is judged on the delta's end state, so the order of `added` never matters. An edge that gives a node its **first member** re-checks that node's existing memberships against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`) — otherwise `flatTags` breaks in two steps. The mirror: a group that **loses its last member** is an item and is re-checked against the item rules (and family rules). **Only membership kinds count**: an associative kind (`symmetric`, e.g. `related`) makes nobody a group or a parent (`isMembershipKind`, `membershipParentCount`); `instance_of` *is* membership although non-transitive. Tests: `tests/becoming-a-group.test.ts`.
 
 ## Profile inference (D27)
 

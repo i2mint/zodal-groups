@@ -49,8 +49,13 @@ export function familyValuesOf(space: GroupSpace, family: NodeId, item: NodeId):
  * Every family rule broken, after `delta`, by an item the delta could have affected. `space` is the
  * delta's end state.
  */
-export function familyViolations(space: GroupSpace, delta: EdgeDelta): Violation[] {
-  const items = new Set<NodeId>();
+export function familyViolations(
+  space: GroupSpace,
+  delta: EdgeDelta,
+  /** Nodes the delta turned into items (a group that lost its last member). */
+  alsoCheck: Iterable<NodeId> = [],
+): Violation[] {
+  const items = new Set<NodeId>(alsoCheck);
   const itemsUnder = (group: NodeId): void => {
     for (const d of descendants(space, group)) if (!isGroup(space, d)) items.add(d);
   };

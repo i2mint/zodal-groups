@@ -27,7 +27,7 @@
 
 import type { GroupSpace, NodeId, Violation } from './model.js';
 import { PROFILES, resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
-import { edgesOf, isGroup, validateProfile } from './space.js';
+import { edgesOf, isGroup, isMembershipKind, membershipParentCount, validateProfile } from './space.js';
 
 /** The dials measured on the data itself. */
 export interface ObservedDials {
@@ -160,7 +160,7 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
   let maxParentsPerItem = 0;
   let maxParentsPerGroup = 0;
   for (const id of space.nodes.keys()) {
-    const parents = space.inverse.get(id)?.size ?? 0;
+    const parents = membershipParentCount(space, id);
     if (isGroup(space, id)) {
       groups += 1;
       maxParentsPerGroup = Math.max(maxParentsPerGroup, parents);
@@ -177,6 +177,7 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
   for (const edge of space.edges.values()) {
     edgeKinds[edge.kind] = (edgeKinds[edge.kind] ?? 0) + 1;
     if (edge.meta?.assertedBy !== undefined) assertedByEdges += 1;
+    if (!isMembershipKind(space.profile, edge.kind)) continue;
     if (isGroup(space, edge.child)) groupsContainGroups = true;
     else groupsContainItems = true;
   }

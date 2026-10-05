@@ -80,6 +80,8 @@ export {
   edgesOf,
   edgesInto,
   isGroup,
+  isMembershipKind,
+  membershipParentCount,
   rootsOf,
   orphansOf,
   type CreateSpaceOptions,
