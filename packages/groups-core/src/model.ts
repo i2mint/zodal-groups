@@ -241,10 +241,18 @@ export interface EdgeDelta {
    */
   readonly upsertNodes?: readonly Node<unknown>[];
   /**
+   * Nodes this delta **creates**. Unlike an upsert, refused (`nodeExists`) if the id is already
+   * live — so undoing a delete cannot silently merge into a node someone re-created since. `invert`
+   * turns tombstones into these.
+   */
+  readonly addedNodes?: readonly Node<unknown>[];
+  /**
    * Nodes this delta deletes — **tombstones**: the full node (label, payload, family), not just its
-   * id, so the delta alone says what was lost and `invert` can restore it. Every edge touching a
-   * removed node must be removed in the same delta (`deleteNodeDelta` does this), or the delta is
-   * refused with `danglingEdge`. Applied after the edge changes. See reconciliation D25.
+   * id, so the delta alone says what was lost and `invert` can restore it. A tombstone must match
+   * the live node exactly, or the delta is refused (`staleTombstone`) — a stale undo never deletes
+   * a node that changed since. Every edge touching a removed node must be removed in the same
+   * delta (`deleteNodeDelta` does this), or the delta is refused (`danglingEdge`). Applied after the
+   * edge changes. See reconciliation D25.
    */
   readonly removedNodes?: readonly Node<unknown>[];
 }
@@ -269,7 +277,10 @@ export interface Violation {
     | 'danglingEdge'
     | 'maxPerFamily'
     | 'invalidFamilyRule'
-    | 'malformed';
+    | 'malformed'
+    | 'staleTombstone'
+    | 'nodeExists'
+    | 'edgeIdExists';
   readonly message: string;
   readonly edge?: Edge;
   /** For `maxPerFamily`: the family root whose rule the item would break. */

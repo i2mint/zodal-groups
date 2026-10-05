@@ -74,7 +74,8 @@ interface EdgeDelta {                          // the ONE write primitive
   readonly added?: readonly Edge[];
   readonly removed?: readonly EdgeId[];
   readonly upsertNodes?: readonly Node<unknown>[];      // merged; a field set to `undefined` is cleared
-  readonly removedNodes?: readonly Node<unknown>[];     // TOMBSTONES: the full node (D25)
+  readonly addedNodes?: readonly Node<unknown>[];       // CREATES: refused (nodeExists) if the id is live
+  readonly removedNodes?: readonly Node<unknown>[];     // TOMBSTONES: the full node, must match the live one (D25)
 }
 
 applyDelta(space, delta): Result<GroupSpace>   // validates profile + acyclicity + families, all-or-nothing
@@ -153,7 +154,7 @@ opposite of what it means. This is a bug I already shipped once; the test is
 
 Deleting a node is a delta like any other: `deleteNodeDelta(space, id)` = every touching edge in `removed` + the whole node in `removedNodes`. `applyDelta` removes nodes **last** and refuses (`danglingEdge`) a node removal that would leave an edge behind — it never cascades, because then the delta would stop describing its own effect.
 
-`invert(space, delta)` is exact: apply + invert gives back the same nodes and edges. It restores removed edges and tombstoned nodes, removes edges the delta added (restoring an edge it replaced by id), removes nodes the delta *created* (upserted or auto-created as an endpoint), and restores fields the delta *changed* (clearing ones it added, via `undefined`). So undoing a group delete or a merge (re-point edges + tombstone) brings back the label and payload too. Test: `tests/tombstones.test.ts`; the store kit checks it through every adapter.
+`invert(space, delta)` is exact: apply + invert gives back the same nodes and edges. It restores removed edges and tombstoned nodes, removes edges the delta added (restoring an edge it replaced by id), removes nodes the delta *created* (upserted or auto-created as an endpoint), and restores fields the delta *changed* (clearing ones it added, via `undefined`). So undoing a group delete or a merge (re-point edges + tombstone) brings back the label and payload too. Stale undo is refused, never applied: a tombstone must equal the live node (`staleTombstone`), the inverse of a delete is an `addedNodes` create (refused with `nodeExists` if the node was re-created), and an added edge may not reuse a live edge id (`edgeIdExists`; remove + add in one delta to replace). Test: `tests/tombstones.test.ts`; the store kit checks it through every adapter.
 
 ## Per-family cardinality (D26)
 

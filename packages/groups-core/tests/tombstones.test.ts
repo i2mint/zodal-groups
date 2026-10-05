@@ -138,15 +138,6 @@ describe('invert is exact', () => {
     expect(after.nodes.get(n('reading'))).toEqual({ id: 'reading', payload: { colour: 'blue' } });
   });
 
-  it('an added edge that reuses an id replaces the old edge, without a stale index entry — and undo restores it', () => {
-    const before = library();
-    const delta: EdgeDelta = { added: [makeEdge(n('archive'), n('paper'), { id: edgeId('reading>paper') })] };
-    const after = ok(applyDelta(before, delta));
-    expect([...(after.forward.get(n('reading')) ?? [])]).toEqual(['reading>notes']);
-    expect(after.edges.get(edgeId('reading>paper'))!.parent).toBe('archive');
-    expect(shape(ok(applyDelta(after, invert(before, delta))))).toEqual(shape(before));
-  });
-
   it('invert of invert is the original effect', () => {
     const s0 = library();
     const d = deleteNodeDelta(s0, n('reading'));
@@ -203,5 +194,57 @@ describe('the facade: destroy is undoable', () => {
     g.add('a', 'g');
     g.undo();
     expect(g.space.nodes.size).toBe(0);
+  });
+});
+
+describe('stale tombstones and re-creation are refused, never merged (S3)', () => {
+  it('a tombstone that does not match the current node is refused', () => {
+    const space = library();
+    const r = applyDelta(space, {
+      removed: deleteNodeDelta(space, n('reading')).removed,
+      removedNodes: [{ id: n('reading'), label: 'NOT-READING' }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations.map((v) => v.code)).toEqual(['staleTombstone']);
+  });
+
+  it('undoing an add after the auto-created group was relabelled does not delete it', () => {
+    const s0 = createGroupSpace();
+    const d: EdgeDelta = { added: [e('g', 'a')] };
+    const s1 = ok(applyDelta(s0, d));
+    const s2 = ok(applyDelta(s1, { upsertNodes: [{ id: n('g'), label: 'Mine now' }] }));
+    const r = applyDelta(s2, invert(s0, d));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations.map((v) => v.code)).toContain('staleTombstone');
+  });
+
+  it('undoing a delete after the node was re-created is refused (nodeExists), not merged', () => {
+    const s0 = library();
+    const d = deleteNodeDelta(s0, n('reading'));
+    const s1 = ok(applyDelta(s0, d));
+    const s2 = ok(applyDelta(s1, { upsertNodes: [{ id: n('reading'), label: 'A new reading list' }] }));
+    const undo = invert(s0, d);
+    expect(undo.addedNodes?.map((x) => x.id)).toEqual(['reading']);
+    const r = applyDelta(s2, undo);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations.map((v) => v.code)).toContain('nodeExists');
+  });
+
+  it('addedNodes creates a node, and refuses an existing id', () => {
+    const s = ok(applyDelta(createGroupSpace(), { addedNodes: [{ id: n('x'), label: 'X' }] }));
+    expect(s.nodes.get(n('x'))).toEqual({ id: 'x', label: 'X' });
+    const again = applyDelta(s, { addedNodes: [{ id: n('x') }] });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.violations[0]!.code).toBe('nodeExists');
+  });
+
+  it('an added edge may not reuse a live edge id (remove it in the same delta to replace it)', () => {
+    const s = library();
+    const reuse = makeEdge(n('archive'), n('paper'), { id: edgeId('reading>paper') });
+    const r = applyDelta(s, { added: [reuse] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations[0]!.code).toBe('edgeIdExists');
+    const replaced = ok(applyDelta(s, { removed: [edgeId('reading>paper')], added: [reuse] }));
+    expect(replaced.edges.get(edgeId('reading>paper'))!.parent).toBe('archive');
   });
 });

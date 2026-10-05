@@ -30,7 +30,7 @@ import {
 } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
 import { familyViolations, hasFamilyAtOrAbove } from './family.js';
-import { edgeProblem, isFamilyRule, nodeProblem } from './structure.js';
+import { edgeProblem, isFamilyRule, nodeProblem, sameValue } from './structure.js';
 
 // ── construction ────────────────────────────────────────────────────────────
 
@@ -304,7 +304,7 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
 
   // Structure first: anything accepted here must load back from a snapshot (see `structure.ts`).
   const violations: Violation[] = [];
-  for (const node of delta.upsertNodes ?? []) {
+  const structurallyValid = (node: Node<unknown>): boolean => {
     const family = (node as { family?: unknown }).family;
     if (family !== undefined && !isFamilyRule(family)) {
       violations.push({
@@ -312,14 +312,32 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
         node: node.id,
         message: `${node.id}: a family rule must be { maxPerItem: an integer ≥ 1 }, got ${JSON.stringify(family)}.`,
       });
-      continue;
+      return false;
     }
     const problem = nodeProblem(node);
     if (problem) {
       violations.push({ code: 'malformed', node: node.id, message: `Node ${JSON.stringify(node.id)} is malformed — ${problem}.` });
+      return false;
+    }
+    return true;
+  };
+
+  // Creations: refused if the id is live — a create never merges into someone else's node.
+  for (const node of delta.addedNodes ?? []) {
+    if (!structurallyValid(node)) continue;
+    if (nodes.has(node.id)) {
+      violations.push({
+        code: 'nodeExists',
+        node: node.id,
+        message: `Cannot create ${node.id}: a node with that id exists (it was created or changed since this delta was made).`,
+      });
       continue;
     }
-    nodes.set(node.id, mergeNode(nodes.get(node.id), node));
+    nodes.set(node.id, mergeNode(undefined, node));
+  }
+
+  for (const node of delta.upsertNodes ?? []) {
+    if (structurallyValid(node)) nodes.set(node.id, mergeNode(nodes.get(node.id), node));
   }
 
   // Removals first: a re-parent is (remove old, add new), and doing it in this order means the old
@@ -345,9 +363,16 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
       violations.push({ code: 'malformed', edge, message: `Edge ${JSON.stringify(edge?.id)} is malformed — ${problem}.` });
       continue;
     }
-    // An edge re-using an existing id replaces it; drop the old one from the indexes first, so a
-    // replacement under a different parent cannot leave a stale index entry behind.
-    unlink(edge.id);
+    // A live edge id is never silently replaced (that is how a stale undo would overwrite a newer
+    // edge); to replace one, remove it in the same delta — removals run first.
+    if (edges.has(edge.id)) {
+      violations.push({
+        code: 'edgeIdExists',
+        edge,
+        message: `Edge id ${edge.id} is already in use; remove it in the same delta to replace it.`,
+      });
+      continue;
+    }
     const v = checkEdge(staged, edge, groupNess, becomingReported);
     if (v.length) {
       violations.push(...v);
@@ -365,7 +390,16 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   // Tombstones: a node may only go once nothing points at it — the delta must say what happens to
   // its edges, so that the delta alone is enough to undo it.
   for (const node of delta.removedNodes ?? []) {
-    if (!nodes.has(node.id)) continue;
+    const live = nodes.get(node.id);
+    if (!live) continue;
+    if (!sameValue(live, node)) {
+      violations.push({
+        code: 'staleTombstone',
+        node: node.id,
+        message: `Cannot remove ${node.id}: it changed since this delta was made (tombstone ${JSON.stringify(node)}, live ${JSON.stringify(live)}).`,
+      });
+      continue;
+    }
     const touching = [...(forward.get(node.id) ?? []), ...(inverse.get(node.id) ?? [])];
     if (touching.length) {
       violations.push({
@@ -629,10 +663,12 @@ export function validateProfile<P>(
  * Undo is Command, not Memento: we never snapshot the space. The inverse is exact — applying
  * `delta` and then `invert(space, delta)` gives back a space with the same nodes and edges:
  *
- * - removed edges come back, added edges go away (an added edge that replaced one with the same id
- *   restores the old one);
- * - tombstoned nodes (`removedNodes`) come back as they were — label, payload, family rule;
- * - nodes the delta created (by upsert, or implicitly as an edge endpoint) are removed again;
+ * - removed edges come back, added edges go away;
+ * - tombstoned nodes (`removedNodes`) come back as they were — label, payload, family rule — as
+ *   `addedNodes`, so the undo is refused (`nodeExists`) if the node was re-created since;
+ * - nodes the delta created (by `addedNodes`, an upsert, or implicitly as an edge endpoint) are
+ *   removed again, as tombstones of their content after the delta — so the undo is refused
+ *   (`staleTombstone`) if someone changed them since;
  * - fields an upsert changed are restored, and fields it added are cleared.
  */
 export function invert<P>(space: GroupSpace<P>, delta: EdgeDelta): EdgeDelta {
@@ -644,18 +680,15 @@ export function invert<P>(space: GroupSpace<P>, delta: EdgeDelta): EdgeDelta {
     const edge = space.edges.get(id);
     if (edge) added.push(edge);
   }
-  const removed: EdgeId[] = [];
-  for (const edge of delta.added ?? []) {
-    removed.push(edge.id);
-    const replaced = space.edges.get(edge.id);
-    if (replaced && !removedEdgeIds.has(edge.id)) added.push(replaced);
-  }
+  const removed: EdgeId[] = (delta.added ?? []).map((edge) => edge.id);
 
-  const upsertNodes: Node<unknown>[] = [];
+  // Tombstones come back as CREATES, so the undo is refused if the node was re-created since.
+  const addedNodes: Node<unknown>[] = [];
   for (const id of removedNodeIds) {
     const node = space.nodes.get(id);
-    if (node) upsertNodes.push(node); // the tombstone's authoritative content is the space's
+    if (node) addedNodes.push(node); // the tombstone's authoritative content is the space's
   }
+  const upsertNodes: Node<unknown>[] = [];
 
   // Nodes this delta brought into existence go again.
   const created = new Map<NodeId, Node<unknown>>();
@@ -663,6 +696,7 @@ export function invert<P>(space: GroupSpace<P>, delta: EdgeDelta): EdgeDelta {
     if (space.nodes.has(id) || removedNodeIds.has(id)) return;
     created.set(id, patch ? mergeNode(created.get(id) ?? { id }, patch) : (created.get(id) ?? { id }));
   };
+  for (const node of delta.addedNodes ?? []) touch(node.id, node);
   for (const node of delta.upsertNodes ?? []) touch(node.id, node);
   for (const edge of delta.added ?? []) {
     touch(edge.parent);
@@ -687,6 +721,7 @@ export function invert<P>(space: GroupSpace<P>, delta: EdgeDelta): EdgeDelta {
   return {
     added,
     removed,
+    ...(addedNodes.length ? { addedNodes } : {}),
     ...(upsertNodes.length ? { upsertNodes } : {}),
     ...(created.size ? { removedNodes: [...created.values()] } : {}),
   };

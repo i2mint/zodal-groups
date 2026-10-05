@@ -45,3 +45,21 @@ export function edgeProblem(edge: unknown): string | undefined {
   if (edge.meta !== undefined && !isObject(edge.meta)) return `meta: expected an object, got ${JSON.stringify(edge.meta)}`;
   return undefined;
 }
+
+/**
+ * Structural equality of two JSON-shaped values; a key whose value is `undefined` counts as absent.
+ * Used to check that a tombstone still matches the live node.
+ */
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    return a.length === bb.length && a.every((x, i) => sameValue(x, bb[i]));
+  }
+  const keys = (o: object) => Object.keys(o).filter((k) => (o as Record<string, unknown>)[k] !== undefined);
+  const ka = keys(a);
+  const kb = keys(b);
+  return ka.length === kb.length && ka.every((k) => sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}

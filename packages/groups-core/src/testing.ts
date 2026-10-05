@@ -365,6 +365,22 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     equal(restored.nodes.get(n('reading')), { id: 'reading', label: 'Reading', payload: { colour: 'blue' } }, 'the restored node');
   });
 
+  add('a stale undo is refused: it neither deletes nor merges a node changed since', async ({ store }) => {
+    const s0 = await store.load();
+    const add: EdgeDelta = { added: [edge('g', 'a')] }; // creates g and a
+    expectOk(await store.apply(add), 'add a to a new group g');
+    expectOk(await store.apply({ upsertNodes: [{ id: n('g'), label: 'Someone else\'s now' }] }), 'relabel g');
+    expectRefused(await store.apply(invert(s0, add)), 'staleTombstone', 'undo the add after g changed');
+    equal((await store.load()).nodes.get(n('g'))?.label, "Someone else's now", 'g after the refused undo');
+
+    const s1 = await store.load();
+    const del = deleteNodeDelta(s1, n('a'));
+    expectOk(await store.apply(del), 'delete a');
+    expectOk(await store.apply({ upsertNodes: [{ id: n('a'), label: 'A new a' }] }), 're-create a');
+    expectRefused(await store.apply(invert(s1, del)), 'nodeExists', 'undo the delete after a was re-created');
+    equal((await store.load()).nodes.get(n('a')), { id: 'a', label: 'A new a' }, 'a after the refused undo');
+  });
+
   add('a merge (re-point edges, then delete) is undone exactly', async ({ store }) => {
     expectOk(
       await store.apply({
