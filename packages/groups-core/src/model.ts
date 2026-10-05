@@ -132,12 +132,42 @@ export interface Edge {
   readonly meta?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * A per-family cardinality rule, carried by the node that roots the family.
+ *
+ * A **family** is a group whose direct subgroups are its *values* — a board's columns, Linear's
+ * "label group", a facet. `maxPerItem` caps how many of those values an item may fall under:
+ * `{ maxPerItem: 1 }` makes the family **exclusive** (a status field: an item is in exactly one
+ * column, or none).
+ *
+ * "Falls under" counts **branches**, not edges: an item in `Done` and in `Done/Archived` falls under
+ * one value of `Status` (`Done`), so a board puts it in one column. An item reachable from two
+ * values — directly, or through a subgroup that polyhierarchy filed under both — falls under two.
+ * That is the guarantee a board needs, and it is what `applyDelta` enforces.
+ *
+ * It lives on the node, not the profile, because families are *data*: users create them at run
+ * time (Linear's "make this label group exclusive"), and a profile is a reusable preset that never
+ * names particular nodes. See reconciliation D26.
+ */
+export interface FamilyRule {
+  /** At most this many of the family's values per item. `1` ⇒ exclusive. */
+  readonly maxPerItem: number;
+}
+
+/** The exclusive-family rule: at most one value per item. */
+export const EXCLUSIVE: FamilyRule = Object.freeze({ maxPerItem: 1 });
+
 /** A node. Its `payload` is whatever the caller's Zod schema validates — flat, never recursive. */
 export interface Node<P = unknown> {
   readonly id: NodeId;
   /** A display label. May be overridden per-membership by `Edge.label`. */
   readonly label?: string;
   readonly payload?: P;
+  /**
+   * Makes this node a family root with a per-item cardinality (see {@link FamilyRule}). Ignored
+   * while the node has no subgroups. Any node may carry it: group-ness is still data, not type.
+   */
+  readonly family?: FamilyRule;
 }
 
 // ── members: literal or reference ───────────────────────────────────────────
@@ -205,8 +235,18 @@ export interface GroupSpace<P = unknown> {
 export interface EdgeDelta {
   readonly added?: readonly Edge[];
   readonly removed?: readonly EdgeId[];
-  /** Nodes introduced alongside the edges (labels/payloads). Never removes nodes. */
+  /**
+   * Nodes introduced or changed alongside the edges. Merged field by field into the existing node;
+   * a field set to `undefined` is cleared (which is how `invert` restores a field the delta added).
+   */
   readonly upsertNodes?: readonly Node<unknown>[];
+  /**
+   * Nodes this delta deletes — **tombstones**: the full node (label, payload, family), not just its
+   * id, so the delta alone says what was lost and `invert` can restore it. Every edge touching a
+   * removed node must be removed in the same delta (`deleteNodeDelta` does this), or the delta is
+   * refused with `danglingEdge`. Applied after the edge changes. See reconciliation D25.
+   */
+  readonly removedNodes?: readonly Node<unknown>[];
 }
 
 // ── results ─────────────────────────────────────────────────────────────────
@@ -225,9 +265,17 @@ export interface Violation {
     | 'unknownEdgeKind'
     | 'disjointEdgeKind'
     | 'selfEdge'
-    | 'duplicateEdge';
+    | 'duplicateEdge'
+    | 'danglingEdge'
+    | 'maxPerFamily';
   readonly message: string;
   readonly edge?: Edge;
+  /** For `maxPerFamily`: the family root whose rule the item would break. */
+  readonly family?: NodeId;
+  /** For `maxPerFamily`: the item. For `danglingEdge`: the removed node still referenced. */
+  readonly node?: NodeId;
+  /** For `maxPerFamily`: the family's values the item would fall under (more than allowed). */
+  readonly values?: readonly NodeId[];
   /**
    * For `cycle`: the offending path, so the UI can say *why*. Under polyhierarchy a cycle can close
    * through an off-screen branch, so a bare `false` is indistinguishable from a bug. Never omit it.

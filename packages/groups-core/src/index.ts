@@ -33,6 +33,8 @@ export {
   defaultIdentity,
   CONTAINS,
   DEFAULT_EDGE_KINDS,
+  EXCLUSIVE,
+  type FamilyRule,
   type NodeId,
   type EdgeId,
   type Edge,
@@ -65,10 +67,12 @@ export {
   invert,
   makeEdge,
   validateEdge,
+  validateProfile,
   addTo,
   removeFrom,
   moveTo,
   deleteNode,
+  deleteNodeDelta,
   canAddTo,
   findCycle,
   childrenOf,
@@ -80,6 +84,37 @@ export {
   orphansOf,
   type CreateSpaceOptions,
 } from './space.js';
+
+// ── families: per-family cardinality ────────────────────────────────────────
+export { familyValuesOf, familyViolations, hasFamilyAtOrAbove } from './family.js';
+
+// ── profile inference ───────────────────────────────────────────────────────
+export {
+  inferProfile,
+  observeDials,
+  type InferProfileOptions,
+  type InferredProfile,
+  type ObservedDials,
+  type ProfileEvidence,
+} from './infer.js';
+
+// ── persistence: snapshots and the GroupStore contract ──────────────────────
+export {
+  toSnapshot,
+  fromSnapshot,
+  parseSnapshot,
+  type FromSnapshotOptions,
+  type GroupSnapshot,
+} from './snapshot.js';
+export {
+  createMemoryGroupStore,
+  createListenerSet,
+  CLIENT_SIDE_CAPABILITIES,
+  type GroupStore,
+  type GroupStoreCapabilities,
+  type GroupStoreChange,
+  type MemoryGroupStoreOptions,
+} from './store.js';
 
 // ── closure ─────────────────────────────────────────────────────────────────
 export {

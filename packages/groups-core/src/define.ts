@@ -30,7 +30,7 @@ import {
   canAddTo,
   childrenOf,
   createGroupSpace,
-  deleteNode,
+  deleteNodeDelta,
   invert,
   moveTo,
   orphansOf,
@@ -206,13 +206,10 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     },
 
     destroy(node) {
-      const before = space;
-      const result = deleteNode(space, id(node));
-      if (!result.ok) return result;
-      const removed = [...before.edges.values()]
-        .filter((e) => !result.value.edges.has(e.id))
-        .map((e) => e.id);
-      return commit(result, { removed });
+      // The delta carries the node as a tombstone, so `undo()` restores it with its label,
+      // payload and every edge.
+      const delta = deleteNodeDelta(space, id(node));
+      return commit(applyDelta(space, delta), delta);
     },
 
     apply(delta) {
