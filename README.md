@@ -59,7 +59,9 @@ whole pitch, and it's [an executable test](packages/groups-core/tests/profiles.t
 | `count(g, {expand:'closure'})` | de-duplicated — an item reachable two ways is counted **once** |
 | `canAdd(child, parent)` | *why* a drop is refused: *"That would create a loop: Reading → Research → Archive → Reading"* |
 | `scope(group)` | search this group **and its subgroups**, as a `FilterExpression` |
-| `undo()` | free — every write is a delta |
+| `undo()` | free — every write is a delta, and a deleted group comes back whole |
+| `{ id: 'status', family: EXCLUSIVE }` | an exclusive family: at most one status per item — the board-column rule |
+| `inferProfile(space)` | what shape is this data *actually* in? The tightest profile it fits, with evidence |
 
 ## Rendering
 
@@ -78,11 +80,30 @@ renderTagInput(el, g);  // tag chips — the same edges, projected flat
 **Drag-and-drop defaults to ADD, not MOVE.** Moving destroys an edge the user often can't see, and is
 undefined when dragging out of a search result. Hold ⌥ to move. (Gmail's `Label` vs `Move to`.)
 
-| package | what |
-|---|---|
-| `@zodal/groups-core` | the model, profiles, closure, projections |
-| `@zodal/groups-ui` | headless view descriptors, drag intent, renderer registry |
-| `@zodal/groups-ui-vanilla` | zero-dependency DOM renderers |
+## Persisting
+
+A `GroupStore` loads a space, applies deltas (validated, atomically) and reports what it does natively. The in-memory one ships with the core; the filesystem one keeps everything in one sidecar JSON manifest — never in symlinks.
+
+```ts
+import { createFsGroupStore } from '@zodal/groups-store-fs';
+
+const store = createFsGroupStore({ path: './photos/.groups.json', profile: 'labels' });
+await store.apply(delta);          // → { ok: true, value: space } or { ok: false, violations }
+const space = await store.load();  // hand it to any projection
+```
+
+Deleting a group is undoable too: the delta carries the deleted node as a tombstone, so `invert` brings back its label, payload and edges. Writing an adapter? Run the shared contract kit, `groupStoreContract` from `@zodal/groups-core/testing`.
+
+## Packages
+
+| package | what | status |
+|---|---|---|
+| `@zodal/groups-core` | the model, profiles, closure, projections, `GroupStore` contract + memory store, contract kit (`/testing`) | built |
+| `@zodal/groups-ui` | headless view descriptors, drag intent, renderer registry | built |
+| `@zodal/groups-ui-vanilla` | zero-dependency DOM renderers | built |
+| `@zodal/groups-store-fs` | Node: the DAG and memberships in a sidecar JSON manifest, written atomically | built |
+| `@zodal/groups-store-indexeddb` | browser: `multiEntry` index on the membership set | TODO |
+| `@zodal/groups-store-supabase` | Postgres: recursive CTE via RPC, GIN on memberships | TODO |
 
 ## Why the design is what it is
 
@@ -103,8 +124,7 @@ cited sources:
 
 ## Status
 
-Core and headless UI are built and tested. Store adapters (Postgres/Supabase, filesystem, Dexie) and
-the shadcn/Ark renderers are next.
+Core, headless UI, the vanilla renderers and the filesystem store are built and tested. The IndexedDB and Supabase stores and the shadcn/Ark renderers are next.
 
 ## License
 

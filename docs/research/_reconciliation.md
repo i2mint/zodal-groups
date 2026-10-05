@@ -71,6 +71,11 @@ rejected.
 | **D22** | **No reactivity library in the core.** Pure projections + a `revision` stamp + a change stream; let any host (Reselect / MobX / signals / Zustand) memoize on `revision`. | Depending on MobX/Jotai/signals in core — violates headless-first. | 05-K7/A9 |
 | **D23** | **Composite is rejected as the canonical model, accepted as the output type of `projectTree()`.** | Composite as the model — its GoF intent literally says *tree*; under a DAG the `parent` pointer is ill-typed, recursion double-counts, and path ≠ identity. | 05-A1/K12 |
 | **D24** | **Do not call this CQRS.** It is one relation with two synchronous indexes. CQRS's defining property is *eventual* consistency; ours is synchronous. | The CQRS label (and Fowler's own warning attached to it). | 05-A5 |
+| **D25** | **Tombstones: `EdgeDelta.removedNodes` carries the full deleted node**, and every edge touching it must be removed in the same delta (`danglingEdge` otherwise). `invert` is exact: it restores tombstones, removes nodes the delta created, and restores changed node fields. | Removing nodes by id only (the delta stops being self-describing), or cascading edge removal inside `applyDelta` (the delta stops saying what it did). | §8.1; [#4](https://github.com/i2mint/zodal-groups/issues/4) |
+| **D26** | **Per-family cardinality lives on the family's root node** (`Node.family = { maxPerItem }`), counts *branches* (values an item falls under), and is checked on the delta's end state. | A profile field keyed by node ids (profiles are reusable presets; families are run-time data), or a rule on each value edge. | §8.2; [#4](https://github.com/i2mint/zodal-groups/issues/4) |
+| **D27** | **`inferProfile(space) → {profile, violations, evidence}`** picks the tightest fitting candidate by a partial order over the structural dials; equivalent profiles are told apart by evidence; nothing fitting ⇒ the loosest of the least-violated. | A scalar "strictness score" (the dials are not totally ordered), or returning a custom profile fitted to the data (that is `evidence.observed`, one call away). | §8.3; [#4](https://github.com/i2mint/zodal-groups/issues/4) |
+| **D28** | **`GroupStore` = `load()` + `apply(delta) → Result` + `getCapabilities()` (+ optional `subscribe`, `closureIds`)**, with the profile as code passed to the store, not persisted. Every adapter runs `groupStoreContract` from `@zodal/groups-core/testing`. | A CRUD-per-edge interface (bypasses the one write primitive, D7), or a store that throws on a violation (a refused drop is an ordinary outcome, D15). | §8.4; [#2](https://github.com/i2mint/zodal-groups/issues/2) |
+| **D29** | **Group-ness is judged on the delta's end state, and a node that *becomes* a group is held to the group rules** for the memberships it already has. | Judging each edge in list order (undo of a group delete could fail by edge order), and never re-checking a new group's parents (`flatTags` broke in two steps). | §8.5 |
 
 ---
 
@@ -304,6 +309,67 @@ facet counts (broken), Observable Plot (has no treemap mark at all).
   an `assertedBy`), but no adapter optimizes for it yet.
 - **Cross-collection grouping** (an item from collection A and one from collection B in the same
   group). The `NodeId` model permits it; no adapter implements it.
+
+---
+
+## 8. Decisions after the research (issue-driven)
+
+These came from building on the model, not from the five reports. Each cites the issue that raised it.
+
+### 8.1 Tombstones (D25) — [#4](https://github.com/i2mint/zodal-groups/issues/4) item 1
+
+`EdgeDelta` never removed nodes, so undoing a group delete (or the delete half of a merge, which [#1](https://github.com/i2mint/zodal-groups/issues/1)'s `mergeGroups` needs) brought back the edges but not the node's label or payload. Linear's archive-vs-delete is the product precedent; Command-not-Memento (D7) is the constraint: undo must still be `invert(delta)`, not a snapshot.
+
+**Decision.** `EdgeDelta` gains `removedNodes?: Node[]` — the *full* node, a tombstone. `deleteNodeDelta(space, id)` builds the delta (every touching edge + the tombstone) and `deleteNode`, `Groups.destroy` use it. `applyDelta` applies node removals last and refuses (`danglingEdge`) a removal that would leave an edge pointing at nothing.
+
+- **Full node, not an id.** The delta alone says what was lost: an event log, a change feed or a store can replay or undo it without the prior state. (`removed` stays `EdgeId[]`; `invert` already reads removed edges from the space, and changing that would break callers.)
+- **No cascade.** If `applyDelta` silently removed a node's edges, the delta would no longer describe its own effect, and its inverse would have to be computed from a diff. Explicit is the price of an exact inverse.
+- **`invert` became exact**, which tombstones made possible: it also removes nodes the delta *created* (by upsert or as an auto-created edge endpoint) and restores the previous fields of nodes it *changed*. For that, an upsert field set to `undefined` now clears the field — the same thing a JSON round-trip does — so "restore a field the delta added" is expressible. Observable change: undoing `g.add('a', 'g')` now leaves no stray `a` and `g` nodes.
+- Additive: every existing caller compiles; the `Violation['code']` union grew (`danglingEdge`, `maxPerFamily`), which is why groups-core went to 0.2.0.
+
+### 8.2 Per-family cardinality (D26) — [#4](https://github.com/i2mint/zodal-groups/issues/4) item 2
+
+A board over a tag family needs to know the family is exclusive (Linear: "only one label from a given label group"); profiles only had global caps (`maxGroupsPerItem`).
+
+**Decision: on the node** — `Node.family?: { maxPerItem: number }` (`EXCLUSIVE` = `{ maxPerItem: 1 }`), enforced by `applyDelta` with a `maxPerFamily` violation that names the family, the item and the values.
+
+- **Why not the profile (D14).** A profile is a *named, reusable restriction* — `filesystem` means the same thing in every app — and it never names particular nodes. Families are run-time data: a user creates "Status" and ticks "exclusive". Putting them in the profile would make the profile per-dataset and force recreating the space to add a family. D14's real requirement — the runtime validator is the SSOT — is kept: the same `applyDelta` enforces it, and `validateProfile` reports it on foreign data.
+- **Why it does not break D5.** The field is on the unified `Node`, not on a `Group` type; any node may carry it and it simply has no effect while the node has no subgroups — group-ness stays a data fact. Same pattern as `Edge.order` meaning nothing under an unordered profile.
+- **Why not on the value edges.** The rule is about the family as a whole ("at most N of these"); scattering it over N edges invites them to disagree.
+- **What is counted: branches, not edges.** The family's *values* are its direct subgroups (through transitive kinds); an item counts a value when the value is among its ancestors (kind-aware closure, as everywhere). So `Done` + `Done/Archived` is one value — one board column — and passes, while an item reaching `Todo` and `Doing` through a polyhierarchical subgroup is two and is refused. That is exactly the guarantee a board needs: each item lands in at most N columns. Being *in the family root itself* is no value.
+- **Checked on the end state**, after the structural checks, over only the items the delta could have moved (children of added edges, items below an added group edge, items below a node whose rule the delta sets). Setting a rule that existing items already break is refused, like any other write. `canAddTo` includes it, so a drop target can say why.
+
+### 8.3 Profile inference (D27) — [#4](https://github.com/i2mint/zodal-groups/issues/4) item 6
+
+Design rationale §6.3.6: "infer the tightest profile that validates a corpus of edges". polytag's profile seam calls it.
+
+**Decision.** `inferProfile(space, { candidates? }) → { profile, violations, evidence }`:
+
+- validate the space under every candidate (`validateProfile`, new: a whole-space re-validation);
+- among those that fit, take the minimal elements of a **partial order** — A is at least as tight as B when every cap is ≤ (`null` = unbounded), every permission A grants B grants, and A's edge kinds ⊆ B's. The dials are not totally ordered (`filesystem` and `flatTags` are incomparable), so a scalar score would be arbitrary; incomparable fits are reported as `evidence.alternatives`, the earlier candidate winning;
+- profiles with identical dials (`flatTags`/`folksonomy`, `nestedTags`/`labels`, `polyhierarchy`/`thesaurus`) are told apart by evidence the dials cannot see: `folksonomy` when every edge has `meta.assertedBy`, `thesaurus` when a kind other than `contains` is used; else the earlier candidate, with the rest in `evidence.equivalent`;
+- when nothing fits (a foreign cycle, a broken family rule), the fewest-violations candidate, **the loosest on a tie** — a failure every candidate shares says nothing about tightness;
+- `evidence.observed` carries the measured dials (max parents per item/group, nesting depth, kinds in use…), so a caller wanting an exact-fit custom profile has it one `resolveProfile` away; `evidence.rejected` says why each non-fitting candidate failed (its first violation's message).
+
+It costs one re-validation per candidate: an audit tool, not a hot path. One finding it surfaced: `taxonomy` (`groupsMayContainItems: false`) fits **no non-empty space**, because every finite DAG has childless leaves and a childless node is an item. Recorded on #4 (item 4).
+
+### 8.4 The `GroupStore` contract (D28) — [#2](https://github.com/i2mint/zodal-groups/issues/2)
+
+The skill's sketch is now real code in groups-core (`store.ts`): `load()`, `apply(delta) → Promise<Result<GroupSpace>>`, `getCapabilities()` (the D19 record), optional `subscribe` and optional `closureIds` (present iff `closure.read === 'native'`).
+
+- **Shaped around the one write primitive (D7)**, so undo, change feeds and the contract all work in deltas. A violation resolves to `{ ok: false }` (D15: a refused drop is ordinary); only I/O failure rejects.
+- **The profile is code, not data.** The store is constructed with one and validates writes with it; it does not persist it (the same edges under another profile are the same edges). Loads are *not* validated (D8); `validateProfile`/`inferProfile` report the shape of stored data.
+- **Snapshots** (`toSnapshot`, `parseSnapshot`, `fromSnapshot`) are the persisted shape: flat `nodes[]` + `edges[]` + `revision` (D20), with structural checks on read.
+- **A client-side store reports `closure: { read: 'client', maintainedOnInsert: true, maintainedOnDelete: 'exact' }`**: a read-time walk has no cache to go stale, so it is exact by construction.
+- **Listeners are isolated** (try/catch per listener, `onListenerError`), the zodal-dials lesson.
+- **The contract kit** (`@zodal/groups-core/testing`, `groupStoreContract`) copies `@zodal/store/testing`'s design: async factory, `make` per case, `skip` with reasons, `dispose`, framework-agnostic cases throwing `ContractViolation`. It checks index consistency, cycle refusal *with a path made of real edges*, all-or-nothing refusal, delta/tombstone/merge round-trips, family rules, concurrent applies, capability honesty, subscription, and (with `persistent: true`) reopening. groups-core's own tests prove it catches a store that skips validation, lies about native closure, or loses concurrent writes.
+- **Adapters**: `createMemoryGroupStore()` (groups-core, the default) and `@zodal/groups-store-fs` (a sidecar JSON manifest, §6.5; atomic temp-file + rename with fsync, saves serialized per manifest across instances, parent directory created, a corrupt manifest is a `ManifestError` and is never overwritten or read as empty). IndexedDB and Supabase follow when a consumer needs them.
+
+### 8.5 Group-ness on the end state; becoming a group (D29)
+
+Two holes in edge validation, found while making undo exact. (1) Edges were validated in list order, with group-ness as of that moment, so re-adding a deleted group's edges could pass or fail depending on whether its parent edges or its member edges came first. (2) A node that *becomes* a group (gets its first member) had its existing memberships checked only as an item's: under `flatTags`, tagging `holiday` with `travel` and then tagging a photo with `holiday` produced a tag inside a tag; under `labels`, an item in two labels could become a two-parent label.
+
+**Decision.** Within a delta, whether an edge's child is a group is judged on the delta's end state (it is a group if the delta gives it a member). And when an edge makes its parent a group, the parent's existing memberships are checked against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`), reported once per node per delta.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: zodal-groups-dev-store-adapter
-description: Use when building or changing a zodal-groups STORE ADAPTER (@zodal/groups-store-* — Postgres/Supabase, filesystem, S3, IndexedDB/Dexie, localStorage, in-memory) — persisting membership edges, serving closure queries, reporting capabilities honestly. Triggers on "persist the groups", "store adapter", "recursive CTE", "ltree", "closure table", "nested set", "materialized path", "how do we store the hierarchy", "PostgREST can't do that", "update storm", "re-parent is slow". Read BEFORE choosing an encoding — nested set and materialized path are structurally incapable of multi-parent, and the closure-on-delete problem has a specific, non-obvious answer.
+description: Use when building or changing a zodal-groups STORE ADAPTER (@zodal/groups-store-* — Postgres/Supabase, filesystem, S3, IndexedDB/Dexie, localStorage, in-memory) or the GroupStore contract and its test-kit — persisting membership edges, serving closure queries, reporting capabilities honestly. Triggers on "persist the groups", "store adapter", "GroupStore", "groupStoreContract", "createMemoryGroupStore", "groups-store-fs", "sidecar manifest", "recursive CTE", "ltree", "closure table", "nested set", "materialized path", "how do we store the hierarchy", "PostgREST can't do that", "update storm", "re-parent is slow". Read BEFORE choosing an encoding — nested set and materialized path are structurally incapable of multi-parent, and the closure-on-delete problem has a specific, non-obvious answer.
 metadata:
   audience: developers
 ---
@@ -9,6 +9,52 @@ metadata:
 
 An adapter persists **edges**. That is the whole job. Trees, tags, breadcrumbs, and facets are
 computed by `groups-core` from those edges — an adapter never stores a tree.
+
+## The contract is code now — and every adapter runs the kit
+
+The contract lives in `packages/groups-core/src/store.ts` (decision D28), exported from `@zodal/groups-core`:
+
+```ts
+interface GroupStore<P = unknown> {
+  readonly profile: GroupProfile;                          // code, not data: validates writes, never persisted
+  load(): Promise<GroupSpace<P>>;                          // NOT validated against the profile (D8)
+  apply(delta: EdgeDelta): Promise<Result<GroupSpace<P>>>; // a violation is { ok: false }; only I/O rejects
+  getCapabilities(): GroupStoreCapabilities;               // the D19 record, below
+  closureIds?(group: NodeId): Promise<NodeId[]>;           // present IFF closure.read === 'native'
+  subscribe?(listener: (c: GroupStoreChange) => void): () => void;  // isolate throwing listeners
+}
+```
+
+Shipped: `createMemoryGroupStore()` in groups-core (the default — real, not a stub) and `@zodal/groups-store-fs` (`packages/groups-store-fs`, the reference persistent adapter). IndexedDB and Supabase are TODO.
+
+**Writing an adapter** (copy `groups-store-fs`'s layout):
+
+1. Persist a **snapshot**: `toSnapshot(space)` → flat `nodes[]` + `edges[]` + `revision` (D20). Read back with `parseSnapshot` (structure, throws with the offending path) then `fromSnapshot(snapshot, { profile })` (indexes only). Never treat unreadable data as empty — raise an error naming the location.
+2. `apply` = read current space → `applyDelta(space, delta)` → if ok, write atomically → `emit` → return the `Result`. Delegating to `applyDelta` gives you cycle refusal with the path, every profile rule, family rules (D26) and tombstones (D25) for free. A native backend that validates server-side must produce the same violations.
+3. **Serialize** applies (a promise queue per backing location); a read–modify–write without one loses updates.
+4. Use `createListenerSet(onListenerError)` from groups-core for `subscribe`; emit only after the write is durable.
+5. Report capabilities honestly. Client-side closure is `CLIENT_SIDE_CAPABILITIES` (`read: 'client'`, `maintainedOnInsert: true`, `maintainedOnDelete: 'exact'` — a read-time walk has no cache to go stale). Only declare `'native'` if you implement `closureIds`.
+6. **Run the kit** — this is the acceptance test:
+
+```ts
+import { groupStoreContract } from '@zodal/groups-core/testing';
+
+const cases = await groupStoreContract({
+  make: ({ profile, backing, onListenerError }) => createMyStore({ profile, location: locFor(backing), onListenerError }),
+  persistent: true,               // two makes with one `backing` open the same data → enables reopen cases
+  dispose: ({ backing }) => cleanUp(locFor(backing)),
+  // skip: { 'case name': 'why' }  — a documented deviation, never a silent one
+});
+describe('my adapter: GroupStore contract', () => {
+  for (const c of cases) (c.skip ? it.skip : it)(c.name, c.run);
+});
+```
+
+The kit (20 cases) checks: empty load, persistence with consistent `forward`/`inverse`, removals, edge kind/label/order/meta and node label/payload/family round-trips, revision monotonic and unchanged on refusal, cycle refused **with a path of real edges** and nothing written, all-or-nothing refusal, family rule, `danglingEdge`, `invert` round-trip, tombstone and merge undo, 25 concurrent applies all kept, capability well-formedness and closure honesty, subscribe semantics and listener isolation, and (persistent) reopen sees every write and every refusal leaves data untouched. `packages/groups-core/tests/store.test.ts` proves it fails a store that skips validation, lies about native closure, or loses concurrent writes.
+
+### The fs adapter's hardening (the bar for any file-backed store)
+
+Sidecar manifest JSON (`{ format: 'zodal-groups/manifest', version: 1, revision, nodes, edges }`, 2-space indent, trailing newline — diffable); temp file in the same dir + `fsync` + `rename` (atomic); parent dir created; saves queued per resolved path **across instances in the process** (no cross-process locking — documented); every op re-reads the file (sees hand edits); a corrupt manifest (invalid JSON, empty, wrong `format`, newer `version`, malformed node/edge) is a `ManifestError` naming the file, for `load` *and* `apply`, and is never overwritten; a failed write rejects without poisoning the queue.
 
 ## The insight that makes this tractable: there are TWO graphs
 
@@ -67,7 +113,7 @@ gives 2^d). Adding one edge high in the DAG multiplies every descendant's path c
 
 ## Honest capability reporting — a record, not a boolean
 
-`supportsClosure: boolean` is meaningless without saying what happens on **delete**:
+`supportsClosure: boolean` is meaningless without saying what happens on **delete**. The real type (`GroupStoreCapabilities` in groups-core):
 
 ```ts
 interface GroupStoreCapabilities {
@@ -88,7 +134,7 @@ interface GroupStoreCapabilities {
 - **Postgres / Supabase** — recursive CTE + GIN on the membership array. ⚠️ **PostgREST's filter
   grammar cannot express a subquery or a recursive CTE at all.** You need an **RPC**. (POST also
   dodges the URL-length limit that would kill wide read-time expansion.)
-- **Filesystem** — keep the DAG in a **sidecar manifest**, not in the directory structure. Hard links
+- **Filesystem** — **built**: `@zodal/groups-store-fs`. Keep the DAG in a **sidecar manifest**, not in the directory structure. Hard links
   to directories are forbidden by the OS; symlinks make cycles *your* bug. (Note `zodal-store-fs` is
   currently flat — one JSON file per item, non-recursive `readdir`.)
 - **S3** — `CommonPrefixes` with `Delimiter=/` is a *browsing affordance, not an index*. Prefixes are
@@ -109,15 +155,18 @@ right, which is what makes this bug expensive.
 
 ## Checklist
 
-- [ ] Persists edges, never trees
-- [ ] `getCapabilities()` returns the **record**, including `maintainedOnDelete`
-- [ ] Cycle check on write (or delegate to `groups-core`'s `applyDelta`)
-- [ ] Closure served natively where possible; falls back to client-side honestly
+- [ ] Persists edges (and nodes, tombstones applied), never trees
+- [ ] `apply` returns `applyDelta`'s `Result` (or the same violations from a native validator); only I/O rejects
+- [ ] Unreadable stored data is an error naming its location — never an empty space, never overwritten
+- [ ] Applies serialized; writes atomic
+- [ ] `getCapabilities()` returns the **record**, including `maintainedOnDelete`; `closureIds` iff `'native'`
 - [ ] Ordering via fractional index, with binary collation
-- [ ] Tests against the same contract as the in-memory adapter
+- [ ] `groupStoreContract` runs green (with `persistent: true` if the data outlives the instance); every `skip` has a reason
+- [ ] Added to the package table in `README.md` and `.claude/CLAUDE.md`
 
 ## Routing
 
 - Encodings, faceting internals, per-backend mapping: `docs/research/zgroups_02-*`
 - The `path_count`/DRed problem and Zanzibar's Leopard index: `docs/research/zgroups_05-*`
-- Decisions: [`docs/research/_reconciliation.md`](../../docs/research/_reconciliation.md) (D9, D10, D11, D19, §2.2, §2.3, §6)
+- Decisions: [`docs/research/_reconciliation.md`](../../docs/research/_reconciliation.md) (D9, D10, D11, D19, D25, D28, §2.2, §2.3, §6, §8.4)
+- The reference adapter: `packages/groups-store-fs/src/index.ts`; the kit: `packages/groups-core/src/testing.ts`
