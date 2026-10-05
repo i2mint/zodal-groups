@@ -381,6 +381,10 @@ Two holes in edge validation, found while making undo exact. (1) Edges were vali
 - **One cause, one violation.** When nesting is forbidden outright (`groupsMayContainGroups: false`), `maxDepth` is not reported for the same edge as well.
 - **`Groups.undo()` pops only after the undo applies.** A refused undo used to drop its history entry, so the next undo silently skipped to an older one.
 
+### 8.6 Cost model of the write path (PR review)
+
+Checking an added edge reads the *child's* parents (few), never the *group's* members (possibly millions): the duplicate and disjointness checks used to list the whole group per edge, which made tagging 20k items into one group take ~10 s; it is now linear (~50 ms, guarded by `tests/scale.test.ts`). What remains O(N) is that `applyDelta` copies the space's maps on every call, because it returns a new immutable space (D22's revision-keyed memoization depends on that). So a bulk change must be **one** delta; many single-edge calls are O(N²). A `GroupStore` over a large membership relation should keep it in its backend and apply deltas there, not through an in-memory `GroupSpace` (D10) — which is also why `GroupStore.apply` does not have to return the whole space (D28 amendment).
+
 ---
 
 ## REFERENCES

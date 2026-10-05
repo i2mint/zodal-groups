@@ -295,6 +295,12 @@ function mergeNode<P>(existing: Node<P> | undefined, patch: Node<unknown>): Node
  * order of `added` never matters: an edge into a node that this same delta makes a parent is an edge
  * into a group. (Without that, re-adding a deleted group's edges — an undo — could fail under a
  * profile that treats items and groups differently, depending on which edge came first.)
+ *
+ * **Cost.** Checking one added edge costs O(the child's parents) plus a closure walk where the
+ * profile needs one — never O(the group's members), so tagging 20k items in one delta is linear.
+ * But every call copies the space's four maps (it returns a new immutable space): O(N) per call.
+ * So apply a bulk change as ONE delta; N single-edge calls cost O(N²). A store that holds a large
+ * membership relation should not route it through an in-memory `GroupSpace` at all (D10).
  */
 export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<GroupSpace<P>> {
   const nodes = new Map(space.nodes);
@@ -476,10 +482,13 @@ function checkEdge<P>(
     return out;
   }
 
+  // The edges already linking this parent to this child. Read from the CHILD's side: a child has
+  // few parents, while a group may have millions of members — listing the group per added edge
+  // made bulk tagging quadratic.
+  const between = edgesInto(space, edge.child).filter((e) => e.parent === edge.parent && e.id !== edge.id);
+
   // Duplicate (same parent, child, kind).
-  const duplicate = edgesOf(space, edge.parent).some(
-    (e) => e.child === edge.child && e.kind === edge.kind && e.id !== edge.id,
-  );
+  const duplicate = between.some((e) => e.kind === edge.kind);
   if (duplicate) {
     out.push({
       code: 'duplicateEdge',
@@ -490,9 +499,7 @@ function checkEdge<P>(
 
   // Disjoint kinds: SKOS S27 — `related` may not co-exist with a hierarchical edge.
   if (kindDef.disjointWith?.length) {
-    const conflicting = edgesOf(space, edge.parent).find(
-      (e) => e.child === edge.child && kindDef.disjointWith!.includes(e.kind),
-    );
+    const conflicting = between.find((e) => kindDef.disjointWith!.includes(e.kind));
     if (conflicting) {
       out.push({
         code: 'disjointEdgeKind',

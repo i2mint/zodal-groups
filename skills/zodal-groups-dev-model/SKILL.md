@@ -168,6 +168,10 @@ Within one delta, "is the child a group?" is judged on the delta's end state, so
 
 `inferProfile(space, { candidates? })` validates the space under each candidate and returns the tightest fit by a **partial order** over the dials (caps ≤, permissions ⊆, edge kinds ⊆). Incomparable fits go to `evidence.alternatives`; identical-dial profiles are split by evidence (`folksonomy` if every edge has `meta.assertedBy`, `thesaurus` if a non-`contains` kind is used), the rest to `evidence.equivalent`. Nothing fits ⇒ the fewest violations, loosest on a tie. `evidence.observed` has the measured dials. ⚠️ `taxonomy` (`groupsMayContainItems: false`) fits no non-empty space — every DAG has childless leaves, and a childless node is an item (open on #4).
 
+## Cost model
+
+Checking an added edge reads the **child's** parents, never the group's members — keep it that way (`tests/scale.test.ts` fails if a check goes O(group size) again). `applyDelta` copies the space's maps on every call (O(N)), so bulk changes go in ONE delta.
+
 ## Adding a new dial
 
 1. Add the field to `GroupProfile` (`profile.ts`) with a sensible default in `BASE`.
