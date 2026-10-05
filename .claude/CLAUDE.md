@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (137 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (38) are implemented and green. groups-core now holds the `GroupStore` contract, the memory store, the contract kit (`@zodal/groups-core/testing`), tombstones, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (181 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (59) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 31-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 
@@ -85,8 +85,8 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 137 tests (+2 skipped: the memory store is not persistent)
-pnpm --filter @zodal/groups-store-fs test    # 38 tests: the contract kit + fs hardening, in a temp dir
+pnpm --filter @zodal/groups-core test        # 181 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-store-fs test    # 59 tests: the contract kit + fs hardening, in a temp dir
 pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
 pnpm build                                   # turbo, all packages
 ```

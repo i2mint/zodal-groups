@@ -13,8 +13,9 @@
  * `folksonomy` over `flatTags` when every edge records `meta.assertedBy`; `thesaurus` over
  * `polyhierarchy` when an edge kind other than `contains` is in use; otherwise the earlier candidate.
  * When two fitting profiles are incomparable (a one-level, single-homed space is both a
- * `filesystem` and `flatTags`), the earlier candidate wins and the other is listed in
- * `evidence.alternatives`.
+ * `filesystem` and `flatTags`), the one whose restrictions the data visibly *exercises* most wins
+ * (a cap it reaches exactly, a prohibition it has something to obey) — so one tag per item with no
+ * nesting is `flatTags` — then the earlier candidate; the other is listed in `evidence.alternatives`.
  *
  * When nothing fits (a cycle from a foreign adapter, a broken family rule, an undeclared edge kind),
  * the candidate with the fewest violations is returned, with those violations — the loosest one on
@@ -101,9 +102,10 @@ export function inferProfile<P>(space: GroupSpace<P>, options: InferProfileOptio
     };
   }
 
-  // The minimal elements of the "at least as tight" partial order.
+  // The minimal elements of the "at least as tight" partial order. Among incomparable ones, the data
+  // decides: the profile whose restrictions it visibly exercises most; then candidate order.
   const minimal = fitting.filter((a) => !fitting.some((b) => strictlyTighter(b, a)));
-  const first = minimal[0]!;
+  const first = minimal.reduce((best, p) => (exercised(p, observed) > exercised(best, observed) ? p : best));
   const equivalents = fitting.filter((p) => sameDials(p, first));
   const chosen = preferByEvidence(equivalents, observed) ?? first;
 
@@ -141,6 +143,23 @@ function atLeastAsTight(a: GroupProfile, b: GroupProfile): boolean {
 
 const sameDials = (a: GroupProfile, b: GroupProfile): boolean => atLeastAsTight(a, b) && atLeastAsTight(b, a);
 const strictlyTighter = (a: GroupProfile, b: GroupProfile): boolean => atLeastAsTight(a, b) && !atLeastAsTight(b, a);
+
+/**
+ * How many of a profile's restrictions the data visibly exercises: a cap the data reaches exactly,
+ * or a prohibition the data has something to obey. One tag per item with no nesting exercises
+ * `flatTags` twice (depth 0, no nesting) and `filesystem` once (one parent per item).
+ */
+function exercised(p: GroupProfile, o: ObservedDials): number {
+  const reached = (cap: Cap, value: number, applicable: boolean) => (cap !== null && applicable && value === cap ? 1 : 0);
+  return (
+    reached(p.maxParentsPerItem, o.maxParentsPerItem, o.items > 0) +
+    reached(p.maxGroupsPerItem, o.maxParentsPerItem, o.items > 0) +
+    reached(p.maxParentsPerGroup, o.maxParentsPerGroup, o.groups > 0 && o.maxParentsPerGroup > 0) +
+    reached(p.maxDepth, o.maxDepth, o.groups > 0) +
+    (!p.groupsMayContainGroups && o.groups > 0 ? 1 : 0) +
+    (!p.groupsMayContainItems && o.groups > 0 ? 1 : 0)
+  );
+}
 
 /** Tell equivalent profiles apart by what their names promise beyond the dials. */
 function preferByEvidence(equivalents: readonly GroupProfile[], o: ObservedDials): GroupProfile | undefined {

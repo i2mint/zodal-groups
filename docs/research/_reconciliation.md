@@ -350,12 +350,14 @@ Design rationale §6.3.6: "infer the tightest profile that validates a corpus of
 **Decision.** `inferProfile(space, { candidates? }) → { profile, violations, evidence }`:
 
 - validate the space under every candidate (`validateProfile`, new: a whole-space re-validation);
-- among those that fit, take the minimal elements of a **partial order** — A is at least as tight as B when every cap is ≤ (`null` = unbounded), every permission A grants B grants, and A's edge kinds ⊆ B's. The dials are not totally ordered (`filesystem` and `flatTags` are incomparable), so a scalar score would be arbitrary; incomparable fits are reported as `evidence.alternatives`, the earlier candidate winning;
+- among those that fit, take the minimal elements of a **partial order** — A is at least as tight as B when every cap is ≤ (`null` = unbounded), every permission A grants B grants, and A's edge kinds ⊆ B's. The dials are not totally ordered (`filesystem` and `flatTags` are incomparable), so a scalar score would be arbitrary; among incomparable fits the one whose restrictions the data visibly *exercises* most wins (a cap it reaches exactly, a prohibition it has something to obey), so one tag per item with no nesting infers `flatTags` rather than `filesystem` (PR review: list order used to decide); then the earlier candidate; the others are reported as `evidence.alternatives`;
 - profiles with identical dials (`flatTags`/`folksonomy`, `nestedTags`/`labels`, `polyhierarchy`/`thesaurus`) are told apart by evidence the dials cannot see: `folksonomy` when every edge has `meta.assertedBy`, `thesaurus` when a kind other than `contains` is used; else the earlier candidate, with the rest in `evidence.equivalent`;
 - when nothing fits (a foreign cycle, a broken family rule), the fewest-violations candidate, **the loosest on a tie** — a failure every candidate shares says nothing about tightness;
 - `evidence.observed` carries the measured dials (max parents per item/group, nesting depth, kinds in use…), so a caller wanting an exact-fit custom profile has it one `resolveProfile` away; `evidence.rejected` says why each non-fitting candidate failed (its first violation's message).
 
-It costs one re-validation per candidate: an audit tool, not a hot path. One finding it surfaced: `taxonomy` (`groupsMayContainItems: false`) fits **no non-empty space**, because every finite DAG has childless leaves and a childless node is an item. Recorded on #4 (item 4).
+It costs one re-validation per candidate: an audit tool, not a hot path. One finding it surfaced: `taxonomy` (`groupsMayContainItems: false`) fits **no space with at least one edge**, because every finite DAG has childless leaves and a childless node is an item (a space of isolated nodes does fit). Recorded on #4 (item 4).
+
+Known limit: per-family rules are checked once the structure is sound (they depend on the end state, which is not well-defined while structural violations remain), so a space that breaks both a profile cap and a family rule reports the cap first.
 
 ### 8.4 The `GroupStore` contract (D28) — [#2](https://github.com/i2mint/zodal-groups/issues/2)
 

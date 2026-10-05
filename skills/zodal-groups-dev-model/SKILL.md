@@ -7,7 +7,7 @@ metadata:
 
 # zodal-groups · the canonical model + profiles (the keystone)
 
-`@zodal/groups-core` is **built and green** (137 tests). This skill maps the shipped surface and the
+`@zodal/groups-core` is **built and green** (181 tests). This skill maps the shipped surface and the
 rules behind it. The *why* and the surveyed alternatives live in the research (routed below); this
 is the procedural guide. When you touch the model, edit the shapes here in the same change.
 
@@ -167,7 +167,7 @@ Within one delta, "is the child a group?" is judged on the delta's end state, so
 
 ## Profile inference (D27)
 
-`inferProfile(space, { candidates? })` validates the space under each candidate and returns the tightest fit by a **partial order** over the dials (caps ≤, permissions ⊆, edge kinds ⊆). Incomparable fits go to `evidence.alternatives`; identical-dial profiles are split by evidence (`folksonomy` if every edge has `meta.assertedBy`, `thesaurus` if a non-`contains` kind is used), the rest to `evidence.equivalent`. Nothing fits ⇒ the fewest violations, loosest on a tie. `evidence.observed` has the measured dials. ⚠️ `taxonomy` (`groupsMayContainItems: false`) fits no non-empty space — every DAG has childless leaves, and a childless node is an item (open on #4).
+`inferProfile(space, { candidates? })` validates the space under each candidate and returns the tightest fit by a **partial order** over the dials (caps ≤, permissions ⊆, edge kinds ⊆). Among incomparable fits the one whose restrictions the data visibly exercises most wins (flat, one tag per item ⇒ `flatTags`), the others go to `evidence.alternatives`; identical-dial profiles are split by evidence (`folksonomy` if every edge has `meta.assertedBy`, `thesaurus` if a non-`contains` kind is used), the rest to `evidence.equivalent`. Nothing fits ⇒ the fewest violations, loosest on a tie. `evidence.observed` has the measured dials. ⚠️ `taxonomy` (`groupsMayContainItems: false`) fits no space with at least one edge — every DAG has childless leaves, and a childless node is an item (open on #4).
 
 ## Cost model
 

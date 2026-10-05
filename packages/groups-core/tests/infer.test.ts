@@ -62,11 +62,18 @@ describe('inferProfile picks the tightest fitting profile', () => {
     expect(r.evidence.observed.edgeKinds).toEqual({ is_a: 2, instance_of: 1 });
   });
 
-  it('lists an incomparable fitting profile as an alternative', () => {
-    // One level, single-homed: both a filesystem and flat tags; neither is tighter.
+  it('when incomparable profiles both fit, the one whose restrictions the data exercises most wins', () => {
+    // One tag per item, no nesting: both a filesystem and flat tags; neither is tighter. The data
+    // visibly exercises flatTags' two restrictions (no nesting, depth 0) and only one of
+    // filesystem's (one parent per item) — so flatTags, with filesystem as the alternative.
     const r = inferProfile(space(e('a', 'x'), e('b', 'y')));
+    expect(r.profile.name).toBe('flatTags');
+    expect(r.evidence.alternatives).toContain('filesystem');
+  });
+
+  it('nested single-parent folders still infer filesystem (flatTags does not fit)', () => {
+    const r = inferProfile(space(e('docs', 'sub'), e('sub', 'a.txt')));
     expect(r.profile.name).toBe('filesystem');
-    expect(r.evidence.alternatives).toContain('flatTags');
   });
 });
 
