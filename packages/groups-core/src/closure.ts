@@ -31,7 +31,7 @@
 
 import type { EdgeKind, GroupSpace, NodeId } from './model.js';
 import type { GroupProfile } from './profile.js';
-import { edgesInto, edgesOf } from './space.js';
+import { edgesInto, edgesOf, isAcyclicKind } from './space.js';
 
 /** Does a chain arriving as `carried` extend through an edge of kind `next`? */
 function compose(profile: GroupProfile, carried: EdgeKind | null, next: EdgeKind): EdgeKind | null {
@@ -198,7 +198,7 @@ export function detectCycles(space: GroupSpace): NodeId[][] {
     }
     colour.set(node, 'grey');
     for (const edge of edgesOf(space, node)) {
-      if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
+      if (!isAcyclicKind(space.profile, edge.kind)) continue; // the same kinds the write path keeps acyclic
       visit(edge.child, [...path, node]);
     }
     colour.set(node, 'black');

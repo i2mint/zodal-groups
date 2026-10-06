@@ -30,7 +30,7 @@ import {
   canAddTo,
   childrenOf,
   createGroupSpace,
-  deleteNode,
+  deleteNodeDelta,
   invert,
   moveTo,
   orphansOf,
@@ -86,8 +86,18 @@ export interface Groups<P = unknown> {
   move(child: NodeId | string, from: NodeId | string, to: NodeId | string): Result<GroupSpace<P>>;
   destroy(node: NodeId | string): Result<GroupSpace<P>>;
   apply(delta: EdgeDelta): Result<GroupSpace<P>>;
-  /** Undo the last applied delta. Returns `false` when there is nothing to undo. */
+  /**
+   * Undo the last applied delta. Returns `false` when there is nothing to undo or the undo is
+   * refused; a refused entry is KEPT (skipping it would make the next undo apply to the wrong
+   * state) — see `undoViolations` and `discardUndo`.
+   */
   undo(): boolean;
+  /** Why the next `undo()` would be refused; empty if it would apply (or there is nothing to undo). */
+  undoViolations(): Violation[];
+  /** Drop the newest history entry without applying it — the way past a refused undo. */
+  discardUndo(): EdgeDelta | undefined;
+  /** How many entries the undo history holds. */
+  readonly undoDepth: number;
 
   // ── guards ────────────────────────────────────────────────────────────────
   /** Why can't this be dropped here? Empty array means it can. */
@@ -175,6 +185,9 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     get revision() {
       return space.revision;
     },
+    get undoDepth() {
+      return history.length;
+    },
 
     add(child, parent, init = {}) {
       const delta: EdgeDelta = { added: [] };
@@ -206,13 +219,10 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     },
 
     destroy(node) {
-      const before = space;
-      const result = deleteNode(space, id(node));
-      if (!result.ok) return result;
-      const removed = [...before.edges.values()]
-        .filter((e) => !result.value.edges.has(e.id))
-        .map((e) => e.id);
-      return commit(result, { removed });
+      // The delta carries the node as a tombstone, so `undo()` restores it with its label,
+      // payload and every edge.
+      const delta = deleteNodeDelta(space, id(node));
+      return commit(applyDelta(space, delta), delta);
     },
 
     apply(delta) {
@@ -220,13 +230,26 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     },
 
     undo() {
-      const delta = history.pop();
+      const delta = history[history.length - 1];
       if (!delta) return false;
       const result = applyDelta(space, delta);
+      // A refused undo keeps its entry: popping it would make the next undo skip to an older one.
       if (!result.ok) return false;
+      history.pop();
       space = result.value;
       for (const listener of listeners) listener({ delta, revision: space.revision });
       return true;
+    },
+
+    undoViolations() {
+      const delta = history[history.length - 1];
+      if (!delta) return [];
+      const result = applyDelta(space, delta);
+      return result.ok ? [] : [...result.violations];
+    },
+
+    discardUndo() {
+      return history.pop();
     },
 
     canAdd(child, parent, kind) {

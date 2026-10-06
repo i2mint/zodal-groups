@@ -1,13 +1,13 @@
 ---
 name: zodal-groups-dev-model
-description: Use when working on the zodal-groups CANONICAL MODEL or CONSTRAINT PROFILES — the keystone every other package consumes. Triggers when defining or changing Edge / Node / GroupSpace / EdgeDelta / NodeId, the GroupProfile dials (maxParentsPerItem, maxParentsPerGroup, maxDepth, groupsMayContainGroups, groupsAreItems), the named profiles (filesystem, flatTags, nestedTags, labels, polyhierarchy, taxonomy, thesaurus, folksonomy), edge KINDS and their closure semantics (transitive / composesWith / disjointWith), applyDelta, cycle enforcement, validateEdge, or the forward/inverse index pair. Also when someone proposes "just store a parent pointer" or "make Item and Group different types". Read BEFORE writing model code — the edge contract and the acyclicity invariant are easy to get wrong and expensive to change later.
+description: Use when working on the zodal-groups CANONICAL MODEL or CONSTRAINT PROFILES — the keystone every other package consumes. Triggers when defining or changing Edge / Node / GroupSpace / EdgeDelta / NodeId, the GroupProfile dials (maxParentsPerItem, maxParentsPerGroup, maxDepth, groupsMayContainGroups, groupsAreItems), the named profiles (filesystem, flatTags, nestedTags, labels, polyhierarchy, taxonomy, thesaurus, folksonomy), edge KINDS and their closure semantics (transitive / composesWith / disjointWith), applyDelta, invert / undo, tombstones (removedNodes, deleteNodeDelta), per-family cardinality (Node.family, exclusive families), inferProfile / validateProfile, cycle enforcement, validateEdge, or the forward/inverse index pair. Also when someone proposes "just store a parent pointer" or "make Item and Group different types". Read BEFORE writing model code — the edge contract and the acyclicity invariant are easy to get wrong and expensive to change later.
 metadata:
   audience: developers
 ---
 
 # zodal-groups · the canonical model + profiles (the keystone)
 
-`@zodal/groups-core` is **built and green** (54 tests). This skill maps the shipped surface and the
+`@zodal/groups-core` is **built and green** (228 tests). This skill maps the shipped surface and the
 rules behind it. The *why* and the surveyed alternatives live in the research (routed below); this
 is the procedural guide. When you touch the model, edit the shapes here in the same change.
 
@@ -63,14 +63,27 @@ interface GroupSpace<P = unknown> {
   readonly inverse: ReadonlyMap<NodeId, ReadonlySet<EdgeId>>;  // node  → its groups   ("tags"  view)
 }
 
+interface Node<P = unknown> {
+  readonly id: NodeId;
+  readonly label?: string;
+  readonly payload?: P;
+  readonly family?: { readonly maxPerItem: number };   // a family root: ≤ N of its values per item (D26)
+}
+
 interface EdgeDelta {                          // the ONE write primitive
   readonly added?: readonly Edge[];
   readonly removed?: readonly EdgeId[];
-  readonly upsertNodes?: readonly Node<unknown>[];
+  readonly upsertNodes?: readonly Node<unknown>[];      // merged; a field set to `undefined` is cleared
+  readonly addedNodes?: readonly Node<unknown>[];       // CREATES: refused (nodeExists) if the id is live
+  readonly removedNodes?: readonly Node<unknown>[];     // TOMBSTONES: the full node, must match the live one (D25)
 }
 
-applyDelta(space, delta): Result<GroupSpace>   // validates profile + acyclicity, all-or-nothing
-invert(space, delta): EdgeDelta                // undo, for free
+applyDelta(space, delta): Result<GroupSpace>   // validates profile + acyclicity + families, all-or-nothing
+invert(space, delta): EdgeDelta                // undo, for free — and EXACT (see below)
+deleteNodeDelta(space, id): EdgeDelta          // touching edges + the tombstone
+mergeDelta(space, from, into): EdgeDelta       // re-point from's edges (skip duplicates) + tombstone from
+validateProfile(space, profile?): Violation[]  // re-validate a whole space (foreign data, "would it fit?")
+inferProfile(space): { profile, violations, evidence }   // the tightest fitting profile (D27)
 ```
 
 ## Edge kinds — the rule everyone forgets
@@ -90,7 +103,8 @@ interface EdgeKindDef {
   readonly symmetric?: boolean;                          // `related` is; `contains` isn't
   readonly acyclic?: boolean;                            // forced true when transitive
   readonly composesWith?: Record<string, EdgeKind>;      // GO: is_a ∘ part_of → part_of
-  readonly disjointWith?: readonly EdgeKind[];           // SKOS S27: related ⊥ broaderTransitive
+  readonly disjointWith?: readonly EdgeKind[];           // SKOS S27: related ⊥ broaderTransitive (checked both ways)
+  readonly membership?: boolean;                         // "child is IN parent"? default !symmetric (D30)
 }
 ```
 
@@ -129,7 +143,7 @@ Framing borrowed from **OWL 2 Profiles**; report shape from **SHACL** (whose `sh
 | `nestedTags` | `maxParentsPerGroup: 1` | Obsidian/Bear — *but with real edges* |
 | `labels` | `maxParentsPerItem: null, maxParentsPerGroup: 1` | **Gmail** |
 | `polyhierarchy` | defaults, acyclic | the general case |
-| `taxonomy` | `groupsMayContainItems: false` | a classification skeleton |
+| ~~`taxonomy`~~ | `groupsMayContainItems: false` | **deprecated** (warns once; not inferred): fits no space with an edge. A vocabulary is a separate space |
 | `thesaurus` | typed `edgeKinds` | Z39.19 / SKOS |
 | `folksonomy` | `flatTags` + per-user edges | the `(tag, object, identity)` triple |
 
@@ -138,14 +152,40 @@ no depth — otherwise `maxDepth: 0` (flat tagging) would forbid tagging anythin
 opposite of what it means. This is a bug I already shipped once; the test is
 `profiles.test.ts › enforces a max GROUP-nesting depth`.
 
+## Tombstones and the exact inverse (D25)
+
+Deleting a node is a delta like any other: `deleteNodeDelta(space, id)` = every touching edge in `removed` + the whole node in `removedNodes`. `applyDelta` removes nodes **last** and refuses (`danglingEdge`) a node removal that would leave an edge behind — it never cascades, because then the delta would stop describing its own effect.
+
+`invert(space, delta)` is exact: apply + invert gives back the same nodes and edges. It restores removed edges and tombstoned nodes, removes edges the delta added (restoring an edge it replaced by id), removes nodes the delta *created* (upserted or auto-created as an endpoint), and restores fields the delta *changed* (clearing ones it added, via `undefined`). So undoing a group delete or a merge (re-point edges + tombstone) brings back the label and payload too. Stale undo is refused, never applied: a tombstone must equal the live node (`staleTombstone`), the inverse of a delete is an `addedNodes` create (refused with `nodeExists` if the node was re-created), and an added edge may not reuse a live edge id (`edgeIdExists`; remove + add in one delta to replace). Test: `tests/tombstones.test.ts`; the store kit checks it through every adapter.
+
+## Per-family cardinality (D26)
+
+`Node.family = { maxPerItem }` makes that node a family root; its *values* are its direct subgroups. An item may fall under at most `maxPerItem` values — counted as **branches** (ancestors), not edges: `Done` + `Done/Archived` is one value (one board column). Checked by `applyDelta` on the END state, after the structural checks, over the items the delta could have moved; reported as `maxPerFamily` with `family`, `node` (the item) and `values`. `canAddTo` includes it. It is on the node, not the profile, because families are run-time data and profiles are reusable presets (see D26 for the D5/D14 argument). Test: `tests/family.test.ts`.
+
+## Group-ness on the end state; becoming a group — and an item (D29)
+
+Within one delta, "is the child a group?" is judged on the delta's end state, so the order of `added` never matters. An edge that gives a node its **first member** re-checks that node's existing memberships against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`) — otherwise `flatTags` breaks in two steps. The mirror: a group that **loses its last member** is an item and is re-checked against the item rules (and family rules). **Only membership kinds count** (`EdgeKindDef.membership`, default `!symmetric`, D30): an associative kind (`related`; a custom `cites` must declare `membership: false`) makes nobody a group or a parent (`isMembershipKind`, `membershipParentCount`); `instance_of` *is* membership although non-transitive. Separately, every `transitive || acyclic` kind belongs to ONE acyclic order (`isAcyclicKind`) — the cycle check walks them all, so validation never depends on edge order. Tests: `tests/becoming-a-group.test.ts`.
+
+## Profile inference (D27)
+
+`inferProfile(space, { candidates? })` validates the space under each candidate and returns the tightest fit by a **partial order** over the dials (caps ≤, permissions ⊆, edge kinds ⊆). Among incomparable fits the one whose restrictions the data visibly exercises most wins (flat, one tag per item ⇒ `flatTags`), the others go to `evidence.alternatives`; identical-dial profiles are split by evidence (`folksonomy` if every edge has `meta.assertedBy`, `thesaurus` if a non-`contains` kind is used), the rest to `evidence.equivalent`. Nothing fits ⇒ the fewest violations, loosest on a tie. `evidence.observed` has the measured dials. ⚠️ `taxonomy` (`groupsMayContainItems: false`) fits no space with at least one edge — every DAG has childless leaves, and a childless node is an item — so it is **deprecated** (`DEPRECATED_PROFILES`) and excluded from the default candidates.
+
+## Undo history, and the property test
+
+`Groups.undo()` never skips a refused entry; `undoViolations()` says why, `discardUndo()` drops it, `undoDepth` counts entries. `tests/properties.test.ts` is the guard for the whole write path: random deltas over every built-in kind and seven profiles must satisfy apply∘invert = id, invert∘invert = effect, JSON reload = same space, valid in any edge order, and a full LIFO undo to empty. **Any new validation rule must keep it green** — a rule that depends on edge order shows up there first.
+
+## Cost model
+
+Checking an added edge reads the **child's** parents, never the group's members — keep it that way (`tests/scale.test.ts` fails if a check goes O(group size) again). `applyDelta` copies the space's maps on every call (O(N)), so bulk changes go in ONE delta.
+
 ## Adding a new dial
 
 1. Add the field to `GroupProfile` (`profile.ts`) with a sensible default in `BASE`.
 2. Add a `Violation['code']` for it in `model.ts`.
-3. Enforce it in `validateEdge` (`space.ts`) — and **give the message something the user can act
-   on**, not just "invalid".
-4. Add it to a named profile if it defines one, and to the table above.
-5. Test both directions: it accepts what it should, and rejects what it should *with the right code*.
+3. Enforce it in `checkEdge` (`space.ts`; `validateEdge` wraps it) — and **give the message something the user can act on**, not just "invalid". If it constrains *groups*, also enforce it in the "becoming a group" block. If it depends on the end state (like families), check it after the structural pass, as `familyViolations` does.
+4. Teach `inferProfile`'s partial order about it (`atLeastAsTight` in `infer.ts`) and measure it in `observeDials`.
+5. Add it to a named profile if it defines one, and to the table above.
+6. Test both directions: it accepts what it should, and rejects what it should *with the right code*.
 
 ## Do NOT
 

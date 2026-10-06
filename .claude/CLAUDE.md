@@ -1,9 +1,8 @@
 # zodal-groups — Agent Guide
 
-## Project Stage: CORE BUILT, RENDERERS IN PROGRESS
+## Project Stage: CORE + FS STORE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` and `@zodal/groups-ui` are implemented and green (54 + 8 tests). The vanilla
-renderer runs end-to-end in a real DOM. shadcn and Ark renderers are next.
+`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (72) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 
@@ -30,10 +29,12 @@ packages/
   groups-ui-vanilla/ @zodal/groups-ui-vanilla — zero-dep DOM renderers                     [BUILT]
   groups-ui-shadcn/  @zodal/groups-ui-shadcn  — React + shadcn/ui                          [TODO]
   groups-ui-ark/     @zodal/groups-ui-ark     — Ark UI / Zag.js (React + vanilla + Vue…)   [TODO]
-  groups-store-*/    @zodal/groups-store-*    — edge persistence                           [TODO]
+  groups-store-fs/   @zodal/groups-store-fs   — Node: sidecar JSON manifest, atomic writes [BUILT]
+  groups-store-indexeddb/ …                   — browser, multiEntry membership index      [TODO]
+  groups-store-supabase/  …                   — Postgres, recursive CTE via RPC           [TODO]
 ```
 
-**Dependency rule**: `groups-core ← groups-ui ← groups-ui-*`. Renderers never import from a store.
+**Dependency rule**: `groups-core ← groups-ui ← groups-ui-*`; `groups-core ← groups-store-*`. Renderers never import from a store, and stores never import from the UI. Every store adapter runs `groupStoreContract` from `@zodal/groups-core/testing`.
 
 ## Key Architectural Rules
 
@@ -44,7 +45,7 @@ packages/
 4. **Closure semantics belong to the edge KIND.** A *wheel* is `part_of` a *car*, a *car* `is_a` a
    *vehicle* — **a wheel is not a vehicle.** This is why SKOS's `broader` is non-transitive.
 5. **Unified node type.** Group-ness is *having children*, not a type. Brand `NodeId` only.
-6. **`EdgeDelta` is the only write primitive.** Undo and change-feeds come free.
+6. **`EdgeDelta` is the only write primitive.** Undo and change-feeds come free. Node deletes too: `removedNodes` carries tombstones, so `invert` is exact.
 7. **Acyclic on WRITE; cycle-safe on READ.** Both — because we don't own our data.
 8. **Headless first.** Core emits `PathNode[]`; renderers draw. Never DOM in core.
 9. **`pathKey` for the view; `nodeId` for the model.** The single most bug-prone rule here.
@@ -63,7 +64,7 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ## Reference Materials
 
-- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 24 numbered decisions, the conflicts and how they resolved. **Read before designing anything.**
+- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 30 numbered decisions (D25–D30 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
 - **The thesis**: [`docs/zodal-groups-concept.md`](../docs/zodal-groups-concept.md)
 - **Research corpus**: `docs/research/` — 5 reports, ~3,900 lines, ~264 cited sources. Route via `docs/research/README.md`; don't read linearly.
 
@@ -84,7 +85,8 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 54 tests
+pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
 pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
 pnpm build                                   # turbo, all packages
 ```

@@ -33,6 +33,8 @@ export {
   defaultIdentity,
   CONTAINS,
   DEFAULT_EDGE_KINDS,
+  EXCLUSIVE,
+  type FamilyRule,
   type NodeId,
   type EdgeId,
   type Edge,
@@ -50,6 +52,7 @@ export {
 // ── profiles ────────────────────────────────────────────────────────────────
 export {
   PROFILES,
+  DEPRECATED_PROFILES,
   resolveProfile,
   isFlat,
   isGroupTree,
@@ -65,10 +68,13 @@ export {
   invert,
   makeEdge,
   validateEdge,
+  validateProfile,
   addTo,
   removeFrom,
   moveTo,
   deleteNode,
+  deleteNodeDelta,
+  mergeDelta,
   canAddTo,
   findCycle,
   childrenOf,
@@ -76,10 +82,53 @@ export {
   edgesOf,
   edgesInto,
   isGroup,
+  isMembershipKind,
+  isAcyclicKind,
+  membershipParentCount,
   rootsOf,
   orphansOf,
   type CreateSpaceOptions,
+  type MergeOptions,
 } from './space.js';
+
+// ── structure: the one node/edge validator for write and read ──────────────
+export { isFamilyRule, jsonProblem, nodeProblem, edgeProblem } from './structure.js';
+
+// ── families: per-family cardinality ────────────────────────────────────────
+export { familyValuesOf, familyViolations, hasFamilyAtOrAbove } from './family.js';
+
+// ── profile inference ───────────────────────────────────────────────────────
+export {
+  inferProfile,
+  observeDials,
+  type InferProfileOptions,
+  type InferredProfile,
+  type ObservedDials,
+  type ProfileEvidence,
+} from './infer.js';
+
+// ── persistence: snapshots and the GroupStore contract ──────────────────────
+export {
+  toSnapshot,
+  fromSnapshot,
+  parseSnapshot,
+  readonlySpace,
+  type FromSnapshotOptions,
+  type GroupSnapshot,
+} from './snapshot.js';
+export {
+  createMemoryGroupStore,
+  createListenerSet,
+  commitDelta,
+  newEpoch,
+  CLIENT_SIDE_CAPABILITIES,
+  type GroupStore,
+  type GroupStoreCapabilities,
+  type GroupStoreChange,
+  type MemoryGroupStoreOptions,
+  type StoreApplied,
+  type StoreApplyOptions,
+} from './store.js';
 
 // ── closure ─────────────────────────────────────────────────────────────────
 export {

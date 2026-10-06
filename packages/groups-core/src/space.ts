@@ -10,7 +10,10 @@
  * merely unlikely here; it is unrepresentable. There is one relation. `forward` and `inverse` are
  * two views of it, and both are always live.
  *
- * @see `docs/research/_reconciliation.md` — decisions D2, D7, D8, D15.
+ * Nodes are deleted through the same primitive: `EdgeDelta.removedNodes` carries **tombstones**
+ * (the full node), so `invert` restores a deleted group with its label, payload and edges.
+ *
+ * @see `docs/research/_reconciliation.md` — decisions D2, D7, D8, D15, D25, D26.
  */
 
 import {
@@ -26,6 +29,8 @@ import {
   CONTAINS,
 } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
+import { familyViolations, hasFamilyAtOrAbove } from './family.js';
+import { edgeProblem, isFamilyRule, nodeProblem, safe, sameValue } from './structure.js';
 
 // ── construction ────────────────────────────────────────────────────────────
 
@@ -122,9 +127,42 @@ export const childrenOf = (space: GroupSpace, parent: NodeId): NodeId[] =>
 export const parentsOf = (space: GroupSpace, child: NodeId): NodeId[] =>
   edgesInto(space, child).map((e) => e.parent);
 
-/** A node is a *group* iff something is in it. Group-ness is data, not type. */
-export const isGroup = (space: GroupSpace, id: NodeId): boolean =>
-  (space.forward.get(id)?.size ?? 0) > 0;
+/**
+ * Is this edge kind a **membership** (hierarchical) kind? Its declared `membership`, defaulting to
+ * `!symmetric` (D30). Undeclared kinds (foreign data) count as membership, the conservative reading
+ * for projections.
+ *
+ * Not "transitive": `instance_of` is non-transitive yet hierarchical (Z39.19's BTI) — a class with
+ * instances is a group of them.
+ */
+export function isMembershipKind(profile: GroupProfile, kind: string): boolean {
+  const def = profile.edgeKinds[kind];
+  return def?.membership ?? def?.symmetric !== true;
+}
+
+/**
+ * A node is a *group* iff something is in it — through a membership kind. Group-ness is data, not
+ * type; an associative link (`related`) makes nobody a group.
+ */
+export function isGroup(space: GroupSpace, id: NodeId): boolean {
+  const out = space.forward.get(id);
+  if (!out) return false;
+  for (const edgeId of out) {
+    const edge = space.edges.get(edgeId);
+    if (edge && isMembershipKind(space.profile, edge.kind)) return true;
+  }
+  return false;
+}
+
+/** How many groups a node is directly in — membership kinds only (a `related` link is no parent). */
+export function membershipParentCount(space: GroupSpace, id: NodeId): number {
+  let count = 0;
+  for (const edgeId of space.inverse.get(id) ?? []) {
+    const edge = space.edges.get(edgeId);
+    if (edge && isMembershipKind(space.profile, edge.kind)) count += 1;
+  }
+  return count;
+}
 
 /** Nodes with no parents — the browse entry points. */
 export function rootsOf(space: GroupSpace): NodeId[] {
@@ -158,7 +196,7 @@ export function findCycle(space: GroupSpace, parent: NodeId, child: NodeId): Nod
   while (stack.length) {
     const { node, path } = stack.pop()!;
     for (const edge of edgesOf(space, node)) {
-      if (!isTransitiveKind(space.profile, edge.kind)) continue;
+      if (!isAcyclicKind(space.profile, edge.kind)) continue;
       const next = edge.child;
       if (next === parent) return [...path, parent];
       if (seen.has(next)) continue;
@@ -167,6 +205,17 @@ export function findCycle(space: GroupSpace, parent: NodeId, child: NodeId): Nod
     }
   }
   return null;
+}
+
+/**
+ * Must edges of this kind stay out of cycles? Every kind that is transitive OR declared acyclic.
+ * They form ONE acyclic order together: a cycle closed through a mix of them (`a ⊃instance_of d`,
+ * `d ⊃is_a a`) is still a cycle. Walking only the transitive kinds made the check depend on edge
+ * order — and a state reached one way then blocked its own undo forever.
+ */
+export function isAcyclicKind(profile: GroupProfile, kind: string): boolean {
+  const def = profile.edgeKinds[kind];
+  return Boolean(def && (def.transitive || def.acyclic));
 }
 
 function isTransitiveKind(profile: GroupProfile, kind: string): boolean {
@@ -180,14 +229,19 @@ function isTransitiveKind(profile: GroupProfile, kind: string): boolean {
  * hierarchy** nests, not how far an item sits from a root — otherwise `maxDepth: 0` (flat tagging)
  * would forbid tagging an item at all, which is the opposite of what it means.
  */
-function groupDepthBelow(space: GroupSpace, node: NodeId, seen = new Set<NodeId>()): number {
+function groupDepthBelow(
+  space: GroupSpace,
+  node: NodeId,
+  groupNess: GroupPredicate,
+  seen = new Set<NodeId>(),
+): number {
   if (seen.has(node)) return 0;
   seen.add(node);
   let deepest = 0;
   for (const edge of edgesOf(space, node)) {
     if (!isTransitiveKind(space.profile, edge.kind)) continue;
-    if (!isGroup(space, edge.child)) continue; // an item is not a level of nesting
-    deepest = Math.max(deepest, 1 + groupDepthBelow(space, edge.child, seen));
+    if (!groupNess(edge.child)) continue; // an item is not a level of nesting
+    deepest = Math.max(deepest, 1 + groupDepthBelow(space, edge.child, groupNess, seen));
   }
   seen.delete(node);
   return deepest;
@@ -211,6 +265,9 @@ function depthAbove(space: GroupSpace, node: NodeId, seen = new Set<NodeId>()): 
   return deepest;
 }
 
+/** "Is this node a group?" — judged against some state (the current one, or a delta's end state). */
+type GroupPredicate = (id: NodeId) => boolean;
+
 // ── the write primitive ─────────────────────────────────────────────────────
 
 let edgeCounter = 0;
@@ -229,11 +286,34 @@ export function makeEdge(parent: NodeId, child: NodeId, init: Partial<Omit<Edge,
 }
 
 /**
+ * Merge a node patch into an existing node. A field set to `undefined` is *cleared*, which keeps a
+ * merge invertible (see `invert`) and matches what a JSON round-trip does anyway.
+ */
+function mergeNode<P>(existing: Node<P> | undefined, patch: Node<unknown>): Node<P> {
+  const merged: Record<string, unknown> = { ...(existing ?? {}), ...patch };
+  for (const key of Object.keys(merged)) if (merged[key] === undefined) delete merged[key];
+  return merged as unknown as Node<P>;
+}
+
+/**
  * Apply a delta. The only mutation path.
  *
  * Validation is all-or-nothing: if any edge in the delta violates the profile, nothing is applied
  * and every violation is reported. Partial application would leave the caller unable to reason
  * about what happened.
+ *
+ * Order of operations: node upserts, edge removals, edge additions (each validated), node removals
+ * (each must leave no edge behind), then the per-family cardinality rules over the items the delta
+ * touched. Whether an edge's child "is a group" is judged against the delta's **end state**, so the
+ * order of `added` never matters: an edge into a node that this same delta makes a parent is an edge
+ * into a group. (Without that, re-adding a deleted group's edges — an undo — could fail under a
+ * profile that treats items and groups differently, depending on which edge came first.)
+ *
+ * **Cost.** Checking one added edge costs O(the child's parents) plus a closure walk where the
+ * profile needs one — never O(the group's members), so tagging 20k items in one delta is linear.
+ * But every call copies the space's four maps (it returns a new immutable space): O(N) per call.
+ * So apply a bulk change as ONE delta; N single-edge calls cost O(N²). A store that holds a large
+ * membership relation should not route it through an in-memory `GroupSpace` at all (D10).
  */
 export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<GroupSpace<P>> {
   const nodes = new Map(space.nodes);
@@ -241,25 +321,78 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   const forward = cloneIndex(space.forward);
   const inverse = cloneIndex(space.inverse);
 
+  // Structure first: anything accepted here must load back from a snapshot (see `structure.ts`).
+  const violations: Violation[] = [];
+  const structurallyValid = (node: Node<unknown>): boolean => {
+    const family = (node as { family?: unknown }).family;
+    if (family !== undefined && !isFamilyRule(family)) {
+      violations.push({
+        code: 'invalidFamilyRule',
+        node: node.id,
+        message: `${node.id}: a family rule must be { maxPerItem: an integer ≥ 1 }, got ${safe(family)}.`,
+      });
+      return false;
+    }
+    const problem = nodeProblem(node);
+    if (problem) {
+      violations.push({ code: 'malformed', node: node.id, message: `Node ${safe(node.id)} is malformed — ${problem}.` });
+      return false;
+    }
+    return true;
+  };
+
+  // Creations: refused if the id is live — a create never merges into someone else's node.
+  for (const node of delta.addedNodes ?? []) {
+    if (!structurallyValid(node)) continue;
+    if (nodes.has(node.id)) {
+      violations.push({
+        code: 'nodeExists',
+        node: node.id,
+        message: `Cannot create ${node.id}: a node with that id exists (it was created or changed since this delta was made).`,
+      });
+      continue;
+    }
+    nodes.set(node.id, mergeNode(undefined, node));
+  }
+
   for (const node of delta.upsertNodes ?? []) {
-    nodes.set(node.id, { ...(nodes.get(node.id) ?? {}), ...node } as Node<P>);
+    if (structurallyValid(node)) nodes.set(node.id, mergeNode(nodes.get(node.id), node));
   }
 
   // Removals first: a re-parent is (remove old, add new), and doing it in this order means the old
   // edge never counts against `maxParents` when the new one is validated.
-  for (const id of delta.removed ?? []) {
+  const unlink = (id: EdgeId): void => {
     const edge = edges.get(id);
-    if (!edge) continue;
+    if (!edge) return;
     edges.delete(id);
     removeFromIndex(forward, edge.parent, id);
     removeFromIndex(inverse, edge.child, id);
-  }
+  };
+  for (const id of delta.removed ?? []) unlink(id);
 
   const staged: GroupSpace<P> = { ...space, nodes, edges, forward, inverse };
-  const violations: Violation[] = [];
+  const added = delta.added ?? [];
+  const futureGroups = new Set(added.filter((e) => isMembershipKind(space.profile, e.kind)).map((e) => e.parent));
+  const groupNess: GroupPredicate = (id) => isGroup(staged, id) || futureGroups.has(id);
+  const becomingReported = new Set<NodeId>();
 
-  for (const edge of delta.added ?? []) {
-    const v = validateEdge(staged, edge);
+  for (const edge of added) {
+    const problem = edgeProblem(edge);
+    if (problem) {
+      violations.push({ code: 'malformed', edge, message: `Edge ${safe(edge?.id)} is malformed — ${problem}.` });
+      continue;
+    }
+    // A live edge id is never silently replaced (that is how a stale undo would overwrite a newer
+    // edge); to replace one, remove it in the same delta — removals run first.
+    if (edges.has(edge.id)) {
+      violations.push({
+        code: 'edgeIdExists',
+        edge,
+        message: `Edge id ${edge.id} is already in use; remove it in the same delta to replace it.`,
+      });
+      continue;
+    }
+    const v = checkEdge(staged, edge, groupNess, becomingReported);
     if (v.length) {
       violations.push(...v);
       continue;
@@ -273,6 +406,51 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
     addToIndex(inverse, edge.child, edge.id);
   }
 
+  // Tombstones: a node may only go once nothing points at it — the delta must say what happens to
+  // its edges, so that the delta alone is enough to undo it.
+  for (const node of delta.removedNodes ?? []) {
+    const live = nodes.get(node.id);
+    if (!live) continue;
+    if (!sameValue(live, node)) {
+      violations.push({
+        code: 'staleTombstone',
+        node: node.id,
+        message: `Cannot remove ${node.id}: it changed since this delta was made (tombstone ${safe(node)}, live ${safe(live)}).`,
+      });
+      continue;
+    }
+    const touching = [...(forward.get(node.id) ?? []), ...(inverse.get(node.id) ?? [])];
+    if (touching.length) {
+      violations.push({
+        code: 'danglingEdge',
+        node: node.id,
+        message: `Cannot remove ${node.id}: ${touching.length} edge(s) still touch it (${touching.join(', ')}). Remove them in the same delta — deleteNodeDelta() builds one.`,
+      });
+      continue;
+    }
+    nodes.delete(node.id);
+  }
+
+  // A group that lost its last member is an ITEM now, and its memberships are an item's: hold them
+  // to the item rules (the mirror image of "becoming a group" in `checkEdge`).
+  const becameItems: NodeId[] = [];
+  if (!violations.length) {
+    const lostMembers = new Set<NodeId>();
+    for (const id of delta.removed ?? []) {
+      const edge = space.edges.get(id);
+      if (edge) lostMembers.add(edge.parent);
+    }
+    for (const id of lostMembers) {
+      if (!nodes.has(id) || !isGroup(space, id) || isGroup(staged, id)) continue;
+      becameItems.push(id);
+      violations.push(...itemRuleViolations(staged, id));
+    }
+  }
+
+  // Per-family cardinality is a property of the END state (which values an item falls under), so it
+  // is checked once the structure is known to be sound.
+  if (!violations.length) violations.push(...familyViolations(staged, delta, becameItems));
+
   if (violations.length) return { ok: false, violations };
 
   return {
@@ -284,8 +462,21 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
 /**
  * Check one edge against the profile and the acyclicity invariant, in the context of a space that
  * already has the delta's removals applied.
+ *
+ * Per-family cardinality (`Node.family`) is not checked here — it depends on the state *after* the
+ * edge lands. `canAddTo` and `applyDelta` check it.
  */
 export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
+  return checkEdge(space, edge, (id) => isGroup(space, id));
+}
+
+function checkEdge<P>(
+  space: GroupSpace<P>,
+  edge: Edge,
+  groupNess: GroupPredicate,
+  /** Parents already reported as breaking the group rules by becoming a group, in this delta. */
+  becomingReported: Set<NodeId> = new Set(),
+): Violation[] {
   const p = space.profile;
   const out: Violation[] = [];
 
@@ -304,10 +495,13 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
     return out;
   }
 
+  // The edges already linking this parent to this child. Read from the CHILD's side: a child has
+  // few parents, while a group may have millions of members — listing the group per added edge
+  // made bulk tagging quadratic.
+  const between = edgesInto(space, edge.child).filter((e) => e.parent === edge.parent && e.id !== edge.id);
+
   // Duplicate (same parent, child, kind).
-  const duplicate = edgesOf(space, edge.parent).some(
-    (e) => e.child === edge.child && e.kind === edge.kind && e.id !== edge.id,
-  );
+  const duplicate = between.some((e) => e.kind === edge.kind);
   if (duplicate) {
     out.push({
       code: 'duplicateEdge',
@@ -316,18 +510,19 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
     });
   }
 
-  // Disjoint kinds: SKOS S27 — `related` may not co-exist with a hierarchical edge.
-  if (kindDef.disjointWith?.length) {
-    const conflicting = edgesOf(space, edge.parent).find(
-      (e) => e.child === edge.child && kindDef.disjointWith!.includes(e.kind),
-    );
-    if (conflicting) {
-      out.push({
-        code: 'disjointEdgeKind',
-        message: `Edge kind '${edge.kind}' is disjoint from '${conflicting.kind}', which already links ${edge.parent} → ${edge.child}.`,
-        edge,
-      });
-    }
+  // Disjoint kinds: SKOS S27 — `related` may not co-exist with a hierarchical edge. Symmetric in
+  // both senses: either kind may declare the disjointness, and the two edges may point either way
+  // (otherwise related-then-contains was accepted while contains-then-related was refused).
+  const disjoint = (a: string, b: string): boolean =>
+    Boolean(p.edgeKinds[a]?.disjointWith?.includes(b) || p.edgeKinds[b]?.disjointWith?.includes(a));
+  const reverse = edgesInto(space, edge.parent).filter((e) => e.parent === edge.child && e.id !== edge.id);
+  const conflicting = [...between, ...reverse].find((e) => disjoint(edge.kind, e.kind));
+  if (conflicting) {
+    out.push({
+      code: 'disjointEdgeKind',
+      message: `Edge kind '${edge.kind}' is disjoint from '${conflicting.kind}', which already links ${conflicting.parent} → ${conflicting.child}.`,
+      edge,
+    });
   }
 
   // Acyclicity. Enforced for any kind that participates in closure.
@@ -343,9 +538,13 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
     }
   }
 
-  const childIsGroup = isGroup(space, edge.child);
+  // An associative link (`related`) is not membership: none of the structural rules below apply.
+  if (!isMembershipKind(p, edge.kind)) return out;
 
-  if (childIsGroup && !p.groupsMayContainGroups) {
+  const childIsGroup = groupNess(edge.child);
+  const nestingForbidden = childIsGroup && !p.groupsMayContainGroups;
+
+  if (nestingForbidden) {
     out.push({
       code: 'groupsMayContainGroups',
       message: `Profile '${p.name}' forbids groups inside groups (${edge.child} is a group).`,
@@ -361,7 +560,7 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
   }
 
   // Parent-count caps. A node's cap depends on whether it is itself a group.
-  const currentParents = space.inverse.get(edge.child)?.size ?? 0;
+  const currentParents = membershipParentCount(space, edge.child);
   const cap = childIsGroup ? p.maxParentsPerGroup : p.maxParentsPerItem;
   if (cap !== null && currentParents + 1 > cap) {
     out.push({
@@ -382,8 +581,9 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
   // Depth of the GROUP hierarchy. `maxDepth: 0` means flat — no group may sit inside another —
   // while still permitting an item to be tagged, which is exactly the flat-tagging case.
   // Putting a plain item into a group adds no nesting, so it is never capped by `maxDepth`.
-  if (p.maxDepth !== null && kindDef.transitive && childIsGroup) {
-    const resulting = depthAbove(space, edge.parent) + 1 + groupDepthBelow(space, edge.child);
+  // (Skipped when nesting is forbidden outright: one cause, one violation.)
+  if (p.maxDepth !== null && kindDef.transitive && childIsGroup && !nestingForbidden) {
+    const resulting = depthAbove(space, edge.parent) + 1 + groupDepthBelow(space, edge.child, groupNess);
     if (resulting > p.maxDepth) {
       out.push({
         code: 'maxDepth',
@@ -393,7 +593,89 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
     }
   }
 
+  // The parent BECOMES a group with this edge (its first member). Its existing memberships were
+  // checked as an item's; from now on they are group-in-group nesting, so they must satisfy the
+  // group rules too — or `flatTags` breaks in two innocent steps (tag `holiday` with `travel`, then
+  // tag a photo with `holiday`).
+  if (!isGroup(space, edge.parent) && !becomingReported.has(edge.parent)) {
+    const parents = membershipParentCount(space, edge.parent);
+    const before = out.length;
+    if (parents > 0 && !p.groupsMayContainGroups) {
+      out.push({
+        code: 'groupsMayContainGroups',
+        message: `${edge.parent} is itself in ${parents} group(s), so giving it members would nest groups; profile '${p.name}' forbids groups inside groups.`,
+        edge,
+        node: edge.parent,
+      });
+    }
+    if (p.maxParentsPerGroup !== null && parents > p.maxParentsPerGroup) {
+      out.push({
+        code: 'maxParentsPerGroup',
+        message: `${edge.parent} has ${parents} parents — fine for an item, but giving it members makes it a group, and profile '${p.name}' allows a group ${p.maxParentsPerGroup}.`,
+        edge,
+        node: edge.parent,
+      });
+    }
+    if (p.maxDepth !== null && parents > 0 && p.groupsMayContainGroups) {
+      const resulting = depthAbove(space, edge.parent);
+      if (resulting > p.maxDepth) {
+        out.push({
+          code: 'maxDepth',
+          message: `Giving ${edge.parent} members makes it a group nested ${resulting} deep; profile '${p.name}' allows ${p.maxDepth}.`,
+          edge,
+          node: edge.parent,
+        });
+      }
+    }
+    if (out.length > before) becomingReported.add(edge.parent);
+  }
+
   return out;
+}
+
+/** The item rules, for a node that just stopped being a group. */
+function itemRuleViolations<P>(space: GroupSpace<P>, id: NodeId): Violation[] {
+  const p = space.profile;
+  const parents = membershipParentCount(space, id);
+  const out: Violation[] = [];
+  const lost = `${id} lost its last member, so it is an item now`;
+  if (parents > 0 && !p.groupsMayContainItems) {
+    out.push({ code: 'groupsMayContainItems', node: id, message: `${lost}, and profile '${p.name}' forbids items inside groups.` });
+  }
+  if (p.maxParentsPerItem !== null && parents > p.maxParentsPerItem) {
+    out.push({
+      code: 'maxParentsPerItem',
+      node: id,
+      message: `${lost} with ${parents} parents; profile '${p.name}' allows an item ${p.maxParentsPerItem}. Remove it from a group first.`,
+    });
+  } else if (p.maxGroupsPerItem !== null && parents > p.maxGroupsPerItem) {
+    out.push({
+      code: 'maxGroupsPerItem',
+      node: id,
+      message: `${lost} in ${parents} groups; profile '${p.name}' allows an item ${p.maxGroupsPerItem}.`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Re-validate a whole space against a profile (by default its own).
+ *
+ * Use it on data the write path never saw — an import, a manifest a person edited, a foreign store
+ * adapter — and to ask "would this space survive under that profile?" (`inferProfile` asks it of
+ * every built-in profile). Empty means valid. Per-family rules are reported once the structure is
+ * sound (see `applyDelta`).
+ */
+export function validateProfile<P>(
+  space: GroupSpace<P>,
+  profile: ProfileName | GroupProfile = space.profile,
+): Violation[] {
+  const empty = createGroupSpace<P>({ profile });
+  const result = applyDelta(empty, {
+    upsertNodes: [...space.nodes.values()],
+    added: [...space.edges.values()],
+  });
+  return result.ok ? [] : [...result.violations];
 }
 
 // ── undo, for free ──────────────────────────────────────────────────────────
@@ -401,15 +683,70 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
 /**
  * The inverse of a delta, computed against the space it was applied to.
  *
- * Undo is Command, not Memento: we never snapshot the space, we just swap `added` and `removed`.
+ * Undo is Command, not Memento: we never snapshot the space. The inverse is exact — applying
+ * `delta` and then `invert(space, delta)` gives back a space with the same nodes and edges:
+ *
+ * - removed edges come back, added edges go away;
+ * - tombstoned nodes (`removedNodes`) come back as they were — label, payload, family rule — as
+ *   `addedNodes`, so the undo is refused (`nodeExists`) if the node was re-created since;
+ * - nodes the delta created (by `addedNodes`, an upsert, or implicitly as an edge endpoint) are
+ *   removed again, as tombstones of their content after the delta — so the undo is refused
+ *   (`staleTombstone`) if someone changed them since;
+ * - fields an upsert changed are restored, and fields it added are cleared.
  */
 export function invert<P>(space: GroupSpace<P>, delta: EdgeDelta): EdgeDelta {
-  const removedEdges = (delta.removed ?? [])
-    .map((id) => space.edges.get(id))
-    .filter((e): e is Edge => Boolean(e));
+  const removedEdgeIds = new Set(delta.removed ?? []);
+  const removedNodeIds = new Set((delta.removedNodes ?? []).map((n) => n.id));
+
+  const added: Edge[] = [];
+  for (const id of removedEdgeIds) {
+    const edge = space.edges.get(id);
+    if (edge) added.push(edge);
+  }
+  const removed: EdgeId[] = (delta.added ?? []).map((edge) => edge.id);
+
+  // Tombstones come back as CREATES, so the undo is refused if the node was re-created since.
+  const addedNodes: Node<unknown>[] = [];
+  for (const id of removedNodeIds) {
+    const node = space.nodes.get(id);
+    if (node) addedNodes.push(node); // the tombstone's authoritative content is the space's
+  }
+  const upsertNodes: Node<unknown>[] = [];
+
+  // Nodes this delta brought into existence go again.
+  const created = new Map<NodeId, Node<unknown>>();
+  const touch = (id: NodeId, patch?: Node<unknown>): void => {
+    if (space.nodes.has(id) || removedNodeIds.has(id)) return;
+    created.set(id, patch ? mergeNode(created.get(id) ?? { id }, patch) : (created.get(id) ?? { id }));
+  };
+  for (const node of delta.addedNodes ?? []) touch(node.id, node);
+  for (const node of delta.upsertNodes ?? []) touch(node.id, node);
+  for (const edge of delta.added ?? []) {
+    touch(edge.parent);
+    touch(edge.child);
+  }
+
+  // Nodes this delta changed get their previous fields back, and lose the ones it added.
+  const changedKeys = new Map<NodeId, Set<string>>();
+  for (const node of delta.upsertNodes ?? []) {
+    if (!space.nodes.has(node.id) || removedNodeIds.has(node.id)) continue;
+    const keys = changedKeys.get(node.id) ?? new Set<string>();
+    for (const key of Object.keys(node)) keys.add(key);
+    changedKeys.set(node.id, keys);
+  }
+  for (const [id, keys] of changedKeys) {
+    const prior = space.nodes.get(id)! as unknown as Record<string, unknown>;
+    const restore: Record<string, unknown> = { ...prior };
+    for (const key of keys) if (!(key in prior)) restore[key] = undefined;
+    upsertNodes.push(restore as unknown as Node<unknown>);
+  }
+
   return {
-    added: removedEdges,
-    removed: (delta.added ?? []).map((e) => e.id),
+    added,
+    removed,
+    ...(addedNodes.length ? { addedNodes } : {}),
+    ...(upsertNodes.length ? { upsertNodes } : {}),
+    ...(created.size ? { removedNodes: [...created.values()] } : {}),
   };
 }
 
@@ -453,14 +790,73 @@ export function moveTo<P>(
   return applyDelta(space, { removed, added: [makeEdge(to, child, init)] });
 }
 
-/** Delete a node entirely, and every edge touching it. This *is* destructive. */
+/**
+ * The delta that deletes a node: every edge touching it, plus the node itself as a **tombstone**.
+ *
+ * Because the tombstone carries the whole node, `invert(space, deleteNodeDelta(space, id))` brings
+ * the node back with its label, payload and every edge — undoing a group delete (or the delete half
+ * of a merge) loses nothing. Returns an empty delta for an unknown id.
+ */
+export function deleteNodeDelta<P>(space: GroupSpace<P>, id: NodeId): EdgeDelta {
+  const node = space.nodes.get(id);
+  const touching = new Set([...edgesInto(space, id), ...edgesOf(space, id)].map((e) => e.id));
+  return {
+    removed: [...touching],
+    ...(node ? { removedNodes: [node as Node<unknown>] } : {}),
+  };
+}
+
+export interface MergeOptions {
+  /** Id for a re-pointed edge. Defaults to `makeEdge`'s minted ids. */
+  readonly mintId?: (parent: NodeId, child: NodeId, kind: string) => EdgeId;
+}
+
+/**
+ * The delta that merges `from` into `into` — "`todo` and `to-do` are the same tag":
+ *
+ * 1. every membership of `from` (its members, and the groups it is in) is re-pointed to `into`,
+ *    keeping the edge's kind, label, order and meta;
+ * 2. a re-pointed edge `into` already has (same other end, same kind) is skipped, not doubled, and
+ *    the edge between `from` and `into` themselves is dropped rather than made a self-edge;
+ * 3. `from` is deleted with a tombstone (`deleteNodeDelta`), so `invert` undoes the whole merge.
+ *
+ * `into` keeps its own label and payload; `from`'s live on only in the tombstone. A merge that
+ * would close a cycle (`into` sits below `from` through a third group) is refused by `applyDelta`
+ * with the path, like any other cyclic delta. `into` is created bare if it does not exist (a
+ * rename by merge). Returns an empty delta for an unknown `from`.
+ *
+ * @throws when `from === into` — a caller bug, not a no-op to paper over.
+ */
+export function mergeDelta<P>(space: GroupSpace<P>, from: NodeId, into: NodeId, options: MergeOptions = {}): EdgeDelta {
+  if (from === into) throw new Error(`mergeDelta: cannot merge ${from} into itself.`);
+  if (!space.nodes.has(from)) return { added: [], removed: [] };
+  const mint = (parent: NodeId, child: NodeId, kind: string) => options.mintId?.(parent, child, kind);
+  const has = (parent: NodeId, child: NodeId, kind: string) =>
+    edgesInto(space, child).some((x) => x.parent === parent && x.kind === kind);
+  const carry = (e: Edge) => ({
+    kind: e.kind,
+    ...(e.label !== undefined ? { label: e.label } : {}),
+    ...(e.order !== undefined ? { order: e.order } : {}),
+    ...(e.meta !== undefined ? { meta: e.meta } : {}),
+  });
+
+  const added: Edge[] = [];
+  for (const e of edgesOf(space, from)) {
+    if (e.child === into || has(into, e.child, e.kind)) continue;
+    const id = mint(into, e.child, e.kind);
+    added.push(makeEdge(into, e.child, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+  }
+  for (const e of edgesInto(space, from)) {
+    if (e.parent === into || has(e.parent, into, e.kind)) continue;
+    const id = mint(e.parent, into, e.kind);
+    added.push(makeEdge(e.parent, into, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+  }
+  return { ...deleteNodeDelta(space, from), added };
+}
+
+/** Delete a node entirely, and every edge touching it. This *is* destructive — but invertible. */
 export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpace<P>> {
-  const touching = [...edgesInto(space, id), ...edgesOf(space, id)].map((e) => e.id);
-  const result = applyDelta(space, { removed: touching });
-  if (!result.ok) return result;
-  const nodes = new Map(result.value.nodes);
-  nodes.delete(id);
-  return { ok: true, value: { ...result.value, nodes } };
+  return applyDelta(space, deleteNodeDelta(space, id));
 }
 
 /**
@@ -469,5 +865,12 @@ export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpa
  * This is what a drag-and-drop target calls on hover.
  */
 export function canAddTo<P>(space: GroupSpace<P>, child: NodeId, parent: NodeId, kind = CONTAINS): Violation[] {
-  return validateEdge(space, makeEdge(parent, child, { kind }));
+  const edge = makeEdge(parent, child, { kind });
+  const structural = validateEdge(space, edge);
+  if (structural.length) return structural;
+  // Per-family cardinality depends on the state after the drop; only pay for it when a family
+  // rule could apply.
+  if (!hasFamilyAtOrAbove(space, parent)) return [];
+  const result = applyDelta(space, { added: [edge] });
+  return result.ok ? [] : [...result.violations];
 }

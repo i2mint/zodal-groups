@@ -83,8 +83,17 @@ export interface EdgeKindDef {
    * `wheel part_of car is_a vehicle` from concluding that a wheel is a vehicle.
    */
   readonly composesWith?: Readonly<Record<string, EdgeKind>>;
-  /** Kinds this one may not co-occur with. SKOS S27: `related` is disjoint from `broaderTransitive`. */
+  /** Kinds this one may not co-occur with (either way round). SKOS S27: `related` ⊥ `broaderTransitive`. */
   readonly disjointWith?: readonly EdgeKind[];
+  /**
+   * Is an edge of this kind a MEMBERSHIP ("child is in parent")? Membership edges make their parent
+   * a group, count as the child's parents, and are held to the structural rules (caps, depth,
+   * groups-in-groups). An associative link is not: `related`, or a custom `cites` / `see_also`.
+   *
+   * Defaults to `!symmetric` — right for every built-in, but NOT for an asymmetric associative
+   * custom kind: **declare `membership: false` on such kinds** (reconciliation D30).
+   */
+  readonly membership?: boolean;
 }
 
 /** The default kind: plain containment. Transitive and acyclic — the folder/tag intuition. */
@@ -92,13 +101,14 @@ export const CONTAINS: EdgeKind = 'contains';
 
 /** Built-in edge-kind semantics, following Z39.19 (BTG/BTP/BTI + RT) and SKOS. */
 export const DEFAULT_EDGE_KINDS: Readonly<Record<string, EdgeKindDef>> = Object.freeze({
-  contains: { transitive: true, acyclic: true },
-  is_a: { transitive: true, acyclic: true, composesWith: { is_a: 'is_a', part_of: 'part_of' } },
-  part_of: { transitive: true, acyclic: true, composesWith: { part_of: 'part_of' } },
-  // `instance_of` is NOT transitive: an instance of a class is not an instance of its metaclass.
-  instance_of: { transitive: false, acyclic: true },
+  contains: { transitive: true, acyclic: true, membership: true },
+  is_a: { transitive: true, acyclic: true, membership: true, composesWith: { is_a: 'is_a', part_of: 'part_of' } },
+  part_of: { transitive: true, acyclic: true, membership: true, composesWith: { part_of: 'part_of' } },
+  // `instance_of` is NOT transitive (an instance of a class is not an instance of its metaclass),
+  // but it IS membership: a class with instances is a group of them (Z39.19's BTI).
+  instance_of: { transitive: false, acyclic: true, membership: true },
   // `related` is an associative, non-hierarchical link. It never participates in closure.
-  related: { transitive: false, symmetric: true, disjointWith: ['contains', 'is_a', 'part_of'] },
+  related: { transitive: false, symmetric: true, membership: false, disjointWith: ['contains', 'is_a', 'part_of'] },
 });
 
 // ── the canonical relation ──────────────────────────────────────────────────
@@ -132,12 +142,42 @@ export interface Edge {
   readonly meta?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * A per-family cardinality rule, carried by the node that roots the family.
+ *
+ * A **family** is a group whose direct subgroups are its *values* — a board's columns, Linear's
+ * "label group", a facet. `maxPerItem` caps how many of those values an item may fall under:
+ * `{ maxPerItem: 1 }` makes the family **exclusive** (a status field: an item is in exactly one
+ * column, or none).
+ *
+ * "Falls under" counts **branches**, not edges: an item in `Done` and in `Done/Archived` falls under
+ * one value of `Status` (`Done`), so a board puts it in one column. An item reachable from two
+ * values — directly, or through a subgroup that polyhierarchy filed under both — falls under two.
+ * That is the guarantee a board needs, and it is what `applyDelta` enforces.
+ *
+ * It lives on the node, not the profile, because families are *data*: users create them at run
+ * time (Linear's "make this label group exclusive"), and a profile is a reusable preset that never
+ * names particular nodes. See reconciliation D26.
+ */
+export interface FamilyRule {
+  /** At most this many of the family's values per item: an integer ≥ 1 (`isFamilyRule`). `1` ⇒ exclusive. */
+  readonly maxPerItem: number;
+}
+
+/** The exclusive-family rule: at most one value per item. */
+export const EXCLUSIVE: FamilyRule = Object.freeze({ maxPerItem: 1 });
+
 /** A node. Its `payload` is whatever the caller's Zod schema validates — flat, never recursive. */
 export interface Node<P = unknown> {
   readonly id: NodeId;
   /** A display label. May be overridden per-membership by `Edge.label`. */
   readonly label?: string;
   readonly payload?: P;
+  /**
+   * Makes this node a family root with a per-item cardinality (see {@link FamilyRule}). Ignored
+   * while the node has no subgroups. Any node may carry it: group-ness is still data, not type.
+   */
+  readonly family?: FamilyRule;
 }
 
 // ── members: literal or reference ───────────────────────────────────────────
@@ -205,8 +245,26 @@ export interface GroupSpace<P = unknown> {
 export interface EdgeDelta {
   readonly added?: readonly Edge[];
   readonly removed?: readonly EdgeId[];
-  /** Nodes introduced alongside the edges (labels/payloads). Never removes nodes. */
+  /**
+   * Nodes introduced or changed alongside the edges. Merged field by field into the existing node;
+   * a field set to `undefined` is cleared (which is how `invert` restores a field the delta added).
+   */
   readonly upsertNodes?: readonly Node<unknown>[];
+  /**
+   * Nodes this delta **creates**. Unlike an upsert, refused (`nodeExists`) if the id is already
+   * live — so undoing a delete cannot silently merge into a node someone re-created since. `invert`
+   * turns tombstones into these.
+   */
+  readonly addedNodes?: readonly Node<unknown>[];
+  /**
+   * Nodes this delta deletes — **tombstones**: the full node (label, payload, family), not just its
+   * id, so the delta alone says what was lost and `invert` can restore it. A tombstone must match
+   * the live node exactly, or the delta is refused (`staleTombstone`) — a stale undo never deletes
+   * a node that changed since. Every edge touching a removed node must be removed in the same
+   * delta (`deleteNodeDelta` does this), or the delta is refused (`danglingEdge`). Applied after the
+   * edge changes. See reconciliation D25.
+   */
+  readonly removedNodes?: readonly Node<unknown>[];
 }
 
 // ── results ─────────────────────────────────────────────────────────────────
@@ -225,9 +283,29 @@ export interface Violation {
     | 'unknownEdgeKind'
     | 'disjointEdgeKind'
     | 'selfEdge'
-    | 'duplicateEdge';
+    | 'duplicateEdge'
+    | 'danglingEdge'
+    | 'maxPerFamily'
+    | 'invalidFamilyRule'
+    | 'malformed'
+    | 'staleTombstone'
+    | 'nodeExists'
+    | 'edgeIdExists'
+    | 'conflict';
   readonly message: string;
   readonly edge?: Edge;
+  /** For `maxPerFamily`: the family root whose rule the item would break. */
+  readonly family?: NodeId;
+  /**
+   * The node the violation is about: for `maxPerFamily` the item; for `danglingEdge` the removed
+   * node still referenced; for `invalidFamilyRule` / `malformed` the offending node.
+   */
+  readonly node?: NodeId;
+  /** For `maxPerFamily`: the family's values the item would fall under (more than allowed). */
+  readonly values?: readonly NodeId[];
+  /** For `conflict`: the revision the writer expected, and the one the store is at. */
+  readonly expectedRevision?: number;
+  readonly actualRevision?: number;
   /**
    * For `cycle`: the offending path, so the UI can say *why*. Under polyhierarchy a cycle can close
    * through an off-screen branch, so a bare `false` is indistinguishable from a bug. Never omit it.
