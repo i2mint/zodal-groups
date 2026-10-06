@@ -30,7 +30,7 @@ import {
 } from './model.js';
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
 import { familyViolations, hasFamilyAtOrAbove } from './family.js';
-import { edgeProblem, isFamilyRule, nodeProblem, sameValue } from './structure.js';
+import { edgeProblem, isFamilyRule, nodeProblem, safe, sameValue } from './structure.js';
 
 // ── construction ────────────────────────────────────────────────────────────
 
@@ -329,13 +329,13 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
       violations.push({
         code: 'invalidFamilyRule',
         node: node.id,
-        message: `${node.id}: a family rule must be { maxPerItem: an integer ≥ 1 }, got ${JSON.stringify(family)}.`,
+        message: `${node.id}: a family rule must be { maxPerItem: an integer ≥ 1 }, got ${safe(family)}.`,
       });
       return false;
     }
     const problem = nodeProblem(node);
     if (problem) {
-      violations.push({ code: 'malformed', node: node.id, message: `Node ${JSON.stringify(node.id)} is malformed — ${problem}.` });
+      violations.push({ code: 'malformed', node: node.id, message: `Node ${safe(node.id)} is malformed — ${problem}.` });
       return false;
     }
     return true;
@@ -379,7 +379,7 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   for (const edge of added) {
     const problem = edgeProblem(edge);
     if (problem) {
-      violations.push({ code: 'malformed', edge, message: `Edge ${JSON.stringify(edge?.id)} is malformed — ${problem}.` });
+      violations.push({ code: 'malformed', edge, message: `Edge ${safe(edge?.id)} is malformed — ${problem}.` });
       continue;
     }
     // A live edge id is never silently replaced (that is how a stale undo would overwrite a newer
@@ -415,7 +415,7 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
       violations.push({
         code: 'staleTombstone',
         node: node.id,
-        message: `Cannot remove ${node.id}: it changed since this delta was made (tombstone ${JSON.stringify(node)}, live ${JSON.stringify(live)}).`,
+        message: `Cannot remove ${node.id}: it changed since this delta was made (tombstone ${safe(node)}, live ${safe(live)}).`,
       });
       continue;
     }

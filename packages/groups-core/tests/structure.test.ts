@@ -65,3 +65,49 @@ describe('malformed nodes and edges are refused on write', () => {
     if (r.ok) expect(() => parseSnapshot(JSON.parse(JSON.stringify(toSnapshot(r.value))))).not.toThrow();
   });
 });
+
+describe('payload and meta must be plain JSON data (M-5)', () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const bad: [string, unknown][] = [
+    ['a BigInt', 10n],
+    ['a nested BigInt', { a: [1, { b: 2n }] }],
+    ['a function', () => 1],
+    ['NaN', Number.NaN],
+    ['Infinity', { x: Infinity }],
+    ['a Date', new Date(0)],
+    ['a Map', new Map()],
+    ['a symbol', Symbol('s')],
+    ['a cycle', cyclic],
+  ];
+  for (const [what, value] of bad) {
+    it(`refuses ${what} in a node payload`, () => {
+      const r = applyDelta(createGroupSpace(), { upsertNodes: [{ id: n('a'), payload: value }] });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.violations[0]!.code).toBe('malformed');
+    });
+  }
+
+  it('refuses a BigInt in edge meta', () => {
+    const r = applyDelta(createGroupSpace(), {
+      added: [{ id: 'e' as never, parent: n('p'), child: n('c'), kind: 'contains', meta: { n: 1n } }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations[0]!.code).toBe('malformed');
+  });
+
+  it('accepts nested plain data, null and undefined fields', () => {
+    const payload = { a: [1, 'two', null, { b: true }], c: undefined, d: Object.create(null) };
+    expect(applyDelta(createGroupSpace(), { upsertNodes: [{ id: n('a'), payload }] }).ok).toBe(true);
+  });
+});
+
+describe('nothing in a delta can make applyDelta throw', () => {
+  it('a BigInt id, family or tombstone payload is reported, not thrown', () => {
+    const s = createGroupSpace({ nodes: [{ id: n('a'), label: 'A' }] });
+    expect(() => applyDelta(s, { upsertNodes: [{ id: 5n as never }] })).not.toThrow();
+    expect(() => applyDelta(s, { upsertNodes: [{ id: n('a'), family: { maxPerItem: 1n as never } }] })).not.toThrow();
+    const r = applyDelta(s, { removedNodes: [{ id: n('a'), payload: 1n }] });
+    expect(r.ok).toBe(false);
+  });
+});

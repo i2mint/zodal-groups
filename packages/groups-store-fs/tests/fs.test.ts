@@ -118,6 +118,13 @@ describe('a write can never brick the store', () => {
     }
     await expect(createFsGroupStore({ path }).load()).resolves.toBeDefined();
   });
+
+  it('a BigInt payload or meta is refused (it used to make the write throw)', async () => {
+    const store = createFsGroupStore({ path });
+    expect((await store.apply({ upsertNodes: [{ id: n('g'), payload: { size: 10n } }] })).ok).toBe(false);
+    expect((await store.apply({ added: [{ ...e('g', 'i'), meta: { n: 1n } }] })).ok).toBe(false);
+    expect((await store.apply({ added: [e('g', 'i')] })).ok).toBe(true);
+  });
 });
 
 describe('profile violations in stored data', () => {

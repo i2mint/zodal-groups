@@ -9,6 +9,15 @@
 
 import type { FamilyRule } from './model.js';
 
+/** JSON.stringify that cannot throw (a BigInt or a cycle would), for error messages. */
+export const safe = (v: unknown): string => {
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
+};
+
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -18,6 +27,46 @@ export function isFamilyRule(value: unknown): value is FamilyRule {
 }
 
 const nonEmpty = (v: unknown): boolean => typeof v === 'string' && v !== '';
+
+/**
+ * What stops `value` from being plain JSON data — the only thing a store can persist and read back
+ * unchanged — as `"path: problem"`, or `undefined`. Refused: BigInt (JSON.stringify throws, so a
+ * file store failed on write), functions, symbols, NaN/±Infinity (become `null`), class instances
+ * such as Date or Map (become a string or `{}`), and cycles. A key set to `undefined` is absent.
+ */
+export function jsonProblem(value: unknown, path = 'value', seen: Set<object> = new Set()): string | undefined {
+  switch (typeof value) {
+    case 'string':
+    case 'boolean':
+    case 'undefined':
+      return undefined;
+    case 'number':
+      return Number.isFinite(value) ? undefined : `${path}: ${String(value)} is not a JSON number`;
+    case 'bigint':
+      return `${path}: a BigInt is not JSON (store it as a string)`;
+    case 'function':
+    case 'symbol':
+      return `${path}: a ${typeof value} is not JSON data`;
+  }
+  if (value === null) return undefined;
+  const object = value as object;
+  if (seen.has(object)) return `${path}: a cycle — JSON cannot hold it`;
+  const proto = Object.getPrototypeOf(object);
+  if (!Array.isArray(object) && proto !== Object.prototype && proto !== null) {
+    return `${path}: a ${proto?.constructor?.name ?? 'class'} instance is not plain JSON data (convert it first)`;
+  }
+  seen.add(object);
+  const entries: [string, unknown][] = Array.isArray(object)
+    ? object.map((v, i) => [`[${i}]`, v])
+    : Object.entries(object).map(([k, v]) => [`.${k}`, v]);
+  for (const [key, child] of entries) {
+    if (Array.isArray(object) && child === undefined) return `${path}${key}: undefined in an array becomes null`;
+    const problem = jsonProblem(child, `${path}${key}`, seen);
+    if (problem) return problem;
+  }
+  seen.delete(object);
+  return undefined;
+}
 const optionalString = (v: unknown): boolean => v === undefined || typeof v === 'string';
 
 /**
@@ -26,24 +75,24 @@ const optionalString = (v: unknown): boolean => v === undefined || typeof v === 
  */
 export function nodeProblem(node: unknown): string | undefined {
   if (!isObject(node)) return 'expected an object';
-  if (!nonEmpty(node.id)) return `id: expected a non-empty string, got ${JSON.stringify(node.id)}`;
-  if (!optionalString(node.label)) return `label: expected a string, got ${JSON.stringify(node.label)}`;
+  if (!nonEmpty(node.id)) return `id: expected a non-empty string, got ${safe(node.id)}`;
+  if (!optionalString(node.label)) return `label: expected a string, got ${safe(node.label)}`;
   if (node.family !== undefined && !isFamilyRule(node.family)) {
-    return `family: expected { maxPerItem: an integer ≥ 1 }, got ${JSON.stringify(node.family)}`;
+    return `family: expected { maxPerItem: an integer ≥ 1 }, got ${safe(node.family)}`;
   }
-  return undefined;
+  return jsonProblem(node.payload, 'payload');
 }
 
 /** What is structurally wrong with an edge, as `"field: problem"`, or `undefined` if nothing is. */
 export function edgeProblem(edge: unknown): string | undefined {
   if (!isObject(edge)) return 'expected an object';
   for (const key of ['id', 'parent', 'child', 'kind'] as const) {
-    if (!nonEmpty(edge[key])) return `${key}: expected a non-empty string, got ${JSON.stringify(edge[key])}`;
+    if (!nonEmpty(edge[key])) return `${key}: expected a non-empty string, got ${safe(edge[key])}`;
   }
-  if (!optionalString(edge.label)) return `label: expected a string, got ${JSON.stringify(edge.label)}`;
-  if (!optionalString(edge.order)) return `order: expected a string, got ${JSON.stringify(edge.order)}`;
-  if (edge.meta !== undefined && !isObject(edge.meta)) return `meta: expected an object, got ${JSON.stringify(edge.meta)}`;
-  return undefined;
+  if (!optionalString(edge.label)) return `label: expected a string, got ${safe(edge.label)}`;
+  if (!optionalString(edge.order)) return `order: expected a string, got ${safe(edge.order)}`;
+  if (edge.meta !== undefined && !isObject(edge.meta)) return `meta: expected an object, got ${safe(edge.meta)}`;
+  return jsonProblem(edge.meta, 'meta');
 }
 
 /**
