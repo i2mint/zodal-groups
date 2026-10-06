@@ -27,7 +27,7 @@
  */
 
 import type { GroupSpace, NodeId, Violation } from './model.js';
-import { PROFILES, resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
+import { DEPRECATED_PROFILES, PROFILES, resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
 import { edgesOf, isGroup, isMembershipKind, membershipParentCount, validateProfile } from './space.js';
 
 /** The dials measured on the data itself. */
@@ -72,13 +72,14 @@ export interface InferredProfile {
 }
 
 export interface InferProfileOptions {
-  /** The profiles to choose from, in preference order. Defaults to every built-in profile. */
+  /** The profiles to choose from, in preference order. Defaults to every non-deprecated built-in profile. */
   readonly candidates?: readonly (ProfileName | GroupProfile)[];
 }
 
 /** Infer the tightest profile a space satisfies. See the module docstring. */
 export function inferProfile<P>(space: GroupSpace<P>, options: InferProfileOptions = {}): InferredProfile {
-  const candidates = (options.candidates ?? (Object.keys(PROFILES) as ProfileName[])).map((c) =>
+  const defaults = (Object.keys(PROFILES) as ProfileName[]).filter((name) => !DEPRECATED_PROFILES[name]);
+  const candidates = (options.candidates ?? defaults).map((c) =>
     resolveProfile(c),
   );
   if (!candidates.length) throw new Error('inferProfile: `candidates` is empty.');

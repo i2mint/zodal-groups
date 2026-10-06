@@ -52,6 +52,7 @@ export {
 // ── profiles ────────────────────────────────────────────────────────────────
 export {
   PROFILES,
+  DEPRECATED_PROFILES,
   resolveProfile,
   isFlat,
   isGroupTree,

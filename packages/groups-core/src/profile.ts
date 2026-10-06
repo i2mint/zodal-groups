@@ -111,7 +111,14 @@ export const PROFILES = {
     name: 'polyhierarchy',
   },
 
-  /** A classification skeleton: groups of groups only; items never attach. */
+  /**
+   * A classification skeleton: groups of groups only; items never attach.
+   *
+   * @deprecated It cannot hold any space with at least one edge — a leaf is childless, so it counts
+   * as an item, which this profile forbids — and emptied groups become items too. Model a
+   * vocabulary as a SEPARATE space (a `nestedTags` or `polyhierarchy` space of concepts) next to the
+   * space of item memberships. Kept unchanged for one minor version; see `DEPRECATED_PROFILES`.
+   */
   taxonomy: {
     ...BASE,
     name: 'taxonomy',
@@ -137,6 +144,16 @@ export const PROFILES = {
 /** The name of a built-in profile. */
 export type ProfileName = keyof typeof PROFILES;
 
+/** Built-in profiles on their way out, with the reason and the replacement. */
+export const DEPRECATED_PROFILES: Readonly<Partial<Record<ProfileName, string>>> = Object.freeze({
+  taxonomy:
+    "The 'taxonomy' profile is deprecated and will be removed: it cannot hold any space with at least " +
+    'one edge (a leaf is childless, so it counts as an item, which it forbids). Model a vocabulary as a ' +
+    "separate space ('nestedTags' or 'polyhierarchy') next to the space of item memberships.",
+});
+
+const warned = new Set<string>();
+
 /**
  * Resolve a profile from a name, a full profile, or a name plus overrides.
  *
@@ -147,6 +164,10 @@ export function resolveProfile(
   profile: ProfileName | GroupProfile = 'polyhierarchy',
   overrides: Partial<Omit<GroupProfile, 'name'>> = {},
 ): GroupProfile {
+  if (typeof profile === 'string' && DEPRECATED_PROFILES[profile] && !warned.has(profile)) {
+    warned.add(profile);
+    console.warn(`[zodal-groups] ${DEPRECATED_PROFILES[profile]}`);
+  }
   const base: GroupProfile = typeof profile === 'string' ? PROFILES[profile] : profile;
   return { ...base, ...overrides };
 }
