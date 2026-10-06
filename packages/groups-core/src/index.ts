@@ -82,6 +82,7 @@ export {
   edgesInto,
   isGroup,
   isMembershipKind,
+  isAcyclicKind,
   membershipParentCount,
   rootsOf,
   orphansOf,

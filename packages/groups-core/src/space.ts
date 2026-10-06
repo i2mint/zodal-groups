@@ -194,7 +194,7 @@ export function findCycle(space: GroupSpace, parent: NodeId, child: NodeId): Nod
   while (stack.length) {
     const { node, path } = stack.pop()!;
     for (const edge of edgesOf(space, node)) {
-      if (!isTransitiveKind(space.profile, edge.kind)) continue;
+      if (!isAcyclicKind(space.profile, edge.kind)) continue;
       const next = edge.child;
       if (next === parent) return [...path, parent];
       if (seen.has(next)) continue;
@@ -203,6 +203,17 @@ export function findCycle(space: GroupSpace, parent: NodeId, child: NodeId): Nod
     }
   }
   return null;
+}
+
+/**
+ * Must edges of this kind stay out of cycles? Every kind that is transitive OR declared acyclic.
+ * They form ONE acyclic order together: a cycle closed through a mix of them (`a ⊃instance_of d`,
+ * `d ⊃is_a a`) is still a cycle. Walking only the transitive kinds made the check depend on edge
+ * order — and a state reached one way then blocked its own undo forever.
+ */
+export function isAcyclicKind(profile: GroupProfile, kind: string): boolean {
+  const def = profile.edgeKinds[kind];
+  return Boolean(def && (def.transitive || def.acyclic));
 }
 
 function isTransitiveKind(profile: GroupProfile, kind: string): boolean {
@@ -497,16 +508,19 @@ function checkEdge<P>(
     });
   }
 
-  // Disjoint kinds: SKOS S27 — `related` may not co-exist with a hierarchical edge.
-  if (kindDef.disjointWith?.length) {
-    const conflicting = between.find((e) => kindDef.disjointWith!.includes(e.kind));
-    if (conflicting) {
-      out.push({
-        code: 'disjointEdgeKind',
-        message: `Edge kind '${edge.kind}' is disjoint from '${conflicting.kind}', which already links ${edge.parent} → ${edge.child}.`,
-        edge,
-      });
-    }
+  // Disjoint kinds: SKOS S27 — `related` may not co-exist with a hierarchical edge. Symmetric in
+  // both senses: either kind may declare the disjointness, and the two edges may point either way
+  // (otherwise related-then-contains was accepted while contains-then-related was refused).
+  const disjoint = (a: string, b: string): boolean =>
+    Boolean(p.edgeKinds[a]?.disjointWith?.includes(b) || p.edgeKinds[b]?.disjointWith?.includes(a));
+  const reverse = edgesInto(space, edge.parent).filter((e) => e.parent === edge.child && e.id !== edge.id);
+  const conflicting = [...between, ...reverse].find((e) => disjoint(edge.kind, e.kind));
+  if (conflicting) {
+    out.push({
+      code: 'disjointEdgeKind',
+      message: `Edge kind '${edge.kind}' is disjoint from '${conflicting.kind}', which already links ${conflicting.parent} → ${conflicting.child}.`,
+      edge,
+    });
   }
 
   // Acyclicity. Enforced for any kind that participates in closure.

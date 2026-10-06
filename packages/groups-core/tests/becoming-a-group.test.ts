@@ -121,17 +121,13 @@ describe('one cause, one violation', () => {
   });
 });
 
-describe('a refused undo keeps its history entry', () => {
-  it('does not skip to an older entry', () => {
-    // An asymmetric disjointness makes one undo legitimately refusable for a single writer.
+describe('a one-way disjointness can no longer build a state whose undo is blocked', () => {
+  it('x disjointWith contains: contains next to x is refused, whichever comes first', () => {
     const kinds = { contains: { transitive: true, acyclic: true }, x: { transitive: false, disjointWith: ['contains'] } };
     const g = defineGroups({ profile: 'polyhierarchy', overrides: { edgeKinds: kinds } });
     expect(g.add('c', 'p', { kind: 'x' }).ok).toBe(true);
-    expect(g.add('c', 'p').ok).toBe(true); // contains is not disjoint with x
-    const xEdge = [...g.space.edges.values()].find((e) => e.kind === 'x')!;
-    expect(g.apply({ removed: [xEdge.id] }).ok).toBe(true);
-    expect(g.undo()).toBe(false); // re-adding x next to contains is refused
-    expect(g.undo()).toBe(false); // ...and stays refused: the entry was kept, not dropped
-    expect(g.parents('c')).toEqual(['p']); // the contains edge was not undone by mistake
+    const r = g.add('c', 'p'); // contains declares nothing, but x does: still disjoint
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.violations[0]!.code).toBe('disjointEdgeKind');
   });
 });
