@@ -170,6 +170,10 @@ Within one delta, "is the child a group?" is judged on the delta's end state, so
 
 `inferProfile(space, { candidates? })` validates the space under each candidate and returns the tightest fit by a **partial order** over the dials (caps ≤, permissions ⊆, edge kinds ⊆). Among incomparable fits the one whose restrictions the data visibly exercises most wins (flat, one tag per item ⇒ `flatTags`), the others go to `evidence.alternatives`; identical-dial profiles are split by evidence (`folksonomy` if every edge has `meta.assertedBy`, `thesaurus` if a non-`contains` kind is used), the rest to `evidence.equivalent`. Nothing fits ⇒ the fewest violations, loosest on a tie. `evidence.observed` has the measured dials. ⚠️ `taxonomy` (`groupsMayContainItems: false`) fits no space with at least one edge — every DAG has childless leaves, and a childless node is an item — so it is **deprecated** (`DEPRECATED_PROFILES`) and excluded from the default candidates.
 
+## Undo history, and the property test
+
+`Groups.undo()` never skips a refused entry; `undoViolations()` says why, `discardUndo()` drops it, `undoDepth` counts entries. `tests/properties.test.ts` is the guard for the whole write path: random deltas over every built-in kind and seven profiles must satisfy apply∘invert = id, invert∘invert = effect, JSON reload = same space, valid in any edge order, and a full LIFO undo to empty. **Any new validation rule must keep it green** — a rule that depends on edge order shows up there first.
+
 ## Cost model
 
 Checking an added edge reads the **child's** parents, never the group's members — keep it that way (`tests/scale.test.ts` fails if a check goes O(group size) again). `applyDelta` copies the space's maps on every call (O(N)), so bulk changes go in ONE delta.
