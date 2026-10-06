@@ -408,7 +408,8 @@ describe('the session', () => {
       succeeded: ['a', 'b'],
       failed: [{ id: 'c', reason: 'the provider rejected the write', code: 'recordWrite' }],
     });
-    expect(text).toBe('Applied: tagged 2 items, 1 refused: “c”: the provider rejected the write.');
+    // The provider's raw text is for logs; the code is worded in plain language (review B8).
+    expect(text).toBe('Applied: tagged 2 items, 1 refused: “c”: its record could not be saved.');
   });
 
   it('caps the listed refusals', () => {

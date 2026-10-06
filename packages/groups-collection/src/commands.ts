@@ -109,7 +109,13 @@ export const commandParams = {
   }),
   tag: z.object({ ids, group: z.string().min(1), space, kind: z.string().min(1).optional() }),
   untag: z.object({ ids, group: z.string().min(1), space }),
-  bulkTag: z.object({ ids, add: z.array(z.string().min(1)).optional(), remove: z.array(z.string().min(1)).optional(), space }),
+  bulkTag: z.object({
+    ids,
+    add: z.array(z.string().min(1)).optional(),
+    remove: z.array(z.string().min(1)).optional(),
+    labels: z.record(z.string(), z.string().min(1)).optional(),
+    space,
+  }),
   removeFromGroup: z.object({ id: z.string().min(1), group: z.string().min(1), space }),
   deleteItem: z.object({ id: z.string().min(1) }),
   renameGroup: z.object({ group: z.string().min(1), name: z.string().min(1), space, by: z.enum(['label', 'id']).optional() }),
@@ -148,7 +154,12 @@ export function createCommands<T extends Record<string, unknown>>(
     tag: (p) => tc.tag(p.ids, p.group, { ...(p.space ? { space: p.space } : {}), ...(p.kind ? { kind: p.kind } : {}) }),
     untag: (p) => tc.untag(p.ids, p.group, p.space ? { space: p.space } : {}),
     bulkTag: (p) =>
-      tc.bulkTag(p.ids, { ...(p.add ? { add: p.add } : {}), ...(p.remove ? { remove: p.remove } : {}), ...(p.space ? { space: p.space } : {}) }),
+      tc.bulkTag(p.ids, {
+        ...(p.add ? { add: p.add } : {}),
+        ...(p.remove ? { remove: p.remove } : {}),
+        ...(p.labels ? { labels: p.labels } : {}),
+        ...(p.space ? { space: p.space } : {}),
+      }),
     removeFromGroup: (p) => tc.removeFromGroup(p.id, p.group, p.space ? { space: p.space } : {}),
     deleteItem: (p) => tc.deleteItem(p.id),
     renameGroup: (p) => tc.renameGroup(p.group, p.name, { ...(p.space ? { space: p.space } : {}), ...(p.by ? { by: p.by } : {}) }),

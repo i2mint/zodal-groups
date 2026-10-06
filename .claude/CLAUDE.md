@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE + COLLECTION FACADE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (82), `@zodal/groups-ui-vanilla` (27 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (136) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). groups-ui has the selection-level tagging descriptor (tri-state, staged changes, a plan the caller writes) and a message for every `Violation` code; groups-ui-vanilla renders the menu (issue #3, D32). Next: shadcn and Ark renderers (tag menu included), the zodal tag-chip widget upstream.
+`@zodal/groups-core` (229 tests), `@zodal/groups-ui` (97), `@zodal/groups-ui-vanilla` (43 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (142) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). groups-ui has the selection-level tagging descriptor (tri-state, staged changes, a plan the caller writes) and a message for every `Violation` code; groups-ui-vanilla renders the menu (issue #3, D32). Next: shadcn and Ark renderers (tag menu included), the zodal tag-chip widget upstream.
 
 ## What zodal-groups Is
 
@@ -87,11 +87,11 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-core test        # 229 tests (+3 skipped: the memory store is not persistent)
 pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
-pnpm --filter @zodal/groups-ui test          # 82 tests: drag intent, the tagging descriptor (tri-state, cycle, plan, refusals), every Violation message
-pnpm --filter @zodal/groups-ui-vanilla test  # 27 DOM tests (jsdom): ARIA, keyboard, the tag menu's live region
-pnpm --filter @zodal/groups-collection test  # 136 tests: every operation × (embedded, memory store, fs store), failures, two writers
+pnpm --filter @zodal/groups-ui test          # 97 tests: drag intent, the tagging descriptor (tri-state, cycle, plan, refusals, stale plans, caching), every Violation message
+pnpm --filter @zodal/groups-ui-vanilla test  # 43 DOM tests (jsdom): ARIA, keyboard, in-place updates, the tag menu's live region
+pnpm --filter @zodal/groups-collection test  # 142 tests: every operation × (embedded, memory store, fs store), failures, two writers
 pnpm build                                   # turbo, all packages
 ```
 

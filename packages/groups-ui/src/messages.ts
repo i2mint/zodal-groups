@@ -355,8 +355,20 @@ export interface TaggingMessages {
   readonly listLabel: (selected: number) => string;
   /** A row's "7 of 12". */
   readonly countOf: (count: number, total: number) => string;
-  /** A row's accessible name: label, path, and how many of the selection are in it. */
-  readonly rowLabel: (row: { readonly label: string; readonly path?: string; readonly count: number; readonly total: number; readonly isNew: boolean }) => string;
+  /**
+   * A row's accessible name: label (or path), how many of the selection are in it now, and what
+   * Apply would do. The state is in words because `aria-checked="mixed"` is defined for checkboxes,
+   * not for listbox options, so a renderer drawing options cannot rely on it.
+   */
+  readonly rowLabel: (row: {
+    readonly label: string;
+    readonly path?: string;
+    readonly count: number;
+    readonly total: number;
+    readonly isNew: boolean;
+    readonly pending: boolean;
+    readonly change: { readonly add: number; readonly remove: number };
+  }) => string;
   readonly createOption: (label: string) => string;
   readonly createNotAllowed: string;
   readonly createNeedsSelection: string;
@@ -378,6 +390,21 @@ export interface TaggingMessages {
   readonly refused: (count: number, details: readonly string[], more: number) => string;
   readonly refusedDetail: (item: string, reason: string) => string;
   readonly applyFailed: (reason: string) => string;
+  /** Why Apply does nothing right now. */
+  readonly nothingToApply: string;
+  readonly stillApplying: string;
+  /** A staged row the write did not bring to its staged state (another writer got there first). */
+  readonly changedElsewhere: (labels: readonly string[]) => string;
+  /** The selection changed under staged changes, which were dropped. */
+  readonly stagedDropped: (count: number) => string;
+  /** Escape or Cancel discarded staged changes. */
+  readonly discarded: (count: number) => string;
+  /**
+   * A write failure, by its code (groups-collection's `FailureCode`), in plain language — the
+   * provider's own text (`Failure.reason`) is for logs, not for a live region. A code missing here
+   * falls back to that text.
+   */
+  readonly failureReasons: Readonly<Record<string, string>>;
 }
 
 const items = (n: number) => `${n} ${plural(n, 'item', 'items')}`;
@@ -387,8 +414,19 @@ export const TAGGING_MESSAGES: TaggingMessages = {
   searchPlaceholder: (canCreate) => (canCreate ? 'Search or create a group…' : 'Search groups…'),
   listLabel: (selected) => `Groups for ${selected} selected ${plural(selected, 'item', 'items')}`,
   countOf: (count, total) => `${count} of ${total}`,
-  rowLabel: (row) =>
-    [row.path ?? row.label, row.isNew ? 'new group' : `${row.count} of ${row.total}`].join(', '),
+  rowLabel: (row) => {
+    const now = row.isNew
+      ? 'new group'
+      : row.count === 0
+        ? 'on none'
+        : row.count >= row.total
+          ? `on all ${row.total}`
+          : `on ${row.count} of ${row.total}`;
+    const staged = row.pending
+      ? [row.change.add ? `will add to ${row.change.add}` : '', row.change.remove ? `will remove from ${row.change.remove}` : '']
+      : [];
+    return [row.path ?? row.label, now, ...staged].filter(Boolean).join(', ');
+  },
   createOption: (label) => `Create ${q(label)}`,
   createNotAllowed: 'New groups can’t be created here.',
   createNeedsSelection: 'Select items first, then create a group for them.',
@@ -407,6 +445,24 @@ export const TAGGING_MESSAGES: TaggingMessages = {
     `, ${count} refused: ${details.join('; ')}${more > 0 ? `; and ${more} more` : ''}`,
   refusedDetail: (item, reason) => `${q(item)}: ${reason}`,
   applyFailed: (reason) => `Could not apply: ${reason} Your changes are still staged.`,
+  nothingToApply: 'Nothing to apply yet: tick or untick a group first.',
+  stillApplying: 'Still applying, please wait.',
+  changedElsewhere: (labels) => {
+    const one = labels.length === 1;
+    return `${listOf(labels)} ${one ? 'was' : 'were'} changed elsewhere and ${one ? 'is' : 'are'} not as staged yet; review ${one ? 'it' : 'them'} and apply again.`;
+  },
+  stagedDropped: (n) => `The selection changed, so ${n} staged ${plural(n, 'change was', 'changes were')} discarded.`,
+  discarded: (n) => `Discarded ${n} staged ${plural(n, 'change', 'changes')}.`,
+  failureReasons: Object.freeze({
+    notFound: 'it no longer exists',
+    exists: 'it already exists',
+    recordWrite: 'its record could not be saved',
+    storeWrite: 'its groups could not be saved',
+    conflict: 'it was changed elsewhere at the same time',
+    unsupported: 'this space can’t do that',
+    groupExists: 'a group with that name already exists',
+    violation: 'the groups’ rules refuse it',
+  }),
 };
 Object.freeze(TAGGING_MESSAGES);
 

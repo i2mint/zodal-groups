@@ -53,6 +53,7 @@ import {
   type Groups,
   type Node,
   type NodeId,
+  type Result,
   type Violation,
 } from '@zodal/groups-core';
 import {
@@ -151,7 +152,13 @@ export interface GroupChange {
 /** The same change for several items — one `collection.bulkTag(ids, change)` call. */
 export interface TaggingBatch {
   readonly ids: readonly NodeId[];
-  readonly change: { readonly add: readonly NodeId[]; readonly remove: readonly NodeId[]; readonly kind?: EdgeKind };
+  readonly change: {
+    readonly add: readonly NodeId[];
+    readonly remove: readonly NodeId[];
+    readonly kind?: EdgeKind;
+    /** Labels of the groups this batch creates, where a label differs from the id (`bulkTag`'s `labels`). */
+    readonly labels?: Readonly<Record<string, string>>;
+  };
 }
 
 /** What Apply writes. Plain data: hand it to the collection, a store, or a `Groups` handle. */
@@ -178,6 +185,12 @@ export interface TaggingPlan {
   readonly isEmpty: boolean;
   /** Nothing blocks Apply (no conflicts). */
   readonly ok: boolean;
+  /**
+   * The revision of the space the plan was computed against. A `GroupStore` write can pass it as
+   * `expectedRevision`, so a plan made stale by another writer is refused (`conflict`) instead of
+   * applied; `complete` also checks the result row by row.
+   */
+  readonly revision: number;
 }
 
 /** The staged state. Immutable; the pure functions return a new one. */
@@ -243,6 +256,13 @@ export interface TaggingView {
   readonly canApply: boolean;
   /** Why there are no rows to show (no selection, no match, no groups). */
   readonly empty?: string;
+  /** Why Apply would do nothing now (no selection, nothing staged, a conflict). Absent when it can apply. */
+  readonly blocked?: string;
+  /**
+   * Something the user must be told once, that no row shows — staged changes a selection change
+   * discarded. Present in the first view after it happened, gone after the next change.
+   */
+  readonly notice?: string;
   readonly messages: GroupsUiMessages;
 }
 
@@ -322,12 +342,27 @@ interface Core {
   readonly summary: readonly string[];
 }
 
+/** One row's computed part, reusable while its key holds (see `rowKey`). */
+interface RowEntry {
+  readonly key: string;
+  readonly row: TagRow;
+  readonly addIds: readonly NodeId[];
+  readonly removeIds: readonly NodeId[];
+}
+
+/**
+ * Per-row results, valid for ONE (space, selection, options): the session drops it when any of
+ * them changes. A toggle then recomputes only the rows it can affect.
+ */
+export type RowCache = Map<NodeId, RowEntry>;
+
 function computeCore(
   space: GroupSpace,
   selection: readonly NodeId[],
   state: Pick<TaggingState, 'pending' | 'created'>,
   options: TaggingOptions,
   messages: GroupsUiMessages,
+  cache: RowCache = new Map(),
 ): Core {
   const kind = options.kind ?? CONTAINS;
   const total = selection.length;
@@ -365,33 +400,53 @@ function computeCore(
   // Doing" in an exclusive family is a legal switch rather than a refused second value.
   const removalEdges = (group: NodeId): Edge[] =>
     [...(membersOf.get(group) ?? [])].flatMap((item) => membershipEdges(space, group, item));
-  const stagedRemovals: EdgeId[] = [];
-  for (const [group, target] of state.pending) {
-    if (target === 'none') stagedRemovals.push(...removalEdges(group).map((e) => e.id));
-  }
-  const removedBase = stagedRemovals.length ? applyDelta(space, { removed: stagedRemovals }) : null;
-  const base = removedBase?.ok ? removedBase.value : space;
+  const removing = [...state.pending].filter(([, target]) => target === 'none').map(([g]) => g).sort();
+  let removedBase: Result<GroupSpace> | null | undefined;
+  /** The space with every staged removal applied — computed only if a row needs it. */
+  const base = (): GroupSpace => {
+    if (removedBase === undefined) {
+      const removed = removing.flatMap((g) => removalEdges(g).map((e) => e.id));
+      removedBase = removed.length ? applyDelta(space, { removed }) : null;
+    }
+    return removedBase?.ok ? removedBase.value : space;
+  };
 
-  const refusal = (id: NodeId, group: NodeId, violations: readonly Violation[]): Refusal => ({
-    id,
-    group,
-    violations,
-    explained: explainViolation(violations[0]!, explainOpts),
-  });
+  // Which staged removals can change a row's refusals. With per-item caps, or a selection holding
+  // groups, any of them can (parent counts, nesting). Otherwise only removals inside a family
+  // (a family counts values per item); a row with no family above it is affected by none.
+  const p = space.profile;
+  const anyRemovalCounts =
+    p.maxParentsPerItem !== null || p.maxGroupsPerItem !== null || selection.some((item) => isGroup(space, item));
+  const familyRemovals = removing.filter((g) => hasFamilyAtOrAbove(space, g));
+  const removalKey = (group: NodeId): string =>
+    anyRemovalCounts ? removing.join('\u0000') : hasFamilyAtOrAbove(space, group) ? familyRemovals.join('\u0000') : '';
+
+  /** A refusal whose sentence is built only when read: thousands may be refused, few are shown. */
+  const refusal = (id: NodeId, group: NodeId, violations: readonly Violation[]): Refusal => {
+    let explained: ExplainedViolation | undefined;
+    return {
+      id,
+      group,
+      violations,
+      get explained() {
+        return (explained ??= explainViolation(violations[0]!, explainOpts));
+      },
+    };
+  };
 
   /** Which of `lacking` the model would refuse to put in `group` — the dry run of Apply. */
-  const addRefusals = (group: NodeId, lacking: readonly NodeId[]): Refusal[] => {
+  const addRefusals = (group: NodeId, lacking: readonly NodeId[], against: GroupSpace): Refusal[] => {
     const out: Refusal[] = [];
     const passing: Edge[] = [];
     for (const item of lacking) {
       const edge = makeEdge(group, item, { kind, id: dryId(group, item) });
-      const violations = validateEdge(base, edge);
+      const violations = validateEdge(against, edge);
       if (violations.length) out.push(refusal(item, group, violations));
       else passing.push(edge);
     }
     // Family rules depend on the end state; only pay for a full dry run where one could apply.
-    if (passing.length && hasFamilyAtOrAbove(base, group)) {
-      const result = applyDelta(base, { added: passing });
+    if (passing.length && hasFamilyAtOrAbove(against, group)) {
+      const result = applyDelta(against, { added: passing });
       if (!result.ok) {
         const byItem = new Map<NodeId, Violation[]>();
         const general: Violation[] = [];
@@ -419,35 +474,30 @@ function computeCore(
     return result.ok ? [] : explainViolations(result.violations, explainOpts);
   };
 
-  interface Draft {
-    row: Omit<TagRow, 'conflict' | 'aria'>;
-    addIds: NodeId[];
-    removeIds: NodeId[];
-  }
-
-  const drafts: Draft[] = groups.map((group) => {
+  const computeRow = (group: NodeId, key: string, current: TagState | undefined): RowEntry => {
     const members = membersOf.get(group) ?? new Set<NodeId>();
     const count = members.size;
     const originalState = total === 0 ? 'none' : stateOf(count, total);
     const lacking = selection.filter((item) => !members.has(item));
-    const refused = total === 0 ? [] : addRefusals(group, lacking);
+    const rk = removalKey(group);
+    const refused = total === 0 ? [] : addRefusals(group, lacking, rk ? base() : space);
     const removalViolations = count ? removalRefusals(group) : [];
     const can = {
       add: total > 0 && (lacking.length === 0 || refused.length < lacking.length),
       remove: removalViolations.length === 0,
     };
-    const current = state.pending.get(group) ?? originalState;
-    const next = nextState(originalState, current, can, options.restoreMixed === true);
+    const now = current ?? originalState;
+    const next = nextState(originalState, now, can, options.restoreMixed === true);
     const refusedIds = new Set(refused.map((r) => r.id));
-    const addIds = current === 'all' ? lacking.filter((item) => !refusedIds.has(item)) : [];
-    const removeIds = current === 'none' ? [...members] : [];
+    const addIds = now === 'all' ? lacking.filter((item) => !refusedIds.has(item)) : [];
+    const removeIds = now === 'none' ? [...members] : [];
 
     // The sentence to show: a total refusal of the next step, else a partial refusal of "all".
     let reason: string | undefined;
     let fix: string | undefined;
-    const blockedAdd = !can.add && current !== 'all' && refused.length > 0;
-    const blockedRemove = !can.remove && current !== 'none';
-    if (next === current && (blockedAdd || blockedRemove)) {
+    const blockedAdd = !can.add && now !== 'all' && refused.length > 0;
+    const blockedRemove = !can.remove && now !== 'none';
+    if (next === now && (blockedAdd || blockedRemove)) {
       const e = blockedAdd ? refused[0]!.explained : removalViolations[0]!;
       reason = e.message;
       fix = e.fix;
@@ -466,43 +516,69 @@ function computeCore(
     const node = space.nodes.get(group);
     const nested = node ? primaryPath(space, group) : undefined;
     const path = nested && nested.path.length > 1 ? nested.path.map(label).join(' / ') : undefined;
-
-    return {
-      row: {
-        key: group,
-        group,
-        label: label(group),
-        ...(path ? { path } : {}),
-        state: current,
-        originalState,
-        count,
-        total,
-        pending: current !== originalState,
-        isNew: createdLabel.has(group) && !node,
-        next,
-        disabled: next === current,
-        ...(reason ? { reason } : {}),
-        ...(fix ? { fix } : {}),
-        refused,
-        removalViolations,
-        change: { add: addIds.length, remove: removeIds.length },
-      },
-      addIds,
-      removeIds,
+    const base_ = {
+      key: group,
+      group,
+      label: label(group),
+      ...(path ? { path } : {}),
+      state: now,
+      originalState,
+      count,
+      total,
+      pending: now !== originalState,
+      isNew: createdLabel.has(group) && !node,
+      next,
+      disabled: next === now,
+      ...(reason ? { reason } : {}),
+      ...(fix ? { fix } : {}),
+      refused,
+      removalViolations,
+      change: { add: addIds.length, remove: removeIds.length },
     };
+    // The description is the reason and its fix. A conflict is NOT repeated here: it belongs to
+    // the plan (and is said once, where Apply is), see `TagRow.conflict`.
+    const description = [reason, fix].filter(Boolean).join(' ');
+    const row: TagRow = {
+      ...base_,
+      aria: {
+        checked: now === 'all' ? 'true' : now === 'none' ? 'false' : 'mixed',
+        disabled: base_.disabled,
+        label: messages.tagging.rowLabel(base_),
+        ...(description ? { description } : {}),
+      },
+    };
+    return { key, row, addIds, removeIds };
+  };
+
+  // Each row is reused while its key holds: its staged state, the removals that can affect it,
+  // and its created label.
+  const entries = groups.map((group) => {
+    const current = state.pending.get(group);
+    const key = `${current ?? '-'}\u0001${removalKey(group)}\u0001${createdLabel.get(group) ?? ''}`;
+    const hit = cache.get(group);
+    if (hit && hit.key === key) return hit;
+    const entry = computeRow(group, key, current);
+    cache.set(group, entry);
+    return entry;
   });
 
-  const add: GroupChange[] = drafts.filter((d) => d.addIds.length).map((d) => ({ group: d.row.group, ids: d.addIds }));
-  const remove: GroupChange[] = drafts
+  const add: GroupChange[] = entries.filter((d) => d.addIds.length).map((d) => ({ group: d.row.group, ids: d.addIds }));
+  const remove: GroupChange[] = entries
     .filter((d) => d.removeIds.length)
     .map((d) => ({ group: d.row.group, ids: d.removeIds }));
-  const refused = drafts.filter((d) => d.row.state === 'all' && d.row.pending).flatMap((d) => d.row.refused);
+  const refused = entries.filter((d) => d.row.state === 'all' && d.row.pending).flatMap((d) => d.row.refused);
   const create = state.created
     .filter((c) => add.some((a) => a.group === c.group) && !space.nodes.has(c.group))
     .map((c) => ({ group: c.group, label: c.label }));
 
-  // The whole plan, dry-run at once: catches staged changes that clash with EACH OTHER.
+  // The staged removals the model refuses on their own (a write elsewhere since they were staged).
+  // Rows were judged against the current space then; say so rather than falling back silently.
   const conflictViolations: Violation[] = [];
+  if (removing.length && anyRowUsesBase(entries)) {
+    base();
+    if (removedBase && !removedBase.ok) conflictViolations.push(...removedBase.violations);
+  }
+  // The whole plan, dry-run at once: catches staged changes that clash with EACH OTHER.
   if (add.length || remove.length) {
     const result = applyDelta(space, deltaOf(space, { add, remove, create, kind }, dryId));
     if (!result.ok) conflictViolations.push(...result.violations);
@@ -526,21 +602,37 @@ function computeCore(
     for (const g of involved) if (!conflictOf.has(g)) conflictOf.set(g, text);
   }
 
-  // Batches, for `bulkTag(ids, change)`. When nothing was refused, every staged group means "all
-  // of the selection" or "none of it", so ONE change fits every changing item (its no-op parts are
-  // idempotent: an item already in the requested state succeeds) — one call, one inverse, one undo
-  // step. Refusals make the changes differ per item; then items with the same change share a batch.
+  // Batches, for `bulkTag(ids, change)`. They must write EXACTLY the plan: `bulkTag` skips an
+  // item only when it already has an edge of the SAME kind, so an item already in a group through
+  // another membership kind (`is_a`) would get a second edge, and a refused item would be failed
+  // whole. One batch is exact when every changing item either takes every added group or already
+  // holds it with this kind (removing a group an item is not in is a no-op too); then it is one
+  // call, one inverse, one undo step. Otherwise items with the same change share a batch.
   const perItem = new Map<NodeId, { add: NodeId[]; remove: NodeId[] }>();
   const touch = (id: NodeId) => perItem.get(id) ?? perItem.set(id, { add: [], remove: [] }).get(id)!;
   for (const a of add) for (const id of a.ids) touch(id).add.push(a.group);
   for (const r of remove) for (const id of r.ids) touch(id).remove.push(r.group);
   const changing = selection.filter((item) => perItem.has(item));
-  const withKind = kind !== CONTAINS ? { kind } : {};
+  const labelsFor = (adds: readonly NodeId[]) => {
+    const labels: Record<string, string> = {};
+    for (const c of create) if (c.label !== c.group && adds.includes(c.group)) labels[c.group] = c.label;
+    return Object.keys(labels).length ? { labels } : {};
+  };
+  const changeOf = (adds: NodeId[], removes: NodeId[]) => ({
+    add: adds,
+    remove: removes,
+    ...(kind !== CONTAINS ? { kind } : {}),
+    ...labelsFor(adds),
+  });
   let batches: TaggingBatch[];
-  if (!refused.length) {
-    batches = changing.length
-      ? [{ ids: changing, change: { add: add.map((a) => a.group), remove: remove.map((r) => r.group), ...withKind } }]
-      : [];
+  const sameKindIn = (group: NodeId, item: NodeId) =>
+    edgesInto(space, item).some((e) => e.parent === group && e.kind === kind);
+  const uniform = add.every((a) => {
+    const taking = new Set(a.ids);
+    return changing.every((item) => taking.has(item) || sameKindIn(a.group, item));
+  });
+  if (uniform) {
+    batches = changing.length ? [{ ids: changing, change: changeOf(add.map((a) => a.group), remove.map((r) => r.group)) }] : [];
   } else {
     const batchesByKey = new Map<string, { ids: NodeId[]; add: NodeId[]; remove: NodeId[] }>();
     for (const item of changing) {
@@ -550,7 +642,7 @@ function computeCore(
       if (batch) batch.ids.push(item);
       else batchesByKey.set(key, { ids: [item], add: change.add, remove: change.remove });
     }
-    batches = [...batchesByKey.values()].map((b) => ({ ids: b.ids, change: { add: b.add, remove: b.remove, ...withKind } }));
+    batches = [...batchesByKey.values()].map((b) => ({ ids: b.ids, change: changeOf(b.add, b.remove) }));
   }
 
   const plan: TaggingPlan = {
@@ -564,23 +656,14 @@ function computeCore(
     itemCount: perItem.size,
     isEmpty: perItem.size === 0,
     ok: conflicts.length === 0,
+    revision: space.revision,
   };
 
   const compare = options.compare ?? byPath;
-  const rows: TagRow[] = drafts
+  const rows: TagRow[] = entries
     .map(({ row }) => {
       const conflict = conflictOf.get(row.group);
-      const description = [row.reason, row.fix, conflict].filter(Boolean).join(' ');
-      return {
-        ...row,
-        ...(conflict ? { conflict } : {}),
-        aria: {
-          checked: row.state === 'all' ? 'true' : row.state === 'none' ? 'false' : 'mixed',
-          disabled: row.disabled,
-          label: messages.tagging.rowLabel(row),
-          ...(description ? { description } : {}),
-        },
-      } satisfies TagRow;
+      return conflict ? { ...row, conflict } : row;
     })
     .sort(compare);
 
@@ -591,6 +674,10 @@ function computeCore(
   }
 
   return { allRows: rows, plan, summary };
+
+  function anyRowUsesBase(list: readonly RowEntry[]): boolean {
+    return list.some((e) => removalKey(e.row.group) !== '');
+  }
 }
 
 /** The plan as one delta. `mint` gives the new edges' ids (default: `makeEdge`'s unique ids). */
@@ -674,11 +761,21 @@ function viewFromCore(
           ? t.noMatches(typed)
           : t.noGroups;
 
+  const blocked =
+    selection.length === 0
+      ? t.noSelection
+      : core.plan.isEmpty
+        ? t.nothingToApply
+        : !core.plan.ok
+          ? sentence(core.plan.conflicts[0]!)
+          : undefined;
+
   return {
     rows,
     allRows: core.allRows,
     query: state.query,
     selection,
+    ...(blocked ? { blocked } : {}),
     ...(create ? { create } : {}),
     plan: core.plan,
     summary: core.summary,
@@ -762,7 +859,8 @@ export interface DescribeOptions {
 /**
  * The live-region sentence after an apply: *"Applied: tagged 12 items, 2 refused: “x”: …"*. Merges
  * the write's failures with the refusals the plan left out (`plan.refused`), so nothing refused is
- * silent. A failure carrying violations is worded with this module's messages.
+ * silent. A failure is worded with this module's messages: its violations if it has some, else its
+ * code (`failureReasons`); the write's raw `reason` only for a code the table does not know.
  */
 export function describeOutcome(
   plan: TaggingPlan,
@@ -781,7 +879,11 @@ export function describeOutcome(
   const verb = plan.add.length && plan.remove.length ? 'updated' : plan.remove.length ? 'untagged' : 'tagged';
   const details: string[] = [];
   for (const f of merged.failed) {
-    const reason = f.violations?.length ? explainViolation(f.violations[0]!, explainOpts).message : f.reason;
+    // Plain language: the model's violation, else the failure code's sentence. A provider's own
+    // text (`reason`) is for logs; it is used only for a code this table does not know.
+    const reason = f.violations?.length
+      ? explainViolation(f.violations[0]!, explainOpts).message
+      : (f.code !== undefined ? messages.tagging.failureReasons[f.code] : undefined) ?? f.reason;
     details.push(messages.tagging.refusedDetail(label(f.id), reason));
   }
   for (const r of plan.refused) details.push(messages.tagging.refusedDetail(label(r.id), r.explained.message));
@@ -823,11 +925,17 @@ export interface TaggingSession {
    * confirmed, so a failed write loses nothing.
    */
   apply(): TaggingPlan;
-  /** The write landed: clear what was staged (the query stays) and return the live-region sentence. */
+  /**
+   * The write landed: clear what was staged (the query stays) and return the live-region sentence.
+   * With a live source (the space re-read after the write), each staged row is checked: one that
+   * did not reach its staged state — another writer got in between — stays staged and the sentence
+   * says so. Refused and failed items are not counted against it.
+   */
   complete(outcome?: ApplyOutcome | readonly ApplyOutcome[]): string;
   /**
-   * The model or the selection changed. A different selection drops what was staged — staged
-   * changes were made for the items the user saw.
+   * The model or the selection changed. A different selection (as a set: order and duplicates do
+   * not count) drops what was staged — staged changes were made for the items the user saw — and
+   * the next view carries a `notice` saying so.
    */
   update(next: { readonly source?: SpaceSource; readonly selection?: Iterable<NodeId | string> }): TaggingView;
   subscribe(listener: () => void): () => void;
@@ -839,17 +947,21 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
   let opts = options;
   let selection = unique(options.selection);
   let state = EMPTY_TAGGING_STATE;
-  /** The plan `apply()` handed out: `complete` describes THAT, not one recomputed after the write. */
-  let handedOut: TaggingPlan | null = null;
+  /** The plan `apply()` handed out, and the space it was computed on: `complete` checks against them. */
+  let handedOut: { plan: TaggingPlan; space: GroupSpace } | null = null;
+  /** Said once: set by `update`, cleared by the next change. */
+  let notice: string | undefined;
   const messages = resolveMessages(options.messages);
   const listeners = new Set<() => void>();
+  const rowCache: RowCache = new Map();
 
   let coreKey: { space: GroupSpace; pending: TaggingState['pending']; created: TaggingState['created']; selection: readonly NodeId[] } | null = null;
   let core: Core | null = null;
-  let cachedView: { space: GroupSpace; state: TaggingState; core: Core; view: TaggingView } | null = null;
+  let cachedView: { space: GroupSpace; state: TaggingState; core: Core; notice: string | undefined; view: TaggingView } | null = null;
 
-  /** The expensive part (dry runs, plan) — recomputed only when the model, the staging or the selection changes. */
+  /** The expensive part (dry runs, plan): recomputed when the model, the staging or the selection changes — and then only the rows the change can affect. */
   const ensureCore = (space: GroupSpace): Core => {
+    if (!core || !coreKey || coreKey.space !== space || coreKey.selection !== selection) rowCache.clear();
     if (
       !core ||
       !coreKey ||
@@ -858,7 +970,7 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
       coreKey.created !== state.created ||
       coreKey.selection !== selection
     ) {
-      core = computeCore(space, selection, state, opts, messages);
+      core = computeCore(space, selection, state, opts, messages, rowCache);
       coreKey = { space, pending: state.pending, created: state.created, selection };
     }
     return core;
@@ -868,25 +980,34 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
   const view = (): TaggingView => {
     const space = resolveSpace(src);
     const c = ensureCore(space);
-    if (!cachedView || cachedView.space !== space || cachedView.state !== state || cachedView.core !== c) {
-      cachedView = { space, state, core: c, view: viewFromCore(space, selection, c, state, opts, messages) };
+    if (!cachedView || cachedView.space !== space || cachedView.state !== state || cachedView.core !== c || cachedView.notice !== notice) {
+      const v = viewFromCore(space, selection, c, state, opts, messages);
+      cachedView = { space, state, core: c, notice, view: notice ? { ...v, notice } : v };
     }
     return cachedView.view;
   };
 
-  const set = (next: TaggingState): TaggingView => {
+  const notify = (): void => {
+    for (const l of [...listeners]) {
+      try {
+        l();
+      } catch {
+        // One bad listener must not stop the others (the zodal-dials lesson).
+      }
+    }
+  };
+
+  const set = (next: TaggingState, keepNotice = false): TaggingView => {
     if (next !== state) {
       state = next;
-      for (const l of [...listeners]) {
-        try {
-          l();
-        } catch {
-          // One bad listener must not stop the others (the zodal-dials lesson).
-        }
-      }
+      if (!keepNotice) notice = undefined;
+      notify();
     }
     return view();
   };
+
+  /** Selected items in `group` now, in `space` (direct memberships). */
+  const inGroup = (space: GroupSpace, group: NodeId, item: NodeId): boolean => membershipEdges(space, group, item).length > 0;
 
   return {
     view,
@@ -898,7 +1019,7 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
       const row = view().allRows.find((r) => r.group === id);
       return row ? set(toggleTag(state, row)) : view();
     },
-    setQuery: (query) => set(setTagQuery(state, query)),
+    setQuery: (query) => set(setTagQuery(state, query), true),
     create(label) {
       const current = view();
       if (label === undefined || label.trim() === current.query.trim()) return set(createTag(state, current.create));
@@ -909,40 +1030,66 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
     },
     reset: (group) => set(resetTag(state, group)),
     apply() {
-      handedOut = view().plan;
-      return handedOut;
+      const space = resolveSpace(src);
+      const plan = view().plan;
+      handedOut = { plan, space };
+      return plan;
     },
     complete(outcome) {
-      const plan = handedOut ?? view().plan;
+      const plan = handedOut?.plan ?? view().plan;
+      const planSpace = handedOut?.space;
       handedOut = null;
-      const text = describeOutcome(plan, outcome ?? { succeeded: plan.batches.flatMap((b) => b.ids), failed: [] }, {
-        space: resolveSpace(src),
+      const merged = outcome === undefined
+        ? { succeeded: plan.batches.flatMap((b) => b.ids), failed: [] }
+        : Array.isArray(outcome)
+          ? mergeOutcomes(outcome)
+          : (outcome as ApplyOutcome);
+      const after = resolveSpace(src);
+      const describeOpts = {
+        space: after,
         ...(opts.labelOf ? { labelOf: opts.labelOf } : {}),
         ...(opts.messages ? { messages: opts.messages } : {}),
-      });
-      set(resetTag(state));
+      };
+      let text = describeOutcome(plan, merged, describeOpts);
+
+      // Check each staged row against the space re-read after the write. Only possible with a live
+      // source: a snapshot that did not change says nothing about the write.
+      const keep = new Set<NodeId>();
+      if (planSpace && after !== planSpace) {
+        const failed = new Set(merged.failed.map((f) => f.id));
+        const refused = new Set(plan.refused.map((r) => `${r.group}\u0000${r.id}`));
+        for (const [group, target] of state.pending) {
+          const expected = selection.filter((item) => !failed.has(item) && !(target === 'all' && refused.has(`${group}\u0000${item}`)));
+          const reached = expected.every((item) => inGroup(after, group, item) === (target === 'all'));
+          if (!reached) keep.add(group);
+        }
+      }
+      if (keep.size) {
+        text += ` ${messages.tagging.changedElsewhere([...keep].map((g) => labelFor(g, describeOpts)))}`;
+        const pending = new Map([...state.pending].filter(([g]) => keep.has(g)));
+        set({ ...state, pending, created: state.created.filter((c) => keep.has(c.group)) });
+      } else {
+        set(resetTag(state));
+      }
       return text;
     },
     update(next) {
       if (next.source) src = next.source;
       if (next.selection) {
         const fresh = unique(next.selection);
-        const same = fresh.length === selection.length && fresh.every((id, i) => id === selection[i]);
+        const before = new Set(selection);
+        const same = fresh.length === before.size && fresh.every((id) => before.has(id));
         if (!same) {
           selection = fresh;
           opts = { ...opts, selection: fresh };
-          core = null;
-          return set(resetTag(state));
+          const dropped = state.pending.size;
+          notice = dropped ? messages.tagging.stagedDropped(dropped) : undefined;
+          const cleared = resetTag(state);
+          return set(cleared, true);
         }
       }
       // A new source with the same state: notify so renderers redraw against the new model.
-      for (const l of [...listeners]) {
-        try {
-          l();
-        } catch {
-          /* isolated */
-        }
-      }
+      notify();
       return view();
     },
     subscribe(listener) {

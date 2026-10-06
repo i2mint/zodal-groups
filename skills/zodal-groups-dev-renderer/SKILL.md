@@ -76,15 +76,28 @@ Reading."* Render it. Without it, correct cycle prevention *looks* broken.
 pure `toTaggingView` / `toggleTag`); a renderer draws `view.rows` and forwards clicks and keys. The
 reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must not get wrong:
 
-- **Tri-state as `aria-checked`**: `row.aria.checked` is `'true' | 'false' | 'mixed'`. Draw the box
-  from `row.state` (a dash for `some`). The click does `row.next` — never compute the cycle yourself.
+- **Tri-state, validly.** `row.aria.checked` is `'true' | 'false' | 'mixed'` — use it on a
+  `role="checkbox"` / `menuitemcheckbox`. On a listbox `role="option"`, `mixed` is not defined: set
+  `aria-checked` true only for `all`, and rely on `row.aria.label` (*"urgent, on 1 of 3, will add to
+  2"*), which carries the state and what is staged. Draw the box from `row.state` (a dash for
+  `some`). The click does `row.next` — never compute the cycle yourself.
 - **Staged, then Apply.** Nothing is written on click. The button says `view.applyLabel` ("Apply to
-  7 items", the items that will *change*), is disabled unless `view.canApply`, and its description is
-  `view.summary` plus `view.plan.conflicts`. On Apply: `session.apply()` → hand the plan to the
-  host (`onApply`; with a collection, `bulkTag` per `plan.batches`) → `session.complete(outcome)`
-  only after the write resolves. A write that throws keeps everything staged.
-- **A live region** (`role="status"`, polite, present from mount) gets `complete()`'s sentence:
-  *"Applied: tagged 12 items, 2 refused: …"*. Refusals the plan left out are in it too.
+  7 items", the items that will *change*), is **`aria-disabled`, never `disabled`** (it must stay
+  focusable to say why: `view.blocked`), and its description is `view.summary` plus
+  `view.plan.conflicts`. On Apply: `session.apply()` → hand the plan to the host (`onApply`; with a
+  collection, `bulkTag` per `plan.batches`, which carry `labels` for created groups) →
+  `session.complete(outcome)` only after the write resolves. A write that throws keeps everything
+  staged; a row another writer moved stays staged and the sentence says so. Do not close the menu
+  while a write is in flight.
+- **One polite live region** (`role="status"`, present from mount; clear it, then fill it a beat
+  later) says what no option shows: "Applying…", `complete()`'s sentence (*"Applied: tagged 12 items,
+  2 refused: …"*), `view.blocked`, a conflict (once — not as an alert, not in the option's
+  description too), `view.notice` (staged changes a new selection dropped), a discard.
+- **Update options in place** (one node per group, an id derived from the group and stable for the
+  menu's life) and write `aria-activedescendant` only when the active group changes. Rebuilding the
+  list points the same id at a new node: no event fires and a toggle or a filter goes unannounced.
+  `session.view()` reuses unchanged `TagRow` objects, so identity tells you what to skip. Render once
+  per input (the session's subscription is the render trigger).
 - **Refused ≠ hidden.** A row the model refuses stays in the list, `aria-disabled`, with
   `row.aria.description` as its accessible description *and* shown inline. A partly refused row stays
   enabled and says *"1 of 2 can't take it: …"*. Conflicts block Apply; the menu never picks a winner.
@@ -92,8 +105,10 @@ reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must 
   field once and never re-render it: the typed text must survive toggles, applies and `update()`.
   Track the active option by **group id**, not index, so it survives filtering. Option DOM ids come
   from position, never from the group id (any character may be in it).
-- **Keys**: ↓/↑ move, Enter toggles (or creates), Ctrl/⌘+Enter applies, Escape → `onClose` (keep
-  the text). A mouse click must not steal focus (`mousedown` → `preventDefault`).
+- **Keys**: ↓/↑ move, PageDown/PageUp by ten, Enter toggles (or creates), Ctrl/⌘+Enter applies.
+  Escape behaves like Cancel (discard what was staged, say so, `onClose`) and does not propagate;
+  without `onClose` it clears the field (APG). A mouse click must not steal focus (`mousedown` →
+  `preventDefault`), and the pointer moves the same highlight the keys do.
 
 ## Violation messages: never write the copy in a renderer
 
@@ -169,8 +184,9 @@ that judgement as a score, not as a hard-coded component choice.
       not selector-safe)
 - [ ] DnD via `resolveDrop`; ADD default, ⌥ = MOVE, styled differently, reason shown on refusal
 - [ ] remove ≠ delete in every menu
-- [ ] tag menu: `aria-checked` tri-state from `row.aria.checked`; staged until Apply; outcome in a
-      live region; refused rows reachable with their reason; search field never re-rendered
+- [ ] tag menu: options updated in place with group-derived ids; no `mixed` on `role="option"`
+      (state in the name); Apply `aria-disabled` and explains itself; one polite live region;
+      refused rows reachable with their reason; search field never re-rendered; no close mid-write
 - [ ] every refusal worded by `explainViolation` / `row.reason` + `row.fix`, never hand-written
 - [ ] a registry factory, `create<Lib>Registry()`
 - [ ] tests in a real DOM (`environment: 'jsdom'`) asserting the *polyhierarchy* behaviours, not just

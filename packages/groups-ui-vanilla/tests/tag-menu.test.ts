@@ -59,9 +59,10 @@ describe('ARIA roles and states', () => {
     expect(list.getAttribute('aria-label')).toBe('Groups for 3 selected items');
 
     expect(option('work').getAttribute('aria-checked')).toBe('true');
-    expect(option('urgent').getAttribute('aria-checked')).toBe('mixed');
+    // `mixed` is not defined for options: "some" is unchecked, and the name says how many.
+    expect(option('urgent').getAttribute('aria-checked')).toBe('false');
     expect(option('personal').getAttribute('aria-checked')).toBe('false');
-    expect(option('urgent').getAttribute('aria-label')).toBe('urgent, 1 of 3');
+    expect(option('urgent').getAttribute('aria-label')).toBe('urgent, on 1 of 3');
   });
 
   it('gives every option a distinct DOM id, whatever characters its group id holds', () => {
@@ -101,7 +102,7 @@ describe('keyboard: focus stays in the search field', () => {
     key(input, 'ArrowUp');
     expect(activeOption(input).dataset.key).toBe('urgent');
 
-    key(input, 'Enter'); // mixed → all (Gmail)
+    key(input, 'Enter'); // some → all (Gmail)
     expect(option('urgent').getAttribute('aria-checked')).toBe('true');
     key(input, 'Enter'); // all → none
     expect(option('urgent').getAttribute('aria-checked')).toBe('false');
@@ -142,12 +143,12 @@ describe('staged until applied', () => {
   it('writes nothing until Apply; the button says how many items it will change', async () => {
     const g = mail();
     const menu = renderTagMenu(container, g, { selection: ['a', 'b', 'c'] });
-    expect(applyButton().disabled).toBe(true);
+    expect(applyButton().getAttribute('aria-disabled')).toBe('true');
     expect(applyButton().textContent).toBe('Apply');
 
     option('urgent').click(); // b, c will be added
     expect(g.parents('b')).toEqual(['work']); // staged, not written
-    expect(applyButton().disabled).toBe(false);
+    expect(applyButton().getAttribute('aria-disabled')).toBe('false');
     expect(applyButton().textContent).toBe('Apply to 2 items');
     expect(container.querySelector('.zg-tagmenu-summary')!.textContent).toBe('Add “urgent” to 2 items');
 
@@ -155,7 +156,7 @@ describe('staged until applied', () => {
     await vi.waitFor(() => expect(live().textContent).toBe('Applied: tagged 2 items.'));
     expect(g.parents('b').sort()).toEqual(['urgent', 'work']);
     expect(option('urgent').getAttribute('aria-checked')).toBe('true'); // re-read from the model
-    expect(applyButton().disabled).toBe(true);
+    expect(applyButton().getAttribute('aria-disabled')).toBe('true');
     expect(document.activeElement).toBe(menu.search);
   });
 
@@ -179,7 +180,7 @@ describe('staged until applied', () => {
     expect(onApply).toHaveBeenCalledOnce();
     expect(onApply.mock.calls[0]![0]).toMatchObject({ add: [{ group: 'personal', ids: ['a', 'b'] }] });
     expect(text).toBe('Applied: tagged 1 item, 1 refused: “b”: The provider rejected the write.');
-    expect(live().textContent).toBe(text);
+    await vi.waitFor(() => expect(live().textContent).toBe(text)); // filled a beat after clearing
     expect(live().getAttribute('aria-live')).toBe('polite');
   });
 
@@ -206,16 +207,17 @@ describe('staged until applied', () => {
     const text = await menu.apply();
     expect(text).toBe('Could not apply: Network down. Your changes are still staged.');
     expect(option('personal').getAttribute('aria-checked')).toBe('true');
-    expect(applyButton().disabled).toBe(false);
+    expect(applyButton().getAttribute('aria-disabled')).toBe('false');
   });
 
   it('conflicting staged changes block Apply and say why', () => {
     renderTagMenu(container, board(), { selection: ['b'] });
     option('todo').click();
     option('doing').click();
-    expect(applyButton().disabled).toBe(true);
+    expect(applyButton().getAttribute('aria-disabled')).toBe('true');
     const conflicts = container.querySelector<HTMLElement>('.zg-tagmenu-conflicts')!;
     expect(conflicts.hidden).toBe(false);
+    expect(conflicts.getAttribute('role')).toBeNull(); // said once by the status region, not as an alert
     expect(conflicts.textContent).toContain('“Status” allows one value per item');
     expect(applyButton().getAttribute('aria-describedby')).toContain(conflicts.id);
   });

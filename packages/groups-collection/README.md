@@ -51,7 +51,7 @@ Without `spaces`, you get one embedded space on a `groups` field — what `scope
 |---|---|
 | `create(item, { groups })` | the record and its memberships, together |
 | `tag(ids, group)` / `untag(ids, group)` | bulk add / remove one group |
-| `bulkTag(ids, { add, remove })` | several groups on several items, one operation (the tri-state selection editor) |
+| `bulkTag(ids, { add, remove, labels? })` | several groups on several items, one operation (the tri-state selection editor); `labels` names groups it creates (store spaces) |
 | `removeFromGroup(id, group)` | **membership only** — the record, the group and the item's other groups stay |
 | `deleteItem(id)` | the record and its memberships in every space |
 | `deleteGroup(group)` | the group node and every edge touching it (tombstoned); the members stay |
