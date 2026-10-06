@@ -103,7 +103,8 @@ interface EdgeKindDef {
   readonly symmetric?: boolean;                          // `related` is; `contains` isn't
   readonly acyclic?: boolean;                            // forced true when transitive
   readonly composesWith?: Record<string, EdgeKind>;      // GO: is_a ∘ part_of → part_of
-  readonly disjointWith?: readonly EdgeKind[];           // SKOS S27: related ⊥ broaderTransitive
+  readonly disjointWith?: readonly EdgeKind[];           // SKOS S27: related ⊥ broaderTransitive (checked both ways)
+  readonly membership?: boolean;                         // "child is IN parent"? default !symmetric (D30)
 }
 ```
 
@@ -163,7 +164,7 @@ Deleting a node is a delta like any other: `deleteNodeDelta(space, id)` = every 
 
 ## Group-ness on the end state; becoming a group — and an item (D29)
 
-Within one delta, "is the child a group?" is judged on the delta's end state, so the order of `added` never matters. An edge that gives a node its **first member** re-checks that node's existing memberships against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`) — otherwise `flatTags` breaks in two steps. The mirror: a group that **loses its last member** is an item and is re-checked against the item rules (and family rules). **Only membership kinds count**: an associative kind (`symmetric`, e.g. `related`) makes nobody a group or a parent (`isMembershipKind`, `membershipParentCount`); `instance_of` *is* membership although non-transitive. Tests: `tests/becoming-a-group.test.ts`.
+Within one delta, "is the child a group?" is judged on the delta's end state, so the order of `added` never matters. An edge that gives a node its **first member** re-checks that node's existing memberships against the group rules (`groupsMayContainGroups`, `maxParentsPerGroup`, `maxDepth`) — otherwise `flatTags` breaks in two steps. The mirror: a group that **loses its last member** is an item and is re-checked against the item rules (and family rules). **Only membership kinds count** (`EdgeKindDef.membership`, default `!symmetric`, D30): an associative kind (`related`; a custom `cites` must declare `membership: false`) makes nobody a group or a parent (`isMembershipKind`, `membershipParentCount`); `instance_of` *is* membership although non-transitive. Separately, every `transitive || acyclic` kind belongs to ONE acyclic order (`isAcyclicKind`) — the cycle check walks them all, so validation never depends on edge order. Tests: `tests/becoming-a-group.test.ts`.
 
 ## Profile inference (D27)
 

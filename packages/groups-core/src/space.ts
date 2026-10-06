@@ -128,15 +128,17 @@ export const parentsOf = (space: GroupSpace, child: NodeId): NodeId[] =>
   edgesInto(space, child).map((e) => e.parent);
 
 /**
- * Is this edge kind a **membership** (hierarchical) kind? Every kind is, except the associative
- * ones — those declared `symmetric`, like `related` ("see also", not "is in"). Undeclared kinds
- * (foreign data) count as membership, the conservative reading for projections.
+ * Is this edge kind a **membership** (hierarchical) kind? Its declared `membership`, defaulting to
+ * `!symmetric` (D30). Undeclared kinds (foreign data) count as membership, the conservative reading
+ * for projections.
  *
  * Not "transitive": `instance_of` is non-transitive yet hierarchical (Z39.19's BTI) — a class with
  * instances is a group of them.
  */
-export const isMembershipKind = (profile: GroupProfile, kind: string): boolean =>
-  profile.edgeKinds[kind]?.symmetric !== true;
+export function isMembershipKind(profile: GroupProfile, kind: string): boolean {
+  const def = profile.edgeKinds[kind];
+  return def?.membership ?? def?.symmetric !== true;
+}
 
 /**
  * A node is a *group* iff something is in it — through a membership kind. Group-ness is data, not

@@ -131,3 +131,37 @@ describe('a one-way disjointness can no longer build a state whose undo is block
     if (!r.ok) expect(r.violations[0]!.code).toBe('disjointEdgeKind');
   });
 });
+
+describe('EdgeKindDef.membership: custom associative kinds opt out (M-4)', () => {
+  const rel = (parent: string, child: string, kind: string) =>
+    ({ id: `${parent}~${kind}~${child}` as never, parent: parent as never, child: child as never, kind });
+
+  it('flatTags: a `cites` link declared membership: false is not nesting', async () => {
+    const { DEFAULT_EDGE_KINDS, isGroup, nodeId } = await import('../src/index.js');
+    const edgeKinds = { ...DEFAULT_EDGE_KINDS, cites: { transitive: false, membership: false } };
+    const g = defineGroups({ profile: 'flatTags', overrides: { edgeKinds } });
+    g.add('photo', 'holiday');
+    g.add('photo2', 'travel');
+    expect(g.apply({ added: [rel('holiday', 'travel', 'cites')] }).ok).toBe(true);
+    expect(isGroup(g.space, nodeId('travel'))).toBe(true); // still a group through `contains`
+    expect(g.apply({ added: [rel('note', 'holiday', 'cites')] }).ok).toBe(true); // `note` does not become a group
+    expect(isGroup(g.space, nodeId('note'))).toBe(false);
+  });
+
+  it('labels: a `see_also` link declared membership: false is no second parent', async () => {
+    const { DEFAULT_EDGE_KINDS } = await import('../src/index.js');
+    const edgeKinds = { ...DEFAULT_EDGE_KINDS, see_also: { transitive: false, membership: false } };
+    const g = defineGroups({ profile: 'labels', overrides: { edgeKinds } });
+    g.add('x', 'm2');
+    g.add('m2', 'p');
+    expect(g.apply({ added: [rel('m', 'm2', 'see_also')] }).ok).toBe(true);
+  });
+
+  it('the built-ins say it explicitly; an undeclared flag defaults to !symmetric', async () => {
+    const { DEFAULT_EDGE_KINDS, isMembershipKind, resolveProfile } = await import('../src/index.js');
+    expect(DEFAULT_EDGE_KINDS.related!.membership).toBe(false);
+    expect(DEFAULT_EDGE_KINDS.instance_of!.membership).toBe(true);
+    const p = resolveProfile('polyhierarchy', { edgeKinds: { a: { transitive: false }, b: { transitive: false, symmetric: true } } });
+    expect([isMembershipKind(p, 'a'), isMembershipKind(p, 'b')]).toEqual([true, false]);
+  });
+});

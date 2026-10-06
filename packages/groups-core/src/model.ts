@@ -83,8 +83,17 @@ export interface EdgeKindDef {
    * `wheel part_of car is_a vehicle` from concluding that a wheel is a vehicle.
    */
   readonly composesWith?: Readonly<Record<string, EdgeKind>>;
-  /** Kinds this one may not co-occur with. SKOS S27: `related` is disjoint from `broaderTransitive`. */
+  /** Kinds this one may not co-occur with (either way round). SKOS S27: `related` ⊥ `broaderTransitive`. */
   readonly disjointWith?: readonly EdgeKind[];
+  /**
+   * Is an edge of this kind a MEMBERSHIP ("child is in parent")? Membership edges make their parent
+   * a group, count as the child's parents, and are held to the structural rules (caps, depth,
+   * groups-in-groups). An associative link is not: `related`, or a custom `cites` / `see_also`.
+   *
+   * Defaults to `!symmetric` — right for every built-in, but NOT for an asymmetric associative
+   * custom kind: **declare `membership: false` on such kinds** (reconciliation D30).
+   */
+  readonly membership?: boolean;
 }
 
 /** The default kind: plain containment. Transitive and acyclic — the folder/tag intuition. */
@@ -92,13 +101,14 @@ export const CONTAINS: EdgeKind = 'contains';
 
 /** Built-in edge-kind semantics, following Z39.19 (BTG/BTP/BTI + RT) and SKOS. */
 export const DEFAULT_EDGE_KINDS: Readonly<Record<string, EdgeKindDef>> = Object.freeze({
-  contains: { transitive: true, acyclic: true },
-  is_a: { transitive: true, acyclic: true, composesWith: { is_a: 'is_a', part_of: 'part_of' } },
-  part_of: { transitive: true, acyclic: true, composesWith: { part_of: 'part_of' } },
-  // `instance_of` is NOT transitive: an instance of a class is not an instance of its metaclass.
-  instance_of: { transitive: false, acyclic: true },
+  contains: { transitive: true, acyclic: true, membership: true },
+  is_a: { transitive: true, acyclic: true, membership: true, composesWith: { is_a: 'is_a', part_of: 'part_of' } },
+  part_of: { transitive: true, acyclic: true, membership: true, composesWith: { part_of: 'part_of' } },
+  // `instance_of` is NOT transitive (an instance of a class is not an instance of its metaclass),
+  // but it IS membership: a class with instances is a group of them (Z39.19's BTI).
+  instance_of: { transitive: false, acyclic: true, membership: true },
   // `related` is an associative, non-hierarchical link. It never participates in closure.
-  related: { transitive: false, symmetric: true, disjointWith: ['contains', 'is_a', 'part_of'] },
+  related: { transitive: false, symmetric: true, membership: false, disjointWith: ['contains', 'is_a', 'part_of'] },
 });
 
 // ── the canonical relation ──────────────────────────────────────────────────
