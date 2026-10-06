@@ -1,8 +1,8 @@
 # zodal-groups — Agent Guide
 
-## Project Stage: CORE + FS STORE BUILT, RENDERERS IN PROGRESS
+## Project Stage: CORE + FS STORE + COLLECTION FACADE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (72) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (104) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). Next: selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 
@@ -30,11 +30,12 @@ packages/
   groups-ui-shadcn/  @zodal/groups-ui-shadcn  — React + shadcn/ui                          [TODO]
   groups-ui-ark/     @zodal/groups-ui-ark     — Ark UI / Zag.js (React + vanilla + Vue…)   [TODO]
   groups-store-fs/   @zodal/groups-store-fs   — Node: sidecar JSON manifest, atomic writes [BUILT]
+  groups-collection/ @zodal/groups-collection — items (DataProvider) + group spaces, kept consistent [BUILT]
   groups-store-indexeddb/ …                   — browser, multiEntry membership index      [TODO]
   groups-store-supabase/  …                   — Postgres, recursive CTE via RPC           [TODO]
 ```
 
-**Dependency rule**: `groups-core ← groups-ui ← groups-ui-*`; `groups-core ← groups-store-*`. Renderers never import from a store, and stores never import from the UI. Every store adapter runs `groupStoreContract` from `@zodal/groups-core/testing`.
+**Dependency rule**: `groups-core ← groups-ui ← groups-ui-*`; `groups-core ← groups-store-*`; `groups-core ← groups-collection` (+ `@zodal/store`/`@zodal/core` types, never `@zodal/ui`, never a store adapter at runtime). Renderers never import from a store, and stores never import from the UI. Every store adapter runs `groupStoreContract` from `@zodal/groups-core/testing`.
 
 ## Key Architectural Rules
 
@@ -58,13 +59,14 @@ packages/
 | Any projection (tree, columns, breadcrumbs, facets, closure) | `.claude/skills/zodal-groups-dev-projections/` |
 | Building/changing a UI renderer | `.claude/skills/zodal-groups-dev-renderer/` |
 | Persisting edges (Postgres, fs, S3, Dexie) | `.claude/skills/zodal-groups-dev-store-adapter/` |
+| Items + groups together: `defineTaggedCollection`, tag/merge/delete, failure semantics, inverses, commands | `.claude/skills/zodal-groups-dev-collection/` |
 | "What did we decide, and why?" | `.claude/skills/zodal-groups-dev-research-lookup/` |
 
 Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ## Reference Materials
 
-- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 30 numbered decisions (D25–D30 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
+- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 31 numbered decisions (D25–D31 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
 - **The thesis**: [`docs/zodal-groups-concept.md`](../docs/zodal-groups-concept.md)
 - **Research corpus**: `docs/research/` — 5 reports, ~3,900 lines, ~264 cited sources. Route via `docs/research/README.md`; don't read linearly.
 
@@ -88,6 +90,7 @@ pnpm install
 pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
 pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
 pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
+pnpm --filter @zodal/groups-collection test  # 104 tests: every operation × (embedded, memory store, fs store), failures, two writers
 pnpm build                                   # turbo, all packages
 ```
 

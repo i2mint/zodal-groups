@@ -96,6 +96,20 @@ const space = await store.load();    // hand it to any projection
 
 Deleting a group is undoable too: the delta carries the deleted node as a tombstone, so `invert` brings back its label, payload and edges. Writing an adapter? Run the shared contract kit, `groupStoreContract` from `@zodal/groups-core/testing`.
 
+## Items and their groups, together
+
+`@zodal/groups-collection` is one CRUD object over a zodal item collection (any `DataProvider`) and one or more group spaces over those items — the edges on the records (`{ embedded: 'tags' }`) or in a `GroupStore`. Rules are checked before anything is written, a record and its edges succeed together, a bulk operation keeps what succeeded and reports the rest, and every operation returns its inverse for your app's undo history.
+
+```ts
+import { defineTaggedCollection } from '@zodal/groups-collection';
+
+const tc = defineTaggedCollection({ provider, spaces: { tags: { profile: 'flatTags', edges: { embedded: 'tags' } } } });
+const r = await tc.tag(['a', 'b'], 'urgent');   // → { ok, succeeded, failed, inverse }
+await tc.mergeGroups('todo', 'to-do');
+await tc.revert(r.inverse);
+tc.commands;                                    // the same operations as acture-shaped commands
+```
+
 ## Packages
 
 | package | what | status |
@@ -104,6 +118,7 @@ Deleting a group is undoable too: the delta carries the deleted node as a tombst
 | `@zodal/groups-ui` | headless view descriptors, drag intent, renderer registry | built |
 | `@zodal/groups-ui-vanilla` | zero-dependency DOM renderers | built |
 | `@zodal/groups-store-fs` | Node: the DAG and memberships in a sidecar JSON manifest, written atomically | built |
+| `@zodal/groups-collection` | one CRUD object over an item collection and its group spaces: create-with-groups, bulk tag, rename, merge, delete; per-item failure semantics; inverses; acture-shaped commands | built |
 | `@zodal/groups-store-indexeddb` | browser: `multiEntry` index on the membership set | TODO |
 | `@zodal/groups-store-supabase` | Postgres: recursive CTE via RPC, GIN on memberships | TODO |
 
@@ -126,7 +141,7 @@ cited sources:
 
 ## Status
 
-Core, headless UI, the vanilla renderers and the filesystem store are built and tested. The IndexedDB and Supabase stores and the shadcn/Ark renderers are next.
+Core, headless UI, the vanilla renderers, the filesystem store and the collection facade are built and tested. The IndexedDB and Supabase stores and the shadcn/Ark renderers are next.
 
 ## License
 
