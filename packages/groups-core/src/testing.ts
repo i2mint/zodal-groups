@@ -440,6 +440,25 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     if (applied.space) sameSpace(applied.space, loaded, 'returned space vs load()');
   });
 
+  add('concurrent applies each get the inverse of their own write (exactly one creates the contested node)', async ({ store }) => {
+    // Six writers file an item under a group X that does not exist yet. Exactly one of them
+    // creates X, so exactly one inverse may tombstone it. A store that computes inverses from a
+    // read taken before its serialized section hands that tombstone to several writers.
+    const start = await store.load();
+    const count = 6;
+    const results = await Promise.all(
+      Array.from({ length: count }, (_, i) => store.apply({ added: [edge('X', `item-${i}`)] })),
+    );
+    const applied = results.map((r, i) => expectOk(r, `concurrent apply #${i}`));
+    const creators = applied.filter((a) => a.inverse.removedNodes?.some((x) => x.id === 'X'));
+    equal(creators.length, 1, 'inverses that tombstone the contested node X');
+    // Replaying the inverses newest-first must walk back to the start exactly.
+    for (const a of [...applied].sort((x, y) => y.revision - x.revision)) {
+      expectOk(await store.apply(a.inverse), `undo of revision ${a.revision}`);
+    }
+    sameSpace(await store.load(), start, 'load() after undoing every concurrent write');
+  });
+
   add('expectedRevision: the current revision is accepted; a stale one is refused (conflict), writing nothing', async ({ store }) => {
     const r1 = expectOk(await store.apply({ added: [edge('g', 'a')] }), 'first write').revision;
     expectOk(await store.apply({ added: [edge('g', 'b')] }, { expectedRevision: r1 }), 'a write at the current revision');

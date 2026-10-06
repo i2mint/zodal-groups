@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (181 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (59) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 31-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (181 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (59) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 

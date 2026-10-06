@@ -130,6 +130,29 @@ describe('the contract kit catches a store that breaks the contract', () => {
     expect(err).toBeInstanceOf(ContractViolation);
   });
 
+  it('a store that computes inverses from a stale read fails the concurrent-inverse case', async () => {
+    const err = await runCase(
+      'concurrent applies each get the inverse of their own write (exactly one creates the contested node)',
+      ({ profile }) => {
+        let space = fromSnapshot({ nodes: [], edges: [] }, { profile });
+        return {
+          profile,
+          load: async () => space,
+          apply: async (delta) => {
+            const stale = space; // read before the serialized section…
+            await new Promise((r) => setTimeout(r, 1));
+            const result = commitDelta(space, delta); // …writes correctly…
+            if (!result.ok) return result;
+            space = result.value.space;
+            return { ok: true, value: { ...result.value, inverse: invert(stale, delta) } }; // …but undoes against the stale read
+          },
+          getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
+        } satisfies GroupStore;
+      },
+    );
+    expect(err).toBeInstanceOf(ContractViolation);
+  });
+
   it('a skip is reported with its reason', async () => {
     const all = await groupStoreContract({
       make: ({ profile }) => createMemoryGroupStore({ profile }),
