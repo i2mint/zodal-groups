@@ -88,7 +88,10 @@ Select some items, open the menu: each group is checked (every selected item is 
 ```ts
 import { createTaggingSession } from '@zodal/groups-ui';
 
-const menu = createTaggingSession(() => tc.space('tags'), { selection: ['a', 'b', 'c'] });
+const menu = createTaggingSession(() => tc.space('tags'), {
+  selection: ['a', 'b', 'c'],
+  storesLabels: tc.storesLabels('tags'), // false for an embedded space: it stores group ids only
+});
 menu.view().rows;          // [{ group, label, state: 'none' | 'some' | 'all', count, disabled, reason, … }]
 menu.toggle('urgent');     // some → all
 const plan = menu.apply(); // { add: [{ group, ids }], remove: [...], batches, refused, conflicts }

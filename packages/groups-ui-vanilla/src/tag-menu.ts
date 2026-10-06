@@ -61,6 +61,11 @@ export interface TagMenuOptions extends TaggingOptions {
    * region. The only place the outcome of a write lands if the menu was destroyed meanwhile.
    */
   readonly onAnnounce?: (text: string) => void;
+  /**
+   * The error `onApply` threw — for the host's logs. The live region says only `applyFailed`, in
+   * plain language: an error message can hold a path or an errno, which a screen reader would read.
+   */
+  readonly onError?: (error: unknown) => void;
   /** Focus the search field on mount. Default `true` (the menu was just opened). */
   readonly autoFocus?: boolean;
   /** The menu's accessible name. Default: none (the listbox is named); give one when the menu needs it. */
@@ -432,8 +437,8 @@ export function renderTagMenu<P>(
       text = session.complete(outcome);
     } catch (error) {
       busy = false;
-      const reason = error instanceof Error ? error.message : String(error);
-      text = t.applyFailed(/[.!?]$/.test(reason) ? reason : `${reason}.`);
+      text = t.applyFailed;
+      options.onError?.(error);
     }
     announce(text);
     if (destroyed) return text;

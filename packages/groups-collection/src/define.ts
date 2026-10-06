@@ -333,6 +333,8 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
 
     load: () => serialize(loadNow),
 
+    storesLabels: (name) => runtime(name).mode === 'store',
+
     space(name) {
       if (!loaded) throw new Error('The tagged collection is not loaded yet: `await tc.load()` (or run any operation) first.');
       return runtime(name).current;

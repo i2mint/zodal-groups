@@ -267,3 +267,26 @@ describe('nits', () => {
     expect(container.querySelectorAll('.is-active')).toHaveLength(1);
   });
 });
+
+describe('verification round — a failed write is announced in plain language (B8)', () => {
+  it('keeps the raw error (a path, an errno) out of the live region and hands it to onError', async () => {
+    const onError = vi.fn();
+    const onAnnounce = vi.fn();
+    const g = mail();
+    const error = new Error("ENOSPC: no space left on device, write '/data/a.json'");
+    const menu = renderTagMenu(container, () => g.space, {
+      selection: ['a'],
+      onError,
+      onAnnounce,
+      onApply: () => {
+        throw error;
+      },
+    });
+    option('personal').click();
+    const text = await menu.apply();
+    expect(text).toBe('Could not apply: the change could not be saved. Your changes are still staged.');
+    expect(onAnnounce.mock.calls.flat().join(' ')).not.toContain('/data');
+    expect(onError).toHaveBeenCalledWith(error);
+    expect(option('personal').getAttribute('aria-checked')).toBe('true'); // still staged
+  });
+});

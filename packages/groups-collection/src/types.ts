@@ -265,6 +265,12 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
 
   /** (Re)load every space: re-read the records (embedded) and the stores. Operations load lazily on first use. */
   load(): Promise<void>;
+  /**
+   * Can this space keep a group's label apart from its id? `false` for an embedded space (its field
+   * stores ids), `true` for a `GroupStore` space. A tagging menu passes it as `storesLabels`, so it
+   * never offers a Create that `bulkTag` would refuse.
+   */
+  storesLabels(space?: string): boolean;
   /** The current space (a `GroupSpace` — hand it to any projection). Throws before the first load. */
   space(name?: string): GroupSpace;
   /**

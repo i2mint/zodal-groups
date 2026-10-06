@@ -389,7 +389,13 @@ export interface TaggingMessages {
   /** Appended when some were refused: ", 2 refused: …". `details` is already capped. */
   readonly refused: (count: number, details: readonly string[], more: number) => string;
   readonly refusedDetail: (item: string, reason: string) => string;
-  readonly applyFailed: (reason: string) => string;
+  /**
+   * The write threw. Plain language only: the error itself (a path, an errno) is for the host's
+   * logs — the vanilla menu hands it to `onError` — never for a live region.
+   */
+  readonly applyFailed: string;
+  /** Create refused: the backing stores group ids only, and the id minted from the name differs. */
+  readonly labelNotStored: (label: string, id: string) => string;
   /** Why Apply does nothing right now. */
   readonly nothingToApply: string;
   readonly stillApplying: string;
@@ -444,7 +450,9 @@ export const TAGGING_MESSAGES: TaggingMessages = {
   refused: (count, details, more) =>
     `, ${count} refused: ${details.join('; ')}${more > 0 ? `; and ${more} more` : ''}`,
   refusedDetail: (item, reason) => `${q(item)}: ${reason}`,
-  applyFailed: (reason) => `Could not apply: ${reason} Your changes are still staged.`,
+  applyFailed: 'Could not apply: the change could not be saved. Your changes are still staged.',
+  labelNotStored: (label, id) =>
+    `Groups here are stored by name, so ${q(label)} would be saved as ${q(id)}. Type ${q(id)} to create it.`,
   nothingToApply: 'Nothing to apply yet: tick or untick a group first.',
   stillApplying: 'Still applying, please wait.',
   changedElsewhere: (labels) => {
@@ -476,7 +484,7 @@ export interface GroupsUiMessages {
 /** What a host passes to override some messages — any subset of either table. */
 export interface MessagesOverride {
   readonly violations?: Partial<ViolationMessages>;
-  readonly tagging?: Partial<TaggingMessages>;
+  readonly tagging?: TaggingMessagesOverride;
 }
 
 export const DEFAULT_MESSAGES: GroupsUiMessages = Object.freeze({
@@ -484,11 +492,31 @@ export const DEFAULT_MESSAGES: GroupsUiMessages = Object.freeze({
   tagging: TAGGING_MESSAGES,
 });
 
-/** The default tables with the host's overrides on top. */
+/** A plain object (a nested table such as `failureReasons`), not a function or a string. */
+const isTable = (x: unknown): x is Record<string, unknown> =>
+  typeof x === 'object' && x !== null && !Array.isArray(x) && Object.getPrototypeOf(x) === Object.prototype;
+
+/** `base` with `over` on top, nested tables merged entry by entry (overriding one failure reason keeps the others). */
+function mergeTable<T extends object>(base: T, over: Partial<T> | undefined): T {
+  const out = { ...base } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(over ?? {})) {
+    if (value === undefined) continue;
+    const current = out[key];
+    out[key] = isTable(current) && isTable(value) ? mergeTable(current, value) : value;
+  }
+  return out as T;
+}
+
+/**
+ * What a host passes for the tagging table: any entry, and any part of a nested table.
+ */
+export type TaggingMessagesOverride = { readonly [K in keyof TaggingMessages]?: TaggingMessages[K] extends Readonly<Record<string, string>> ? Partial<TaggingMessages[K]> : TaggingMessages[K] };
+
+/** The default tables with the host's overrides on top — merged deeply, so a nested table keeps the entries not overridden. */
 export function resolveMessages(override: MessagesOverride = {}): GroupsUiMessages {
   return {
-    violations: { ...VIOLATION_MESSAGES, ...(override.violations ?? {}) },
-    tagging: { ...TAGGING_MESSAGES, ...(override.tagging ?? {}) },
+    violations: mergeTable(VIOLATION_MESSAGES, override.violations),
+    tagging: mergeTable(TAGGING_MESSAGES, override.tagging as Partial<TaggingMessages> | undefined),
   };
 }
 

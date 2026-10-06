@@ -87,7 +87,10 @@ reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must 
   `view.plan.conflicts`. On Apply: `session.apply()` → hand the plan to the host (`onApply`; with a
   collection, `bulkTag` per `plan.batches`, which carry `labels` for created groups) →
   `session.complete(outcome)` only after the write resolves. A write that throws keeps everything
-  staged; a row another writer moved stays staged and the sentence says so. Do not close the menu
+  staged and is announced as `applyFailed` (plain language; the error goes to an `onError`
+  callback, never to the live region — it can hold a path). Over a groups-collection space pass
+  `storesLabels: collection.storesLabels(space)`, so the menu never offers a Create the backing
+  cannot keep; a row another writer moved stays staged and the sentence says so. Do not close the menu
   while a write is in flight.
 - **One polite live region** (`role="status"`, present from mount; clear it, then fill it a beat
   later) says what no option shows: "Applying…", `complete()`'s sentence (*"Applied: tagged 12 items,

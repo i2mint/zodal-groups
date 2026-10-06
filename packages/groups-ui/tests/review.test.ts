@@ -8,6 +8,7 @@ import { defineGroups, makeEdge, nodeId, type NodeId } from '@zodal/groups-core'
 import {
   applyTagging,
   createTaggingSession,
+  resolveMessages,
   describeOutcome,
   planToDelta,
   toTaggingView,
@@ -140,7 +141,10 @@ describe('toggles reuse the work of rows they cannot affect (review B4)', () => 
 });
 
 describe('staged removals that the model refuses are reported (review B5)', () => {
-  it('surfaces the violation as a conflict instead of judging rows as if nothing were staged', () => {
+  // A guard, not a regression test: the whole-plan dry run already caught this case before the
+  // fix, and no case exists that only the removals-only branch catches (see its comment in
+  // tagging.ts: the branch is defensive).
+  it('a staged removal made illegal by another writer is a conflict, and Apply is blocked', () => {
     // g2 has two parents and two members; x leaving it is fine while z stays.
     const g = defineGroups({ profile: 'polyhierarchy', overrides: { maxParentsPerItem: 1 } });
     g.add('x', 'g2');
@@ -220,3 +224,30 @@ describe('failures are announced in plain language (review B8)', () => {
 
 // Keep the NodeId import used (the selection API takes plain strings).
 export type _N = NodeId;
+
+describe('verification round (head b692ebb)', () => {
+  const slug = (l: string) => l.toLowerCase().replace(/\s+/g, '-');
+
+  it('1 — a backing that stores no labels refuses a Create whose id differs from the typed name, before the click', () => {
+    const g = defineGroups({ profile: 'labels' });
+    const s = createTaggingSession(g, { selection: ['a', 'b'], mintGroupId: slug, storesLabels: false });
+    s.setQuery('To Read');
+    expect(s.view().create).toMatchObject({
+      allowed: false,
+      reason: 'Groups here are stored by name, so “To Read” would be saved as “to-read”. Type “to-read” to create it.',
+    });
+    s.create();
+    expect(s.view().plan.isEmpty).toBe(true);
+    expect(s.view().canApply).toBe(false);
+    // A name that is its own id needs no label: allowed, and no batch carries `labels`.
+    s.setQuery('later');
+    s.create();
+    expect(s.apply().batches).toEqual([{ ids: ['a', 'b'], change: { add: ['later'], remove: [] } }]);
+  });
+
+  it('4 — overriding one failure reason keeps the others', () => {
+    const m = resolveMessages({ tagging: { failureReasons: { recordWrite: 'son enregistrement n’a pas pu être sauvé' } } });
+    expect(m.tagging.failureReasons.recordWrite).toBe('son enregistrement n’a pas pu être sauvé');
+    expect(m.tagging.failureReasons.notFound).toBe('it no longer exists');
+  });
+});

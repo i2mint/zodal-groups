@@ -225,6 +225,13 @@ export interface TaggingOptions {
   readonly allowCreate?: boolean;
   /** The id of a group created from a typed name. Default: the trimmed name itself. */
   readonly mintGroupId?: (label: string, space: GroupSpace) => string;
+  /**
+   * Can the backing keep a group's label apart from its id? Default `true` (a `GroupStore`). Pass
+   * `false` for a backing that stores ids only — a groups-collection embedded space; ask
+   * `collection.storesLabels(space)`. Then a Create whose minted id differs from the typed name is
+   * refused before the click, saying what it would be saved as, instead of failing at Apply.
+   */
+  readonly storesLabels?: boolean;
   /** How to label a node — an item's title, say. Falls back to the node's label, then its id. */
   readonly labelOf?: LabelOf;
   readonly messages?: MessagesOverride;
@@ -572,7 +579,11 @@ function computeCore(
     .map((c) => ({ group: c.group, label: c.label }));
 
   // The staged removals the model refuses on their own (a write elsewhere since they were staged).
-  // Rows were judged against the current space then; say so rather than falling back silently.
+  // DEFENSIVE: the whole-plan dry run below reports the same violation. A removal is refused only
+  // when it empties a group that then breaks the item rules (D29), and only that group's own row
+  // can stage its removal — or re-add a member to cure it — so the rest of the plan can never make
+  // the combined delta pass where the removals alone fail. Kept so the fallback to judging rows
+  // against the unmodified space can never be silent, should that reasoning ever stop holding.
   const conflictViolations: Violation[] = [];
   if (removing.length && anyRowUsesBase(entries)) {
     base();
@@ -747,7 +758,9 @@ function viewFromCore(
             ? t.createNotAllowed
             : space.nodes.has(group)
               ? t.nameTaken(typed)
-              : undefined;
+              : options.storesLabels === false && group !== typed
+                ? t.labelNotStored(typed, group)
+                : undefined;
       create = { label: typed, group, allowed: reason === undefined, ...(reason ? { reason } : {}), text: t.createOption(typed) };
     }
   }
@@ -935,7 +948,8 @@ export interface TaggingSession {
   /**
    * The model or the selection changed. A different selection (as a set: order and duplicates do
    * not count) drops what was staged — staged changes were made for the items the user saw — and
-   * the next view carries a `notice` saying so.
+   * the next view carries a `notice` saying so. The same set in another order changes nothing: the
+   * session keeps the ORIGINAL order, which is the order of `ids` in the plan and its batches.
    */
   update(next: { readonly source?: SpaceSource; readonly selection?: Iterable<NodeId | string> }): TaggingView;
   subscribe(listener: () => void): () => void;
@@ -1079,6 +1093,7 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
         const fresh = unique(next.selection);
         const before = new Set(selection);
         const same = fresh.length === before.size && fresh.every((id) => before.has(id));
+        // Same set, new order: keep the original `selection` (and so the plan's id order) and the cache.
         if (!same) {
           selection = fresh;
           opts = { ...opts, selection: fresh };

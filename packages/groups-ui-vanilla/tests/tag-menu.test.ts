@@ -205,7 +205,7 @@ describe('staged until applied', () => {
     });
     option('personal').click();
     const text = await menu.apply();
-    expect(text).toBe('Could not apply: Network down. Your changes are still staged.');
+    expect(text).toBe('Could not apply: the change could not be saved. Your changes are still staged.'); // plain language: the error goes to onError
     expect(option('personal').getAttribute('aria-checked')).toBe('true');
     expect(applyButton().getAttribute('aria-disabled')).toBe('false');
   });

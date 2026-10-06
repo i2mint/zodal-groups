@@ -70,3 +70,16 @@ describe('untag takes out memberships only (review B7)', () => {
     expect([...tc.space().edges.keys()]).toEqual(['r']); // the membership went, the link stayed
   });
 });
+
+describe('storesLabels: what a tagging menu needs to know about a space', () => {
+  it('is false for an embedded space (it stores ids) and true for a GroupStore space', async () => {
+    const tc = defineTaggedCollection<Item>({
+      provider: createInMemoryProvider(seed()),
+      spaces: { tags: { edges: { embedded: 'tags' } }, folders: { edges: createMemoryGroupStore({ profile: 'polyhierarchy' }) } },
+    });
+    expect(tc.storesLabels('tags')).toBe(false);
+    expect(tc.storesLabels('folders')).toBe(true);
+    expect(tc.storesLabels()).toBe(false); // the default space is the first: `tags`
+    expect(() => tc.storesLabels('nope')).toThrow(/nope/);
+  });
+});
