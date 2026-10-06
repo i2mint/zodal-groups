@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE + COLLECTION FACADE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (136) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). Next: selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (229 tests), `@zodal/groups-ui` (97), `@zodal/groups-ui-vanilla` (43 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (142) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). groups-ui has the selection-level tagging descriptor (tri-state, staged changes, a plan the caller writes) and a message for every `Violation` code; groups-ui-vanilla renders the menu (issue #3, D32). Next: shadcn and Ark renderers (tag menu included), the zodal tag-chip widget upstream.
 
 ## What zodal-groups Is
 
@@ -25,7 +25,7 @@ the general polyhierarchical case — as **constraint profiles** over one model.
 ```
 packages/
   groups-core/       @zodal/groups-core       — the model, profiles, closure, projections  [BUILT]
-  groups-ui/         @zodal/groups-ui         — headless views, drag intent, registry      [BUILT]
+  groups-ui/         @zodal/groups-ui         — headless views, drag intent, selection tagging, messages, registry [BUILT]
   groups-ui-vanilla/ @zodal/groups-ui-vanilla — zero-dep DOM renderers                     [BUILT]
   groups-ui-shadcn/  @zodal/groups-ui-shadcn  — React + shadcn/ui                          [TODO]
   groups-ui-ark/     @zodal/groups-ui-ark     — Ark UI / Zag.js (React + vanilla + Vue…)   [TODO]
@@ -57,7 +57,7 @@ packages/
 |---|---|
 | The model, profiles, edge kinds, `applyDelta` | `.claude/skills/zodal-groups-dev-model/` |
 | Any projection (tree, columns, breadcrumbs, facets, closure) | `.claude/skills/zodal-groups-dev-projections/` |
-| Building/changing a UI renderer | `.claude/skills/zodal-groups-dev-renderer/` |
+| Building/changing a UI renderer (incl. the selection tagging menu, violation messages) | `.claude/skills/zodal-groups-dev-renderer/` |
 | Persisting edges (Postgres, fs, S3, Dexie) | `.claude/skills/zodal-groups-dev-store-adapter/` |
 | Items + groups together: `defineTaggedCollection`, tag/merge/delete, failure semantics, inverses, commands | `.claude/skills/zodal-groups-dev-collection/` |
 | "What did we decide, and why?" | `.claude/skills/zodal-groups-dev-research-lookup/` |
@@ -66,7 +66,7 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ## Reference Materials
 
-- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 31 numbered decisions (D25–D31 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
+- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 32 numbered decisions (D25–D32 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
 - **The thesis**: [`docs/zodal-groups-concept.md`](../docs/zodal-groups-concept.md)
 - **Research corpus**: `docs/research/` — 5 reports, ~3,900 lines, ~264 cited sources. Route via `docs/research/README.md`; don't read linearly.
 
@@ -87,10 +87,11 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-core test        # 229 tests (+3 skipped: the memory store is not persistent)
 pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
-pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
-pnpm --filter @zodal/groups-collection test  # 136 tests: every operation × (embedded, memory store, fs store), failures, two writers
+pnpm --filter @zodal/groups-ui test          # 97 tests: drag intent, the tagging descriptor (tri-state, cycle, plan, refusals, stale plans, caching), every Violation message
+pnpm --filter @zodal/groups-ui-vanilla test  # 43 DOM tests (jsdom): ARIA, keyboard, in-place updates, the tag menu's live region
+pnpm --filter @zodal/groups-collection test  # 142 tests: every operation × (embedded, memory store, fs store), failures, two writers
 pnpm build                                   # turbo, all packages
 ```
 

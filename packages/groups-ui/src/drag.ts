@@ -35,6 +35,7 @@ import {
   type PathNode,
   type Violation,
 } from '@zodal/groups-core';
+import { explainViolation, type LabelOf, type ViolationMessages } from './messages.js';
 
 /** What the user is doing, expressed independently of any drag library. */
 export interface DragGesture {
@@ -46,6 +47,12 @@ export interface DragGesture {
   readonly modifiers?: { readonly alt?: boolean; readonly shift?: boolean; readonly meta?: boolean };
   /** Where in the target row the pointer is — drives reorder vs. reparent. */
   readonly position?: 'before' | 'after' | 'inside';
+}
+
+/** How a refusal is worded: the host's labels and message overrides (see `./messages`). */
+export interface ResolveDropOptions {
+  readonly labelOf?: LabelOf;
+  readonly messages?: Partial<ViolationMessages>;
 }
 
 export type DropOperation =
@@ -72,6 +79,8 @@ export interface DropTarget {
    * Reading."*
    */
   readonly reason?: string;
+  /** What the user can do about it — the suggested fix that goes with `reason`. */
+  readonly fix?: string;
   readonly violations: readonly Violation[];
   /** What to draw: a line between rows, or a highlight on the row. */
   readonly indicator: 'line-before' | 'line-after' | 'highlight' | 'forbidden';
@@ -85,7 +94,7 @@ export interface DropTarget {
  * Call this on every drag-over. It is cheap (one cycle check) and it is the single place the
  * add-vs-move decision is made.
  */
-export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture): DropTarget {
+export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options: ResolveDropOptions = {}): DropTarget {
   const { source, target, modifiers, position = 'inside' } = gesture;
 
   const child = source.nodeId;
@@ -130,10 +139,12 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture): DropTar
 
   const violations = canAddTo(groups.space, child, parent);
   if (violations.length) {
+    const explained = explainViolation(violations[0]!, { space: groups.space, ...options });
     return {
       operation: null,
       valid: false,
-      reason: explain(groups, violations),
+      reason: explained.message,
+      ...(explained.fix ? { fix: explained.fix } : {}),
       violations,
       indicator: 'forbidden',
       destructive: false,
@@ -181,21 +192,6 @@ export function applyDrop<P>(groups: Groups<P>, target: DropTarget): boolean {
 /** The parent a row is being viewed under — the second-to-last element of its path. */
 function parentOfRow(row: PathNode): NodeId | undefined {
   return row.path.length >= 2 ? row.path[row.path.length - 2] : undefined;
-}
-
-/**
- * Turn violations into a sentence.
- *
- * For a cycle, we name the offending route. Without that sentence, correct cycle prevention looks
- * exactly like a broken drop target.
- */
-function explain<P>(groups: Groups<P>, violations: readonly Violation[]): string {
-  const v = violations[0]!;
-  if (v.code === 'cycle' && v.path?.length) {
-    const labels = v.path.map((id) => groups.space.nodes.get(id)?.label ?? id);
-    return `That would create a loop: ${labels.join(' → ')}.`;
-  }
-  return v.message;
 }
 
 /**

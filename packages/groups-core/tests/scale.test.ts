@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyDelta, createGroupSpace, edgeId, makeEdge, nodeId, type Edge } from '../src/index.js';
+import { EXCLUSIVE, applyDelta, createGroupSpace, edgeId, makeEdge, nodeId, type Edge } from '../src/index.js';
 
 const BUDGET_MS = 2_000; // generous: linear work here is ~100 ms on a laptop
 
@@ -35,5 +35,24 @@ describe('bulk tagging is linear', () => {
     const r = applyDelta(s1.value, { added: second });
     expect(r.ok).toBe(true);
     expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+  });
+});
+
+describe('family rules stay linear', () => {
+  it('20,000 items into a family root directly (each item\'s values are read without scanning the root)', () => {
+    // Being in the family root itself is no value, so this is legal — but checking it scanned the
+    // root's edges once per item: O(N²) once the root holds the new members.
+    const seed = applyDelta(createGroupSpace({ profile: 'polyhierarchy' }), {
+      upsertNodes: [{ id: nodeId('status'), family: EXCLUSIVE }],
+      added: ['todo', 'doing'].map((v) => makeEdge(nodeId('status'), nodeId(v), { id: edgeId(`s>${v}`) })),
+    });
+    if (!seed.ok) throw new Error('seed');
+    const added: Edge[] = [];
+    for (let i = 0; i < 20_000; i++) added.push(makeEdge(nodeId('status'), nodeId(`i-${i}`), { id: edgeId(`s>i-${i}`) }));
+    const start = performance.now();
+    const r = applyDelta(seed.value, { added });
+    const ms = performance.now() - start;
+    expect(r.ok).toBe(true);
+    expect(ms, `${ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
   });
 });

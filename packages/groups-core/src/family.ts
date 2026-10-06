@@ -32,17 +32,38 @@ export function hasFamilyAtOrAbove(space: GroupSpace, group: NodeId): boolean {
 }
 
 /**
- * The values of `family` that `item` falls under. Values are the family's direct subgroups through
- * transitive edge kinds; "falls under" uses the same kind-aware closure as everything else.
+ * Per space (immutable, so a WeakMap entry never goes stale), per family root: its values with
+ * their position among the root's edges. Built once per family per space, so reading one item's
+ * values never scans the root — whose edges include its direct members, possibly thousands (being
+ * in the root itself is no value, but it is legal, and the per-item scan made it O(N²)).
+ */
+const valueIndex = new WeakMap<GroupSpace, Map<NodeId, ReadonlyMap<NodeId, number>>>();
+
+function valuesOfFamily(space: GroupSpace, family: NodeId): ReadonlyMap<NodeId, number> {
+  let perSpace = valueIndex.get(space);
+  if (!perSpace) valueIndex.set(space, (perSpace = new Map()));
+  let index = perSpace.get(family);
+  if (!index) {
+    const built = new Map<NodeId, number>();
+    for (const edge of edgesOf(space, family)) {
+      if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
+      if (!built.has(edge.child)) built.set(edge.child, built.size);
+    }
+    perSpace.set(family, (index = built));
+  }
+  return index;
+}
+
+/**
+ * The values of `family` that `item` falls under, in the order of the family's edges. Values are
+ * the family's direct subgroups through transitive edge kinds; "falls under" uses the same
+ * kind-aware closure as everything else.
  */
 export function familyValuesOf(space: GroupSpace, family: NodeId, item: NodeId): NodeId[] {
-  const above = ancestors(space, item);
-  const values = new Set<NodeId>();
-  for (const edge of edgesOf(space, family)) {
-    if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
-    if (above.has(edge.child)) values.add(edge.child);
-  }
-  return [...values];
+  const index = valuesOfFamily(space, family);
+  const values: NodeId[] = [];
+  for (const a of ancestors(space, item)) if (index.has(a)) values.push(a);
+  return values.sort((x, y) => index.get(x)! - index.get(y)!);
 }
 
 /**

@@ -229,6 +229,12 @@ export type MoveOptions = SpaceOption & Position;
 export interface BulkTagChange extends TagOptions {
   readonly add?: readonly string[];
   readonly remove?: readonly string[];
+  /**
+   * Labels for groups in `add` that this change CREATES (a group that exists keeps its label: use
+   * `renameGroup` for that). Store spaces only: an embedded field stores ids, so a label other than
+   * the id is refused there. The tagging menu's `plan.batches` fill it for groups created in the menu.
+   */
+  readonly labels?: Readonly<Record<string, string>>;
 }
 
 export interface RenameOptions extends SpaceOption {
@@ -259,6 +265,12 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
 
   /** (Re)load every space: re-read the records (embedded) and the stores. Operations load lazily on first use. */
   load(): Promise<void>;
+  /**
+   * Can this space keep a group's label apart from its id? `false` for an embedded space (its field
+   * stores ids), `true` for a `GroupStore` space. A tagging menu passes it as `storesLabels`, so it
+   * never offers a Create that `bulkTag` would refuse.
+   */
+  storesLabels(space?: string): boolean;
   /** The current space (a `GroupSpace` — hand it to any projection). Throws before the first load. */
   space(name?: string): GroupSpace;
   /**
@@ -271,7 +283,7 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
   create(item: Partial<T>, options?: CreateOptions): Promise<OperationResult<T>>;
   /** Put each item in `group` (bulk; per-item failures do not stop the others). */
   tag(ids: readonly string[], group: string, options?: TagOptions): Promise<OperationResult<T>>;
-  /** Take each item out of `group`. */
+  /** Take each item out of `group`: its membership edges only (an associative `related` link stays). */
   untag(ids: readonly string[], group: string, options?: SpaceOption): Promise<OperationResult<T>>;
   /** Add and remove several groups on several items, as one operation (the tri-state selection editor). */
   bulkTag(ids: readonly string[], change: BulkTagChange): Promise<OperationResult<T>>;

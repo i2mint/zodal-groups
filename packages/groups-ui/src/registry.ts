@@ -23,6 +23,8 @@ export type Surface =
   | 'breadcrumbs'
   | 'facets'
   | 'tagInput'
+  /** The selection-level tagging menu: tri-state per group, staged until "Apply to N items". */
+  | 'tagMenu'
   | 'treeSelect'
   | 'otherLocations'
   | 'icicle';

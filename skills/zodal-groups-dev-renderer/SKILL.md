@@ -1,6 +1,6 @@
 ---
 name: zodal-groups-dev-renderer
-description: Use when building or changing a zodal-groups UI RENDERER package (@zodal/groups-ui-vanilla, -shadcn, -ark, or a new one) — tree, Miller columns, breadcrumbs, facet panel, tag input, tree-select, icicle. Triggers on "add a renderer", "render the group tree", "drag and drop a folder", "add-vs-move", "drop target", "which tree library should we use", "virtualize the tree", "tree accessibility", "renderer registry", "PRIORITY bands". Read BEFORE adding a renderer or a UI dependency — the add-vs-move default and the DOM-keying rule are safety issues, and several popular tree/DnD libraries are dead, paid, or silently single-parent.
+description: Use when building or changing a zodal-groups UI RENDERER package (@zodal/groups-ui-vanilla, -shadcn, -ark, or a new one) — tree, Miller columns, breadcrumbs, facet panel, tag input, the selection tagging menu (tri-state none/some/all, staged "Apply to N items"), tree-select, icicle — or the violation messages renderers show. Triggers on "add a renderer", "render the group tree", "drag and drop a folder", "add-vs-move", "drop target", "label menu", "bulk tag a selection", "tri-state checkbox", "aria-checked mixed", "violation message", "why was it refused", "which tree library should we use", "virtualize the tree", "tree accessibility", "renderer registry", "PRIORITY bands". Read BEFORE adding a renderer or a UI dependency — the add-vs-move default and the DOM-keying rule are safety issues, and several popular tree/DnD libraries are dead, paid, or silently single-parent.
 metadata:
   audience: developers
 ---
@@ -70,6 +70,58 @@ just refuses is indistinguishable from a bug.
 `drop.reason` gives you the sentence: *"That would create a loop: Reading → Research → Archive →
 Reading."* Render it. Without it, correct cycle prevention *looks* broken.
 
+## The selection tagging menu (Gmail's label menu)
+
+`@zodal/groups-ui` computes the whole thing — `createTaggingSession(source, { selection })` (or the
+pure `toTaggingView` / `toggleTag`); a renderer draws `view.rows` and forwards clicks and keys. The
+reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must not get wrong:
+
+- **Tri-state, validly.** `row.aria.checked` is `'true' | 'false' | 'mixed'` — use it on a
+  `role="checkbox"` / `menuitemcheckbox`. On a listbox `role="option"`, `mixed` is not defined: set
+  `aria-checked` true only for `all`, and rely on `row.aria.label` (*"urgent, on 1 of 3, will add to
+  2"*), which carries the state and what is staged. Draw the box from `row.state` (a dash for
+  `some`). The click does `row.next` — never compute the cycle yourself.
+- **Staged, then Apply.** Nothing is written on click. The button says `view.applyLabel` ("Apply to
+  7 items", the items that will *change*), is **`aria-disabled`, never `disabled`** (it must stay
+  focusable to say why: `view.blocked`), and its description is `view.summary` plus
+  `view.plan.conflicts`. On Apply: `session.apply()` → hand the plan to the host (`onApply`; with a
+  collection, `bulkTag` per `plan.batches`, which carry `labels` for created groups) →
+  `session.complete(outcome)` only after the write resolves. A write that throws keeps everything
+  staged and is announced as `applyFailed` (plain language; the error goes to an `onError`
+  callback, never to the live region — it can hold a path). Over a groups-collection space pass
+  `storesLabels: collection.storesLabels(space)`, so the menu never offers a Create the backing
+  cannot keep; a row another writer moved stays staged and the sentence says so. Do not close the menu
+  while a write is in flight.
+- **One polite live region** (`role="status"`, present from mount; clear it, then fill it a beat
+  later) says what no option shows: "Applying…", `complete()`'s sentence (*"Applied: tagged 12 items,
+  2 refused: …"*), `view.blocked`, a conflict (once — not as an alert, not in the option's
+  description too), `view.notice` (staged changes a new selection dropped), a discard.
+- **Update options in place** (one node per group, an id derived from the group and stable for the
+  menu's life) and write `aria-activedescendant` only when the active group changes. Rebuilding the
+  list points the same id at a new node: no event fires and a toggle or a filter goes unannounced.
+  `session.view()` reuses unchanged `TagRow` objects, so identity tells you what to skip. Render once
+  per input (the session's subscription is the render trigger).
+- **Refused ≠ hidden.** A row the model refuses stays in the list, `aria-disabled`, with
+  `row.aria.description` as its accessible description *and* shown inline. A partly refused row stays
+  enabled and says *"1 of 2 can't take it: …"*. Conflicts block Apply; the menu never picks a winner.
+- **Focus stays in the search field** (APG combobox + listbox, `aria-activedescendant`). Build the
+  field once and never re-render it: the typed text must survive toggles, applies and `update()`.
+  Track the active option by **group id**, not index, so it survives filtering. Option DOM ids come
+  from position, never from the group id (any character may be in it).
+- **Keys**: ↓/↑ move, PageDown/PageUp by ten, Enter toggles (or creates), Ctrl/⌘+Enter applies.
+  Escape behaves like Cancel (discard what was staged, say so, `onClose`) and does not propagate;
+  without `onClose` it clears the field (APG). A mouse click must not steal focus (`mousedown` →
+  `preventDefault`), and the pointer moves the same highlight the keys do.
+
+## Violation messages: never write the copy in a renderer
+
+Every refusal a renderer shows — a drop target (`drop.reason` + `drop.fix`), a tag row, an apply
+outcome — comes from `explainViolation(v, { space, labelOf })`: a sentence plus a suggested fix, for
+every `Violation` code, from one table (`VIOLATION_MESSAGES`). Hosts reword or translate it through
+`messages` (a partial table), never by string-matching `violation.message`. Cycles render their route
+(D15), cardinality names the family and the value to give up (D26). Pass `labelOf` so items read as
+their record titles rather than ids.
+
 ## Accessibility is not optional here
 
 Every row must carry `aria-level`, `aria-posinset`, `aria-setsize`, `aria-selected`, and (when it has
@@ -135,6 +187,10 @@ that judgement as a score, not as a hard-coded component choice.
       not selector-safe)
 - [ ] DnD via `resolveDrop`; ADD default, ⌥ = MOVE, styled differently, reason shown on refusal
 - [ ] remove ≠ delete in every menu
+- [ ] tag menu: options updated in place with group-derived ids; no `mixed` on `role="option"`
+      (state in the name); Apply `aria-disabled` and explains itself; one polite live region;
+      refused rows reachable with their reason; search field never re-rendered; no close mid-write
+- [ ] every refusal worded by `explainViolation` / `row.reason` + `row.fix`, never hand-written
 - [ ] a registry factory, `create<Lib>Registry()`
 - [ ] tests in a real DOM (`environment: 'jsdom'`) asserting the *polyhierarchy* behaviours, not just
       that it rendered — see `packages/groups-ui-vanilla/tests/render.test.ts`
@@ -143,4 +199,5 @@ that judgement as a score, not as a hard-coded component choice.
 
 - Library landscape with status lines: `docs/research/zgroups_04-*`
 - Navigation patterns, DnD semantics, ARIA: `docs/research/zgroups_03-*`
-- Decisions: [`docs/research/_reconciliation.md`](../../docs/research/_reconciliation.md) (D12, D13, D15, D16, §5)
+- Decisions: [`docs/research/_reconciliation.md`](../../docs/research/_reconciliation.md) (D12, D13, D15, D16, D32, §5)
+- The tagging menu's UX sources: polytag `docs/research/ui-patterns.md` §2.2 (tri-state), §2.3 (violation messages), §4.2 (the view contract)

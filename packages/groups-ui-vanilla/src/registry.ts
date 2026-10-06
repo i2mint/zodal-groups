@@ -20,6 +20,7 @@ import { renderColumns } from './columns.js';
 import { renderBreadcrumbs } from './breadcrumbs.js';
 import { renderFacets } from './facets.js';
 import { renderTagInput } from './tag-input.js';
+import { renderTagMenu } from './tag-menu.js';
 
 /** Every vanilla renderer is `(container, groups, options) => something with .destroy()`. */
 export type VanillaRenderer = (container: HTMLElement, groups: never, options?: never) => { destroy(): void };
@@ -51,6 +52,7 @@ export function createVanillaRegistry(): RendererRegistry<VanillaRenderer> {
     ['breadcrumbs', 'vanilla:breadcrumbs', renderBreadcrumbs],
     ['facets', 'vanilla:facets', renderFacets],
     ['tagInput', 'vanilla:tag-input', renderTagInput],
+    ['tagMenu', 'vanilla:tag-menu', renderTagMenu],
   ];
 
   for (const [surface, name, renderer] of simple) {

@@ -15,6 +15,7 @@ import {
   edgesInto,
   edgesOf,
   isGroup,
+  isMembershipKind,
   mergeDelta,
   newEpoch,
   nodeId,
@@ -265,10 +266,11 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     }
   };
 
+  /** Memberships only: an associative link (`related`, a custom `membership: false` kind) is not "in the group" and stays. */
   const untagDelta = (rt: SpaceRuntime, space: GroupSpace, ids: readonly string[], group: string): EdgeDelta => ({
     removed: ids.flatMap((id) =>
       edgesInto(space, nodeId(id))
-        .filter((e) => e.parent === group && (rt.mode === 'store' || isRecordEdge(e)))
+        .filter((e) => e.parent === group && isMembershipKind(space.profile, e.kind) && (rt.mode === 'store' || isRecordEdge(e)))
         .map((e) => e.id),
     ),
   });
@@ -330,6 +332,8 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     defaultSpace,
 
     load: () => serialize(loadNow),
+
+    storesLabels: (name) => runtime(name).mode === 'store',
 
     space(name) {
       if (!loaded) throw new Error('The tagged collection is not loaded yet: `await tc.load()` (or run any operation) first.');
@@ -416,6 +420,20 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         const remove = [...new Set(change.remove ?? [])];
         const both = add.filter((g) => remove.includes(g));
         if (both.length) throw new Error(`bulkTag: ${both.join(', ')} is both added and removed.`);
+        // Labels for groups this change creates. A label equal to the id says nothing new.
+        const labels = Object.entries(change.labels ?? {}).filter(([g, label]) => label !== g && add.includes(g));
+        if (labels.length && rt.mode === 'embedded') {
+          throw new Error(
+            `bulkTag: space '${rt.name}' is embedded in the '${rt.field}' field, which stores ids, not labels ` +
+              `(${labels.map(([g, l]) => `${g} → ${l}`).join(', ')}); make the id the label, or use a GroupStore space.`,
+          );
+        }
+        /** Label a group only when this change creates it: a label never renames an existing group. */
+        const labelDelta = (space: GroupSpace, live: readonly string[]): EdgeDelta => ({
+          upsertNodes: live.length
+            ? labels.filter(([g]) => !space.nodes.has(nodeId(g))).map(([g, label]) => ({ id: nodeId(g), label }))
+            : [],
+        });
         return {
           operation: 'bulkTag',
           units: units(ids),
@@ -425,6 +443,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
               r,
               space,
               concatDeltas([
+                labelDelta(space, live),
                 ...add.map((g) => tagDelta(r, space, live, g, kind)),
                 ...remove.map((g) => untagDelta(r, space, live, g)),
               ]),

@@ -49,3 +49,48 @@
 .zg-chip-remove { background: none; border: 0; cursor: pointer; opacity: .6; color: inherit; font-size: 1.1em; line-height: 1; }
 .zg-chip-remove:hover { opacity: 1; }
 .zg-tag-input { border: 0; outline: 0; background: none; color: inherit; font: inherit; min-width: 8rem; padding: .2rem; }
+
+/* the selection tagging menu: tri-state per group, staged until Apply.
+   Contrast: text cues mix at least 65% of the text colour (>= 4.5:1 on light and dark themes), the
+   active outline 70% (>= 3:1 non-text, WCAG 1.4.11); override --zg-danger to theme the warning hue. */
+.zg-tagmenu { --zg-danger: #e03131; display: flex; flex-direction: column; gap: .35rem; min-width: 16rem; max-width: 100%;
+  font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.zg-tagmenu-search { font: inherit; color: inherit; padding: .35rem .5rem; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: transparent; }
+.zg-tagmenu-list { list-style: none; margin: 0; padding: 0; max-height: 18rem; overflow-y: auto; }
+.zg-tagmenu-option { display: grid; grid-template-columns: 1.1rem 1fr auto; align-items: center; column-gap: .45rem;
+  padding: .2rem .4rem; border-radius: 4px; cursor: default; }
+/* one highlight: the pointer moves the same active option the keys do (no separate :hover style) */
+.zg-tagmenu-option.is-active { background: color-mix(in srgb, currentColor 12%, transparent);
+  outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: -2px; }
+.zg-tagmenu-option.is-disabled .zg-tagmenu-text { opacity: .7; }
+.zg-tagmenu-option.is-pending .zg-tagmenu-label { font-weight: 600; }
+.zg-tagmenu-option.is-new .zg-tagmenu-label::after { content: ' (new)'; font-weight: 400; }
+/* the tri-state box, drawn from data-state: empty, a dash for some, a check for all */
+.zg-tagmenu-box { width: .9rem; height: .9rem; border-radius: 3px; display: inline-grid; place-items: center;
+  border: 1.5px solid color-mix(in srgb, currentColor 70%, transparent); font-size: .7rem; line-height: 1; }
+.zg-tagmenu-option[data-state="all"] .zg-tagmenu-box::before { content: '✓'; }
+.zg-tagmenu-option[data-state="some"] .zg-tagmenu-box::before { content: '–'; }
+.zg-tagmenu-text { display: flex; flex-direction: column; min-width: 0; }
+.zg-tagmenu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zg-tagmenu-path, .zg-tagmenu-count { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
+.zg-tagmenu-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zg-tagmenu-count { font-variant-numeric: tabular-nums; }
+.zg-tagmenu-reason, .zg-tagmenu-conflicts { font-size: .85em; color: color-mix(in srgb, currentColor 65%, var(--zg-danger)); }
+.zg-tagmenu-reason { grid-column: 2 / -1; }
+.zg-tagmenu-reason::before, .zg-tagmenu-conflicts:not(:empty)::before { content: '⚠ '; } /* not colour alone */
+.zg-tagmenu-create { display: block; font-style: italic; }
+.zg-tagmenu-empty { margin: .2rem .4rem; }
+.zg-tagmenu-footer { display: flex; flex-direction: column; gap: .3rem; border-top: 1px solid color-mix(in srgb, currentColor 30%, transparent); padding-top: .35rem; }
+.zg-tagmenu-summary { list-style: none; margin: 0; padding: 0; font-size: .85em; }
+.zg-tagmenu-actions { display: flex; justify-content: flex-end; gap: .4rem; }
+.zg-tagmenu-actions button { font: inherit; padding: .25rem .7rem; border-radius: 4px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: transparent; color: inherit; }
+.zg-tagmenu-apply[aria-disabled="false"] { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600; }
+/* aria-disabled, not disabled: it stays focusable so it can say why; dim the border, keep the text legible */
+.zg-tagmenu-apply[aria-disabled="true"] { cursor: not-allowed; border-style: dashed; }
+.zg-tagmenu-live { font-size: .85em; min-height: 1.2em; }
+@media (forced-colors: active) {
+  .zg-tagmenu-option.is-active { outline: 2px solid Highlight; }
+  .zg-tagmenu-box { border-color: CanvasText; }
+}
