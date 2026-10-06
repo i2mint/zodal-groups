@@ -31,6 +31,8 @@ interface GroupStore<P = unknown> {
 
 Shipped: `createMemoryGroupStore()` in groups-core (the default — real, not a stub) and `@zodal/groups-store-fs` (`packages/groups-store-fs`, the reference persistent adapter). IndexedDB and Supabase are TODO.
 
+The main consumer is `@zodal/groups-collection`, which takes any `GroupStore` as a space's `edges` and writes it with `expectedRevision`/`expectedEpoch`, retrying on `conflict` — so a store that honours the contract (and the kit) works there unchanged. See `zodal-groups-dev-collection`.
+
 **Writing an adapter** (copy `groups-store-fs`'s layout):
 
 1. Persist a **snapshot**: `toSnapshot(space)` → flat `nodes[]` + `edges[]` + `revision` (D20). Read back with `parseSnapshot` (structure, throws with the offending path) then `fromSnapshot(snapshot, { profile })` (indexes only). Never treat unreadable data as empty — raise an error naming the location.
