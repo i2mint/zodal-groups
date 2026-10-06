@@ -288,6 +288,118 @@ export async function execute<T extends Record<string, unknown>>(
   };
   const abandonAll = (f: FailureInfo): Promise<void> => abandon(units.map((u) => [u, f] as const), f);
 
+  /**
+   * Read a record back: `{ record }`, `{ missing }`, or `{ error }` when it cannot be known. A
+   * rejected `getOne` is ambiguous (missing, or the read failed), so it is confirmed with `getList`.
+   */
+  const readBack = async (id: string): Promise<{ record: T } | { missing: true } | { error: unknown }> => {
+    try {
+      return { record: await ctx.provider.getOne(id) };
+    } catch (first) {
+      try {
+        const { data } = await ctx.provider.getList({
+          filter: { field: ctx.idField, operator: 'eq', value: id },
+          pagination: { page: 1, pageSize: 1 },
+        });
+        const hit = data.find((r) => String(r[ctx.idField]) === id);
+        return hit ? { record: hit } : { missing: true };
+      } catch {
+        return { error: first };
+      }
+    }
+  };
+
+  /**
+   * One unit's record write. A provider may write and THEN throw (a timeout on the response), so a
+   * throw is never taken to mean "nothing happened": the record is read back, and the write counts
+   * as done if its change is there, as failed if the record is as before, and as an unknown outcome
+   * (failed, `inconsistent`) if that cannot be told.
+   */
+  const writeRecord = async (u: Unit<T>, written: FieldWrite | undefined): Promise<true | FailureInfo> => {
+    const failedWrite = (e: unknown): FailureInfo => ({ code: 'recordWrite', reason: `Writing record '${u.id}' failed: ${message(e)}` });
+    const unknown = (what: string, e: unknown): FailureInfo => ({
+      code: 'recordWrite',
+      reason: `Record '${u.id}': ${what}, so the write's outcome is unknown (${message(e)}). Re-read it before retrying.`,
+      inconsistent: true,
+    });
+
+    if (u.record?.op === 'create') {
+      let record: T;
+      try {
+        record = await ctx.provider.create(u.record.data);
+      } catch (e) {
+        if (u.id.startsWith(PENDING_ID)) return unknown('the create threw and the provider was to assign its id', e);
+        const found = await readBack(u.id);
+        if ('error' in found) return unknown('the create threw and reading it back failed', found.error);
+        if ('missing' in found) return failedWrite(e);
+        record = found.record; // it landed
+      }
+      const id = String(record[ctx.idField]);
+      u.id = id;
+      created = record;
+      ctx.recordIds.add(id);
+      undoRecord.set(u, async () => {
+        await ctx.provider.delete(id);
+        ctx.recordIds.delete(id);
+      });
+      return true;
+    }
+
+    if (u.record?.op === 'delete') {
+      const prev = before.get(u.id)!;
+      try {
+        await ctx.provider.delete(u.id);
+      } catch (e) {
+        const found = await readBack(u.id);
+        if ('error' in found) return unknown('the delete threw and reading it back failed', found.error);
+        if ('record' in found) return failedWrite(e);
+        // gone: it landed
+      }
+      ctx.recordIds.delete(u.id);
+      undoRecord.set(u, async () => {
+        await ctx.provider.create(prev);
+        ctx.recordIds.add(u.id);
+      });
+      return true;
+    }
+
+    if (!written) return true;
+    const prev = before.get(u.id)!;
+    let threw: { error: unknown } | undefined;
+    try {
+      await ctx.provider.update(u.id, written.patch as Partial<T>);
+    } catch (error) {
+      threw = { error };
+    }
+    // A provider has no revision to write against: read back, so a throw that landed is not
+    // reported as failed, and a concurrent writer that replaced the field is not believed to hold ours.
+    const found = await readBack(u.id);
+    if ('error' in found) {
+      return unknown(threw ? 'the update threw and reading it back failed' : 'reading it back after the update failed', found.error);
+    }
+    if ('missing' in found) {
+      return { code: 'conflict', reason: `Record '${u.id}' disappeared while it was written (another writer deleted it).`, inconsistent: true };
+    }
+    const lost = written.checks.filter(({ field, join, leave }) => {
+      const groups = new Set(fieldGroups(found.record[field]));
+      return join.some((g) => !groups.has(g)) || leave.some((g) => groups.has(g));
+    });
+    if (!lost.length) {
+      const restore = Object.fromEntries(Object.keys(written.patch).map((k) => [k, prev[k]])) as Partial<T>;
+      undoRecord.set(u, () => ctx.provider.update(u.id, restore));
+      return true;
+    }
+    if (threw) {
+      const unchanged = Object.keys(written.patch).every((k) => sameData(found.record[k], prev[k]));
+      return unchanged ? failedWrite(threw.error) : unknown('the update threw and the field now holds neither the old value nor ours', threw.error);
+    }
+    return {
+      code: 'conflict',
+      reason: `Another writer changed record '${u.id}' while it was written: its '${lost[0]!.field}' field no longer holds this change. Nothing more was done for it; re-read and retry (embedded spaces assume one writer per record).`,
+      inconsistent: true,
+    };
+  };
+
   // 1. read ─────────────────────────────────────────────────────────────────
   for (const u of [...units]) {
     if (u.record?.op === 'create') {
@@ -329,52 +441,8 @@ export async function execute<T extends Record<string, unknown>>(
   if (!nothingLeft()) {
     patches = fieldPatches(plan, units, before, ids);
     for (const u of [...units]) {
-      try {
-        if (u.record?.op === 'create') {
-          const record = await ctx.provider.create(u.record.data);
-          const id = String(record[ctx.idField]);
-          u.id = id;
-          created = record;
-          ctx.recordIds.add(id);
-          undoRecord.set(u, async () => {
-            await ctx.provider.delete(id);
-            ctx.recordIds.delete(id);
-          });
-        } else if (u.record?.op === 'delete') {
-          const prev = before.get(u.id)!;
-          await ctx.provider.delete(u.id);
-          ctx.recordIds.delete(u.id);
-          undoRecord.set(u, async () => {
-            await ctx.provider.create(prev);
-            ctx.recordIds.add(u.id);
-          });
-        } else {
-          const written = patches.get(u.id);
-          if (written) {
-            const prev = before.get(u.id)!;
-            const restore = Object.fromEntries(Object.keys(written.patch).map((k) => [k, prev[k]])) as Partial<T>;
-            await ctx.provider.update(u.id, written.patch as Partial<T>);
-            undoRecord.set(u, () => ctx.provider.update(u.id, restore));
-            // A provider has no revision to write against: read back, so a concurrent writer that
-            // replaced the field is noticed rather than silently believed to hold our change.
-            const now = await ctx.provider.getOne(u.id).catch(() => undefined);
-            const lost = written.checks.filter(({ field, join, leave }) => {
-              const groups = new Set(fieldGroups(now?.[field]));
-              return join.some((g) => !groups.has(g)) || leave.some((g) => groups.has(g));
-            });
-            if (lost.length) {
-              undoRecord.delete(u);
-              drop(u, {
-                code: 'conflict',
-                reason: `Another writer changed record '${u.id}' while it was written: its '${lost[0]!.field}' field no longer holds this change. Nothing more was done for it; re-read and retry (embedded spaces assume one writer per record).`,
-                inconsistent: true,
-              });
-            }
-          }
-        }
-      } catch (e) {
-        drop(u, { code: 'recordWrite', reason: `Writing record '${u.id}' failed: ${message(e)}` });
-      }
+      const outcome = await writeRecord(u, patches.get(u.id));
+      if (outcome !== true) drop(u, outcome);
     }
   }
 
