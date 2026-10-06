@@ -28,6 +28,7 @@ The corpus is ~3,900 lines and ~264 cited sources. Do not read it linearly.
 | Why is `PathNode[]` flat? | D12; `zgroups_03` §D.2 — one structure serves tree + virtualization + ARIA + icicle + columns |
 | How do breadcrumbs work with several parents? | §2.5; `zgroups_03` §B.2 — paths become *routes*, not identities |
 | Should drag = move or add? | D16; `zgroups_03` §B — **ADD is the default**; MOVE destroys an invisible edge |
+| How does bulk-tagging a selection work (tri-state, staged, refusals)? | D32 (§8.9); polytag `ui-patterns.md` §2.2–2.3 — Gmail's cycle, refusals dry-run with staged removals applied, a plan not a write |
 | Why are my counts double? | D17; `zgroups_03` §B — never `Σ children.count` |
 | Which tree/DnD library? | §5; `zgroups_04` — and check the **dead/trapped** list first |
 | What should the default view be? | §4 — **not the tree.** Miller columns survive polyhierarchy natively |

@@ -69,16 +69,34 @@ The core is headless: it emits `PathNode[]`, a flat array that serves tree views
 virtualization, ARIA, and icicle charts alike.
 
 ```ts
-import { renderColumns, renderTree, renderTagInput } from '@zodal/groups-ui-vanilla';
+import { renderColumns, renderTree, renderTagInput, renderTagMenu } from '@zodal/groups-ui-vanilla';
 import '@zodal/groups-ui-vanilla/styles.css';
 
 renderColumns(el, g);   // Miller columns — the best view for a polyhierarchy
 renderTree(el, g);      // tree — correct ARIA, twins cross-highlighted
 renderTagInput(el, g);  // tag chips — the same edges, projected flat
+renderTagMenu(el, g, { selection: ['a', 'b', 'c'] });  // Gmail's label menu over a selection
 ```
 
 **Drag-and-drop defaults to ADD, not MOVE.** Moving destroys an edge the user often can't see, and is
 undefined when dragging out of a search result. Hold ⌥ to move. (Gmail's `Label` vs `Move to`.)
+
+### Tagging a selection
+
+Select some items, open the menu: each group is checked (every selected item is in it), empty (none is) or **mixed** (some are). A click stages a change — a mixed box goes to *all*, as in Gmail — and nothing is written until **Apply to N items**. Before the click, the menu already says why a group would be refused (*"“Status” allows one value per item, and “Bug 12” would be in both “Todo” and “Doing”. Remove it from “Todo” first."*). The headless part lives in `@zodal/groups-ui` and never writes: it hands you a plan.
+
+```ts
+import { createTaggingSession } from '@zodal/groups-ui';
+
+const menu = createTaggingSession(() => tc.space('tags'), { selection: ['a', 'b', 'c'] });
+menu.view().rows;          // [{ group, label, state: 'none' | 'some' | 'all', count, disabled, reason, … }]
+menu.toggle('urgent');     // some → all
+const plan = menu.apply(); // { add: [{ group, ids }], remove: [...], batches, refused, conflicts }
+const results = await Promise.all(plan.batches.map((b) => tc.bulkTag(b.ids, b.change)));
+menu.complete(results);    // → "Applied: tagged 2 items, 1 refused: …" (for a live region)
+```
+
+Every `Violation` code has a sentence and a suggested fix (`explainViolation`), from one table a host can override or translate.
 
 ## Persisting
 
@@ -115,8 +133,8 @@ tc.commands;                                    // the same operations as acture
 | package | what | status |
 |---|---|---|
 | `@zodal/groups-core` | the model, profiles, closure, projections, `GroupStore` contract + memory store, contract kit (`/testing`) | built |
-| `@zodal/groups-ui` | headless view descriptors, drag intent, renderer registry | built |
-| `@zodal/groups-ui-vanilla` | zero-dependency DOM renderers | built |
+| `@zodal/groups-ui` | headless view descriptors, drag intent, selection tagging (tri-state, staged, plan), violation messages, renderer registry | built |
+| `@zodal/groups-ui-vanilla` | zero-dependency DOM renderers, including the selection tagging menu | built |
 | `@zodal/groups-store-fs` | Node: the DAG and memberships in a sidecar JSON manifest, written atomically | built |
 | `@zodal/groups-collection` | one CRUD object over an item collection and its group spaces: create-with-groups, bulk tag, rename, merge, delete; per-item failure semantics; inverses; acture-shaped commands | built |
 | `@zodal/groups-store-indexeddb` | browser: `multiEntry` index on the membership set | TODO |

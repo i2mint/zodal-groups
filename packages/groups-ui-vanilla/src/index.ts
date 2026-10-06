@@ -13,6 +13,9 @@
  *
  * const groups = defineGroups({ profile: 'polyhierarchy' });
  * renderColumns(document.querySelector('#browser')!, groups);
+ *
+ * // Tag a selection: tri-state per group, staged until "Apply to N items".
+ * renderTagMenu(document.querySelector('#labels')!, groups, { selection: ['a', 'b', 'c'] });
  * ```
  */
 
@@ -21,4 +24,5 @@ export { renderColumns, type ColumnsRenderer, type ColumnsRendererOptions } from
 export { renderBreadcrumbs, type BreadcrumbsRenderer } from './breadcrumbs.js';
 export { renderFacets, type FacetsRenderer } from './facets.js';
 export { renderTagInput, type TagInputRenderer } from './tag-input.js';
+export { renderTagMenu, type TagMenuOptions, type TagMenuRenderer } from './tag-menu.js';
 export { createVanillaRegistry } from './registry.js';
