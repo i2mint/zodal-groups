@@ -25,10 +25,10 @@
  * writer can cause.
  */
 
-import { applyDelta, type Edge, type EdgeDelta, type EdgeId, type GroupSpace, type Node, type Violation } from '@zodal/groups-core';
+import { applyDelta, nodeId, type Edge, type EdgeDelta, type EdgeId, type GroupSpace, type Node, type Violation } from '@zodal/groups-core';
 import type { DataProvider } from '@zodal/store';
 import { combine, isEmptyDelta, partition, sameData } from './delta.js';
-import { commit, fieldGroups, isRecordEdge, loadStore, nextField, resyncEmbedded, type SpaceRuntime } from './spaces.js';
+import { commit, fieldGroups, isRecordEdge, loadStore, nextField, recordEdgeGroup, resyncEmbedded, type SpaceRuntime } from './spaces.js';
 import type { CollectionInverse, Failure, ItemInverse, OperationResult, RecordOp } from './types.js';
 
 /** One item of an operation. `id` is replaced by the provider's id after a create without one. */
@@ -37,6 +37,8 @@ export interface Unit<T> {
   readonly record?: RecordOp<T>;
   /** Revert only: the fields as they were (see `ItemInverse.fields`). */
   readonly fields?: Readonly<Record<string, { readonly value?: unknown }>>;
+  /** Revert only: the fields as the operation left them (see `ItemInverse.fieldsAfter`). */
+  readonly fieldsAfter?: Readonly<Record<string, { readonly value?: unknown }>>;
 }
 
 export interface Plan<T> {
@@ -52,6 +54,11 @@ export interface Plan<T> {
   readonly build: (rt: SpaceRuntime, current: GroupSpace, ids: readonly string[]) => EdgeDelta;
   /** Per space, nodes that must still look like this (a revert never overwrites a newer change). */
   readonly expect?: Readonly<Record<string, readonly Node[]>>;
+  /**
+   * Extra checks on the delta built for the live ids, besides `applyDelta`'s. Violations are owned
+   * like `applyDelta`'s (by `edge.child` or `node`) and fail that item; a `conflict` fails it as one.
+   */
+  readonly check?: (rt: SpaceRuntime, space: GroupSpace, delta: EdgeDelta) => Violation[];
   readonly subject?: string;
 }
 
@@ -61,6 +68,8 @@ export interface EngineContext<T> {
   /** Ids of the records, kept for embedded spaces (a record's node is never collected as an emptied group). */
   readonly recordIds: Set<string>;
   readonly maxRetries: number;
+  /** Base delay before a retry after a conflict, in ms (exponential, with jitter, capped). */
+  readonly retryDelayMs: number;
 }
 
 type FailureInfo = Omit<Failure, 'id'>;
@@ -86,9 +95,15 @@ export const emptyInverse = <T>(): CollectionInverse<T> => ({ items: [], shared:
 export const isEmptyInverse = (inv: CollectionInverse<unknown>): boolean =>
   inv.items.length === 0 && Object.keys(inv.shared).length === 0;
 
+/** A conflict (someone changed things since) is the root cause of whatever else it trips, so it leads. */
 function violationFailure(violations: readonly Violation[]): FailureInfo {
-  return { code: 'violation', reason: violations[0]!.message, violations };
+  const conflict = violations.find((v) => v.code === 'conflict');
+  return { code: conflict ? 'conflict' : 'violation', reason: (conflict ?? violations[0]!).message, violations };
 }
+
+/** Back off before retrying after a conflict: exponential, with jitter, capped (so writers spread out). */
+const backoff = (base: number, attempt: number): Promise<void> =>
+  base > 0 ? new Promise((r) => setTimeout(r, Math.min(base * 2 ** attempt, base * 40) * (0.5 + Math.random() / 2))) : Promise.resolve();
 
 /** Run a plan. `changed` says whether anything was written (for change notifications). */
 export async function execute<T extends Record<string, unknown>>(
@@ -125,6 +140,37 @@ export async function execute<T extends Record<string, unknown>>(
         message: `${n.id} changed since this operation (it is now ${JSON.stringify(rt.current.nodes.get(n.id) ?? null)}); undoing it would overwrite that change.`,
       }));
 
+  /**
+   * A revert of an embedded field change must find the field as the operation left it, for every
+   * group the revert touches; otherwise someone changed it since, and undoing would overwrite them.
+   */
+  const fieldConflicts = (rt: SpaceRuntime, delta: EdgeDelta, live: readonly Unit<T>[]): Violation[] => {
+    if (rt.mode !== 'embedded') return [];
+    const out: Violation[] = [];
+    const guarded = live.filter((u) => u.fieldsAfter?.[rt.field!]);
+    if (!guarded.length) return out;
+    const parts = partition(delta, (id) => rt.current.edges.get(id), new Set(guarded.map((u) => u.id)));
+    for (const u of guarded) {
+      const part = parts.items.get(u.id);
+      if (!part) continue;
+      const touched = new Set([
+        ...(part.removed ?? []).map((id) => recordEdgeGroup(id)).filter((g): g is string => g !== undefined),
+        ...(part.added ?? []).filter(isRecordEdge).map((e) => e.parent as string),
+      ]);
+      const left = new Set(fieldGroups(u.fieldsAfter![rt.field!]!.value));
+      const now = new Set(fieldGroups(before.get(u.id)?.[rt.field!]));
+      const changed = [...touched].filter((g) => left.has(g) !== now.has(g));
+      if (changed.length) {
+        out.push({
+          code: 'conflict',
+          node: nodeId(u.id),
+          message: `Record '${u.id}': its '${rt.field}' field changed for ${changed.join(', ')} since this operation; undoing it would overwrite that change.`,
+        });
+      }
+    }
+    return out;
+  };
+
   /** Which items `rt`'s current space refuses: per item, or all of them. Does not mutate `units`. */
   const validate = (rt: SpaceRuntime): { dropped: Array<[Unit<T>, FailureInfo]>; all?: FailureInfo } => {
     let live = [...units];
@@ -132,17 +178,24 @@ export async function execute<T extends Record<string, unknown>>(
     for (;;) {
       const delta = plan.build(rt, rt.current, live.map((u) => u.id));
       const dry = isEmptyDelta(delta) ? undefined : applyDelta(rt.current, delta);
-      const violations = [...expectViolations(rt), ...(dry && !dry.ok ? dry.violations : [])];
-      if (!violations.length) return { dropped };
+      const owned = [
+        ...(plan.check?.(rt, rt.current, delta) ?? []),
+        ...fieldConflicts(rt, delta, live),
+        ...(dry && !dry.ok ? dry.violations : []),
+      ];
+      const stale = expectViolations(rt);
+      if (!owned.length && !stale.length) return { dropped };
       const byId = new Map(live.map((u) => [u.id, u]));
       const perUnit = new Map<Unit<T>, Violation[]>();
-      const rest: Violation[] = [];
-      for (const v of violations) {
+      const rest: Violation[] = [...stale];
+      for (const v of owned) {
         const owner = (v.edge && byId.get(v.edge.child)) ?? (v.node !== undefined ? byId.get(v.node) : undefined);
-        if (owner && v.code !== 'conflict') perUnit.set(owner, [...(perUnit.get(owner) ?? []), v]);
+        if (owner) perUnit.set(owner, [...(perUnit.get(owner) ?? []), v]);
         else rest.push(v);
       }
-      if (rest.length) return { dropped, all: violationFailure(rest) };
+      // Items with their own violations go first: what is left of a group-level violation may be
+      // theirs (a shared node they needed), and their own reason is the one worth reporting.
+      if (rest.length && !perUnit.size) return { dropped, all: violationFailure(rest) };
       for (const [u, vs] of perUnit) dropped.push([u, violationFailure(vs)]);
       live = live.filter((u) => !perUnit.has(u));
       if (!live.length) return { dropped };
@@ -160,7 +213,8 @@ export async function execute<T extends Record<string, unknown>>(
     for (let attempt = 0; ; attempt++) {
       const out = await commit(rt, delta);
       if (out.kind === 'ok') return true;
-      if (out.kind === 'io' || attempt >= ctx.maxRetries) return false;
+      if (out.kind === 'io' || out.kind === 'unknown' || attempt >= ctx.maxRetries) return false;
+      await backoff(ctx.retryDelayMs, attempt);
       await loadStore(rt);
       if (!applyDelta(rt.current, delta).ok) return false;
     }
@@ -241,7 +295,7 @@ export async function execute<T extends Record<string, unknown>>(
   }
 
   // 3. record writes ────────────────────────────────────────────────────────
-  let patches = new Map<string, Record<string, unknown>>();
+  let patches = new Map<string, FieldWrite>();
   if (!nothingLeft()) {
     patches = fieldPatches(plan, units, before, ids);
     for (const u of [...units]) {
@@ -265,12 +319,27 @@ export async function execute<T extends Record<string, unknown>>(
             ctx.recordIds.add(u.id);
           });
         } else {
-          const patch = patches.get(u.id);
-          if (patch) {
+          const written = patches.get(u.id);
+          if (written) {
             const prev = before.get(u.id)!;
-            const restore = Object.fromEntries(Object.keys(patch).map((k) => [k, prev[k]])) as Partial<T>;
-            await ctx.provider.update(u.id, patch as Partial<T>);
+            const restore = Object.fromEntries(Object.keys(written.patch).map((k) => [k, prev[k]])) as Partial<T>;
+            await ctx.provider.update(u.id, written.patch as Partial<T>);
             undoRecord.set(u, () => ctx.provider.update(u.id, restore));
+            // A provider has no revision to write against: read back, so a concurrent writer that
+            // replaced the field is noticed rather than silently believed to hold our change.
+            const now = await ctx.provider.getOne(u.id).catch(() => undefined);
+            const lost = written.checks.filter(({ field, join, leave }) => {
+              const groups = new Set(fieldGroups(now?.[field]));
+              return join.some((g) => !groups.has(g)) || leave.some((g) => groups.has(g));
+            });
+            if (lost.length) {
+              undoRecord.delete(u);
+              drop(u, {
+                code: 'conflict',
+                reason: `Another writer changed record '${u.id}' while it was written: its '${lost[0]!.field}' field no longer holds this change. Nothing more was done for it; re-read and retry (embedded spaces assume one writer per record).`,
+                inconsistent: true,
+              });
+            }
           }
         }
       } catch (e) {
@@ -294,6 +363,14 @@ export async function execute<T extends Record<string, unknown>>(
         await abandonAll({ code: 'storeWrite', reason: `Space '${rt.name}': the store write failed: ${message(out.error)}` });
         break;
       }
+      if (out.kind === 'unknown') {
+        await abandonAll({
+          code: 'storeWrite',
+          reason: `Space '${rt.name}': the store write failed (${message(out.error)}) and may have been applied — another writer changed the store before it could be checked. Re-read before retrying.`,
+          inconsistent: true,
+        });
+        break;
+      }
       if (retries++ >= ctx.maxRetries) {
         await abandonAll(
           out.kind === 'conflict'
@@ -302,7 +379,8 @@ export async function execute<T extends Record<string, unknown>>(
         );
         break;
       }
-      // Someone else wrote: rebuild from the operation's intent on the fresh state, re-validate.
+      // Someone else wrote: back off, rebuild from the operation's intent on the fresh state, re-validate.
+      await backoff(ctx.retryDelayMs, retries - 1);
       await loadStore(rt);
       const { dropped, all } = validate(rt);
       if (all) {
@@ -324,13 +402,22 @@ export async function execute<T extends Record<string, unknown>>(
 
   // 6. the inverse, split per item ──────────────────────────────────────────
   const finalIds = new Set(ids());
-  const items = new Map<string, { id: string; record?: RecordOp<T>; edges: Record<string, EdgeDelta>; fields?: Record<string, { value?: unknown }> }>();
+  const items = new Map<
+    string,
+    { id: string; record?: RecordOp<T>; edges: Record<string, EdgeDelta>; fields?: Record<string, { value?: unknown }>; fieldsAfter?: Record<string, { value?: unknown }> }
+  >();
   for (const u of units) {
     const record: RecordOp<T> | undefined =
       u.record?.op === 'create' ? { op: 'delete' } : u.record?.op === 'delete' ? { op: 'create', data: before.get(u.id)! } : undefined;
-    const patch = patches.get(u.id);
-    const fields = patch && !u.record ? priorFields(before.get(u.id)!, Object.keys(patch)) : undefined;
-    items.set(u.id, { id: u.id, ...(record ? { record } : {}), edges: {}, ...(fields ? { fields } : {}) });
+    const written = patches.get(u.id);
+    const fields = written && !u.record ? priorFields(before.get(u.id)!, Object.keys(written.patch)) : undefined;
+    const fieldsAfter = written && !u.record ? priorFields(written.patch, Object.keys(written.patch)) : undefined;
+    items.set(u.id, {
+      id: u.id,
+      ...(record ? { record } : {}),
+      edges: {},
+      ...(fields ? { fields, fieldsAfter } : {}),
+    });
   }
   const shared: Record<string, EdgeDelta> = {};
   const expect: Record<string, Node[]> = {};
@@ -365,6 +452,12 @@ export async function execute<T extends Record<string, unknown>>(
   return { result, changed: !isEmptyInverse(inverse) };
 }
 
+/** An embedded field write: the patch, and what it must leave in each field (checked by reading back). */
+interface FieldWrite {
+  readonly patch: Record<string, unknown>;
+  readonly checks: ReadonlyArray<{ readonly field: string; readonly join: readonly string[]; readonly leave: readonly string[] }>;
+}
+
 /**
  * The embedded field writes, per item: the record's current field, minus the groups its record
  * edges leave, plus the groups they join. Computed from the record (the source of truth), so order
@@ -376,8 +469,8 @@ function fieldPatches<T extends Record<string, unknown>>(
   units: readonly Unit<T>[],
   before: ReadonlyMap<string, T>,
   ids: () => string[],
-): Map<string, Record<string, unknown>> {
-  const patches = new Map<string, Record<string, unknown>>();
+): Map<string, FieldWrite> {
+  const patches = new Map<string, FieldWrite>();
   const plain = new Set(units.filter((u) => !u.record).map((u) => u.id));
   const hints = new Map(units.flatMap((u) => (u.fields ? [[u.id, u.fields] as const] : [])));
   for (const rt of plan.spaces) {
@@ -393,12 +486,16 @@ function fieldPatches<T extends Record<string, unknown>>(
       const join = (part.added ?? []).filter((e) => isRecordEdge(e) && e.child === id).map((e) => e.parent as string);
       if (!leave.length && !join.length) continue;
       const current = before.get(id)?.[rt.field!];
-      let next: unknown = nextField(current, new Set(leave), join);
+      let next: unknown = nextField(current, new Set(leave), join, rt.fieldOrder);
       // A revert carries the field as it was: write it verbatim when it says the same thing (order survives undo).
       const hint = hints.get(id)?.[rt.field!];
       if (hint && sameGroups(hint.value, next)) next = hint.value;
       if (sameData(current, next)) continue;
-      patches.set(id, { ...(patches.get(id) ?? {}), [rt.field!]: next });
+      const prior = patches.get(id);
+      patches.set(id, {
+        patch: { ...(prior?.patch ?? {}), [rt.field!]: next },
+        checks: [...(prior?.checks ?? []), { field: rt.field!, join, leave }],
+      });
     }
   }
   return patches;

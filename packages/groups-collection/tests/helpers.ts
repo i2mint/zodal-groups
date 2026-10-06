@@ -26,12 +26,16 @@ export function flakyProvider<T extends Record<string, unknown>>(data: T[]) {
   const inner = createInMemoryProvider(data);
   const failing = { update: new Set<string>(), create: new Set<string>(), delete: new Set<string>() };
   const calls = { update: [] as string[], create: [] as string[], delete: [] as string[] };
+  /** Run right after an update of that id lands — a concurrent writer racing this one. */
+  const afterUpdate = new Map<string, (inner: DataProvider<T>) => Promise<unknown>>();
   const provider: DataProvider<T> = {
     ...inner,
     async update(id, patch) {
       calls.update.push(id);
       if (failing.update.has(id)) throw new Error(`disk full while writing ${id}`);
-      return inner.update(id, patch);
+      const out = await inner.update(id, patch);
+      await afterUpdate.get(id)?.(inner);
+      return out;
     },
     async create(record) {
       const id = String((record as Record<string, unknown>).id);
@@ -45,7 +49,7 @@ export function flakyProvider<T extends Record<string, unknown>>(data: T[]) {
       return inner.delete(id);
     },
   };
-  return { provider, failing, calls };
+  return { provider, failing, calls, afterUpdate, inner };
 }
 
 /** One way of keeping a space's edges, set up and torn down per test. */

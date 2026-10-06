@@ -25,10 +25,6 @@ importers:
         version: 4.4.3
 
   packages/groups-collection:
-    dependencies:
-      '@zodal/groups-core':
-        specifier: workspace:^
-        version: link:../groups-core
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -36,6 +32,9 @@ importers:
       '@zodal/core':
         specifier: ^0.2.0
         version: 0.2.0(zod@4.4.3)
+      '@zodal/groups-core':
+        specifier: workspace:*
+        version: link:../groups-core
       '@zodal/groups-store-fs':
         specifier: workspace:*
         version: link:../groups-store-fs

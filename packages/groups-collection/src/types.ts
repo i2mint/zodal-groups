@@ -14,7 +14,7 @@
  */
 
 import type { Edge, EdgeDelta, EdgeKind, GroupProfile, GroupSpace, GroupStore, Node, ProfileName, Violation } from '@zodal/groups-core';
-import type { OperationDefinition } from '@zodal/core';
+import type { FilterCondition, OperationDefinition } from '@zodal/core';
 import type { DataProvider } from '@zodal/store';
 import type { GroupsCommand } from './commands.js';
 
@@ -27,6 +27,11 @@ import type { GroupsCommand } from './commands.js';
  */
 export interface EmbeddedEdges {
   readonly embedded: string;
+  /**
+   * How the field orders its group ids: `'insertion'` (default — new groups are appended, a
+   * renamed or merged group keeps its place) or `'sorted'` (binary order, kept on every write).
+   */
+  readonly order?: 'insertion' | 'sorted';
 }
 
 /** Where a space's edges live: on the records (`{ embedded: field }`) or in a `GroupStore`. */
@@ -81,11 +86,16 @@ export interface DefineTaggedCollectionOptions<T extends Record<string, unknown>
   readonly idField?: string;
   /** How many times a `GroupStore` write is retried after a `conflict` (another writer got there first). Default 3. */
   readonly maxRetries?: number;
+  /** Base delay before such a retry, in ms; it grows exponentially, with jitter, up to 40×. Default 5. */
+  readonly retryDelayMs?: number;
   /** Page size used to read every record when deriving embedded spaces. Default 1000. */
   readonly loadPageSize?: number;
   /** Where a throwing `subscribe` listener's error goes. Default `console.error`. */
   readonly onListenerError?: (error: unknown) => void;
-  /** Namespace of the command ids (`<namespace>.tag`, …). Default `'groups'`. */
+  /**
+   * Namespace of the command ids (`<namespace>.tag`, …), also put on each undo effect as
+   * `collection`. Default `'groups'`; give each collection its own when an app has several.
+   */
   readonly commandNamespace?: string;
 }
 
@@ -141,6 +151,11 @@ export interface ItemInverse<T> {
    * so the item's order survives an undo — and a field someone changed since is never overwritten.
    */
   readonly fields?: Readonly<Record<string, { readonly value?: unknown }>>;
+  /**
+   * The embedded fields as the operation left them. A revert refuses (`conflict`) an item whose
+   * field has changed since for a group the revert touches: undoing would overwrite that change.
+   */
+  readonly fieldsAfter?: Readonly<Record<string, { readonly value?: unknown }>>;
 }
 
 /**
@@ -190,10 +205,21 @@ export interface SpaceOption {
   readonly space?: string;
 }
 
+/** Where a member goes in an ordered group: just before or just after another member (exactly one). */
+export type Position = { readonly before: string; readonly after?: undefined } | { readonly after: string; readonly before?: undefined };
+
 export interface TagOptions extends SpaceOption {
   /** Edge kind (store spaces; an embedded field can only say `contains`). Default `contains`. */
   readonly kind?: EdgeKind;
+  /**
+   * Ordered spaces only (a store whose profile is `ordered`): place the new members, in the given
+   * order, just before or after this member. Without it they go at the end. Ranks are fractional
+   * indexes (`orderBetween`), so nobody else's rank changes.
+   */
+  readonly position?: Position;
 }
+
+export type MoveOptions = SpaceOption & Position;
 
 export interface BulkTagChange extends TagOptions {
   readonly add?: readonly string[];
@@ -234,11 +260,7 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
    * A `FilterExpression` for `provider.getList` selecting the items in `group` and its subgroups —
    * `scopeFilter` over an embedded space's field. Store spaces keep no field on the records to filter on.
    */
-  scope(group: string, options?: SpaceOption & { readonly expand?: 'direct' | 'closure' }): {
-    field: string;
-    operator: 'arrayContainsAny';
-    value: string[];
-  };
+  scope(group: string, options?: SpaceOption & { readonly expand?: 'direct' | 'closure' }): FilterCondition;
 
   /** Create a record and its memberships. The record write and the edges succeed together or not at all. */
   create(item: Partial<T>, options?: CreateOptions): Promise<OperationResult<T>>;
@@ -258,13 +280,15 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
   renameGroup(group: string, name: string, options?: RenameOptions): Promise<OperationResult<T>>;
   /** "`todo` and `to-do` are the same tag": re-point `from`'s memberships to `into`, then delete `from`. */
   mergeGroups(from: string, into: string, options?: SpaceOption): Promise<OperationResult<T>>;
+  /** Ordered spaces: move `id` within `group` to just before or after another member (its rank only). */
+  moveInGroup(id: string, group: string, options: MoveOptions): Promise<OperationResult<T>>;
   /** Apply an inverse. Same per-item semantics; returns the inverse of the revert (a redo). */
   revert(inverse: CollectionInverse<T>): Promise<OperationResult<T>>;
 
   /** Notified once per operation that changed something. A throwing listener is isolated. */
   subscribe(listener: (change: CollectionChange<T>) => void): () => void;
 
-  /** The declarative operations, for renderers to list (same ids as `commands`). */
+  /** The declarative operations, for renderers to list (each name is the last segment of its command's id). */
   readonly operations: readonly OperationDefinition[];
   /** The operations as commands in acture's `CommandRecord` shape, bound to this collection. */
   readonly commands: readonly GroupsCommand[];

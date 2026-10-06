@@ -9,6 +9,7 @@
 
 import {
   closureIds,
+  compareOrder,
   createListenerSet,
   deleteNodeDelta,
   edgesInto,
@@ -17,6 +18,7 @@ import {
   mergeDelta,
   newEpoch,
   nodeId,
+  orderBetween,
   type EdgeDelta,
   type EdgeId,
   type EdgeKind,
@@ -45,6 +47,7 @@ import type {
   DefineTaggedCollectionOptions,
   FailureCode,
   OperationResult,
+  Position,
   SpaceConfig,
   TaggedCollection,
 } from './types.js';
@@ -89,7 +92,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
   const maxRetries = options.maxRetries ?? 3;
   const pageSize = options.loadPageSize ?? 1000;
   const recordIds = new Set<string>();
-  const ctx: EngineContext<T> = { provider, idField, recordIds, maxRetries };
+  const ctx: EngineContext<T> = { provider, idField, recordIds, maxRetries, retryDelayMs: options.retryDelayMs ?? 5 };
   const listeners = createListenerSet<CollectionChange<T>>(options.onListenerError);
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -173,11 +176,55 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     return collectEmptied(rt, space, { removed, ...tombstone });
   };
 
-  const tagDelta = (rt: SpaceRuntime, space: GroupSpace, ids: readonly string[], group: string, kind: EdgeKind): EdgeDelta => ({
-    added: ids
-      .filter((id) => !edgesInto(space, nodeId(id)).some((e) => e.parent === group && e.kind === kind))
-      .map((id) => rt.mintEdge(group, id, kind)),
-  });
+  /**
+   * New memberships of `group`. In an ordered space each gets a rank: at the end, or — with
+   * `position` — just before/after a member (if that member is gone by now, at the end).
+   */
+  const tagDelta = (
+    rt: SpaceRuntime,
+    space: GroupSpace,
+    ids: readonly string[],
+    group: string,
+    kind: EdgeKind,
+    position?: Position,
+  ): EdgeDelta => {
+    const fresh = ids.filter((id) => !edgesInto(space, nodeId(id)).some((e) => e.parent === group && e.kind === kind));
+    if (!isRanked(rt) || !fresh.length) return { added: fresh.map((id) => rt.mintEdge(group, id, kind)) };
+    let [lo, hi] = slot(space, group, position, new Set(fresh));
+    return {
+      added: fresh.map((id) => {
+        lo = orderBetween(lo, hi);
+        return { ...rt.mintEdge(group, id, kind), order: lo };
+      }),
+    };
+  };
+
+  /** The ranks a new member goes between: at the end, or around the `position` anchor. */
+  const slot = (space: GroupSpace, group: string, position: Position | undefined, moving: ReadonlySet<string>): [string | undefined, string | undefined] => {
+    const ranked = edgesOf(space, nodeId(group))
+      .filter((e) => !moving.has(e.child))
+      .sort((x, y) => compareOrder(x.order, y.order));
+    const last = ranked.filter((e) => e.order !== undefined).at(-1)?.order;
+    const anchor = position && (position.before ?? position.after);
+    const at = anchor === undefined ? -1 : ranked.findIndex((e) => e.child === anchor);
+    if (at < 0) return [last, undefined];
+    return position!.before !== undefined
+      ? [ranked[at - 1]?.order, ranked[at]!.order]
+      : [ranked[at]!.order, ranked[at + 1]?.order];
+  };
+
+  /** Does this space keep ranks? A store under an `ordered` profile; never an embedded field (it cannot hold one). */
+  const isRanked = (rt: SpaceRuntime): boolean => rt.mode === 'store' && rt.profile.ordered;
+
+  const checkPosition = (rt: SpaceRuntime, position: Position | undefined): void => {
+    if (!position) return;
+    if (!isRanked(rt)) {
+      throw new Error(`Space '${rt.name}' is not ordered (profile '${rt.profile.name}'${rt.mode === 'embedded' ? `; an embedded field cannot hold a rank within a group` : ''}); use an ordered GroupStore space for positions.`);
+    }
+    if ((position.before === undefined) === (position.after === undefined)) {
+      throw new Error('A position needs exactly one of `before` or `after`.');
+    }
+  };
 
   const untagDelta = (rt: SpaceRuntime, space: GroupSpace, ids: readonly string[], group: string): EdgeDelta => ({
     removed: ids.flatMap((id) =>
@@ -213,14 +260,24 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     };
   };
 
-  const notAGroupRecord = (rt: SpaceRuntime, group: string, verb: string): OperationResult<T> | undefined =>
-    rt.mode === 'embedded' && recordIds.has(group)
-      ? refuse(
-          group,
-          'unsupported',
-          `'${group}' is a record of this collection, and in embedded space '${rt.name}' every record is a node; ${verb} it as a group would leave the record without its node. Untag its members instead, or deleteItem the record.`,
-        )
-      : undefined;
+  const notAGroupRecord = (rt: SpaceRuntime, group: string, verb: string): OperationResult<T> | undefined => {
+    if (rt.mode !== 'embedded') return undefined;
+    if (recordIds.has(group)) {
+      return refuse(
+        group,
+        'unsupported',
+        `'${group}' is a record of this collection, and in embedded space '${rt.name}' every record is a node; ${verb} it as a group would leave the record without its node. Untag its members instead, or deleteItem the record.`,
+      );
+    }
+    if (rt.vocabularyNodes.has(group)) {
+      return refuse(
+        group,
+        'unsupported',
+        `'${group}' is declared in the vocabulary of embedded space '${rt.name}' (in code); ${verb} it here would not last — it comes back on the next load. Change the vocabulary instead.`,
+      );
+    }
+    return undefined;
+  };
 
   /** Mint ids for a merge: record edges stay record edges (derivable from the field); the rest are unique. */
   const mergeIds = (rt: SpaceRuntime, space: GroupSpace, from: string) => (parent: NodeId, child: NodeId): EdgeId =>
@@ -262,7 +319,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         const data: Record<string, unknown> = { ...item };
         for (const [name, gs] of Object.entries(groups)) {
           const rt = runtime(name);
-          if (rt.mode === 'embedded') data[rt.field!] = nextField(data[rt.field!], new Set(), gs);
+          if (rt.mode === 'embedded') data[rt.field!] = nextField(data[rt.field!], new Set(), gs, rt.fieldOrder);
         }
         const given = data[idField];
         const id = given === undefined || given === null || given === '' ? `${PENDING_ID}${newEpoch()}` : String(given);
@@ -290,11 +347,16 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       return run('tag', () => {
         const rt = runtime(opts.space);
         const kind = checkKind(rt, opts.kind);
+        checkPosition(rt, opts.position);
+        const anchor = opts.position?.before ?? opts.position?.after;
+        if (anchor !== undefined && !edgesOf(rt.current, nodeId(group)).some((e) => e.child === anchor)) {
+          return refuse(anchor, 'notFound', `'${anchor}' is not in '${group}', so nothing can be placed next to it.`);
+        }
         return {
           operation: 'tag',
           units: units(ids),
           spaces: [rt],
-          build: (r, space, live) => tagDelta(r, space, live, group, kind),
+          build: (r, space, live) => tagDelta(r, space, live, group, kind, opts.position),
         };
       });
     },
@@ -399,11 +461,15 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
           };
         }
         if (name === group) return done(group);
-        if (rt.current.nodes.has(nodeId(name))) {
-          return refuse(group, 'groupExists', `'${name}' already exists in space '${rt.name}'; renaming '${group}' to it would merge them — use mergeGroups if that is meant.`);
-        }
         const refused = notAGroupRecord(rt, group, 'renaming');
         if (refused) return refused;
+        if (rt.current.nodes.has(nodeId(name))) {
+          return refuse(
+            group,
+            'groupExists',
+            `'${name}' already exists in space '${rt.name}'; renaming '${group}' to it would merge them. If that is meant — or a previous rename was partly applied (some members already moved) — finish it with mergeGroups('${group}', '${name}').`,
+          );
+        }
         const members = rt.mode === 'embedded' ? recordMembers(rt.current, g) : [];
         const to = nodeId(name);
         return {
@@ -411,12 +477,42 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
           units: units(members),
           spaces: [rt],
           subject: group,
-          build: perMember((space) => {
+          build: (r, space, ids) => {
             const live = space.nodes.get(g);
             if (!live) return {};
-            // A rename by id is a merge into a new node that keeps the old one's label, payload and family.
-            return concatDeltas([{ addedNodes: [{ ...live, id: to } as Node] }, mergeDelta(space, g, to, { mintId: mergeIds(rt, space, group) })]);
-          }, members),
+            // A rename by id is a merge into a new node that keeps the old one's label, payload and
+            // family. The new node is created even when only some members move, so a partly applied
+            // rename is completed by mergeGroups(from, to) without losing those fields.
+            const moved = perMember((s2) => mergeDelta(s2, g, to, { mintId: mergeIds(rt, s2, group) }), members)(r, space, ids);
+            return space.nodes.has(to) ? moved : concatDeltas([{ addedNodes: [{ ...live, id: to } as Node] }, moved]);
+          },
+        };
+      });
+    },
+
+    moveInGroup(id, group, opts) {
+      return run('moveInGroup', () => {
+        const rt = runtime(opts.space);
+        const position: Position = opts.before !== undefined ? { before: opts.before } : { after: opts.after! };
+        checkPosition(rt, { before: opts.before, after: opts.after } as Position);
+        const anchor = (position.before ?? position.after)!;
+        const g = nodeId(group);
+        if (!edgesOf(rt.current, g).some((e) => e.child === id)) return refuse(id, 'notFound', `'${id}' is not in '${group}'.`);
+        if (anchor === id) return done(id);
+        if (!edgesOf(rt.current, g).some((e) => e.child === anchor)) {
+          return refuse(anchor, 'notFound', `'${anchor}' is not in '${group}', so nothing can be placed next to it.`);
+        }
+        return {
+          operation: 'moveInGroup',
+          units: units([id]),
+          spaces: [rt],
+          build: (_r, space, ids) => {
+            const edge = ids.length ? edgesOf(space, g).find((e) => e.child === ids[0]) : undefined;
+            if (!edge) return {};
+            const [lo, hi] = slot(space, group, position, new Set([edge.child as string]));
+            // Same edge, new rank: removed and re-added under its id, so the inverse restores it exactly.
+            return { removed: [edge.id], added: [{ ...edge, order: orderBetween(lo, hi) }] };
+          },
         };
       });
     },
@@ -455,7 +551,24 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     const sharedNode = Object.values(inverse.shared).flatMap((d) => [...(d.upsertNodes ?? []), ...(d.addedNodes ?? []), ...(d.removedNodes ?? [])])[0];
     return {
       operation: 'revert',
-      units: inverse.items.map((i) => ({ id: i.id, ...(i.record ? { record: i.record } : {}), ...(i.fields ? { fields: i.fields } : {}) })),
+      units: inverse.items.map((i) => ({
+        id: i.id,
+        ...(i.record ? { record: i.record } : {}),
+        ...(i.fields ? { fields: i.fields } : {}),
+        ...(i.fieldsAfter ? { fieldsAfter: i.fieldsAfter } : {}),
+      })),
+      // A re-added membership must not bring back a group deleted since (the edge would create it
+      // implicitly, past the tombstone guard) — unless the inverse itself restores that group.
+      check: (_rt, space, delta) => {
+        const restored = new Set([...(delta.addedNodes ?? []), ...(delta.upsertNodes ?? [])].map((x) => x.id as string));
+        return (delta.added ?? [])
+          .filter((e) => !space.nodes.has(e.parent) && !restored.has(e.parent))
+          .map((e) => ({
+            code: 'conflict' as const,
+            edge: e,
+            message: `Group '${e.parent}' was deleted after this operation; undoing it would bring the group back. Re-create the group first if that is meant.`,
+          }));
+      },
       spaces,
       expect: inverse.expect ?? {},
       ...(inverse.items.length ? {} : { subject: (sharedNode?.id as string | undefined) ?? 'revert' }),
@@ -473,7 +586,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         // Undoing a create deletes the record: every membership it has NOW goes with it (as deleteItem
         // does), not only those the create made — or a later tag would outlive its record.
         const deleting = live.filter((id) => records.get(id)?.op === 'delete');
-        if (!deleting.length) return delta;
+        if (!deleting.length) return rt.mode === 'store' ? alreadyThere(space, delta) : delta;
         const already = new Set<string>(delta.removed ?? []);
         const merged = concatDeltas([delta, ...deleting.map((id) => dropItemDelta(rt, space, id, already))]);
         // A node may be tombstoned by both halves (the item's own node): once is enough.
@@ -481,6 +594,21 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         return { ...merged, ...(tombstones.size ? { removedNodes: [...tombstones.values()] } : {}) };
       },
     };
+  }
+
+  /**
+   * A store revert re-adding a membership that is already there (someone put it back) is a no-op,
+   * not a duplicate. (Embedded spaces decide this by the field check instead: their edge ids are
+   * derived from the record, so "already there" is a change someone else made.)
+   */
+  function alreadyThere(space: GroupSpace, delta: EdgeDelta): EdgeDelta {
+    const removing = new Set<string>(delta.removed ?? []);
+    const added = (delta.added ?? []).filter(
+      (e) =>
+        removing.has(e.id) ||
+        !(space.edges.has(e.id) || edgesInto(space, e.child).some((x) => !removing.has(x.id) && x.parent === e.parent && x.kind === e.kind)),
+    );
+    return added.length === (delta.added ?? []).length ? delta : concatDeltas([{ ...delta, added }]);
   }
 
   const commands = createCommands(tc, { namespace: options.commandNamespace ?? 'groups' });

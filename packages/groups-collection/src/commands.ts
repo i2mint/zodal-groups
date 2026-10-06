@@ -55,7 +55,10 @@ export interface GroupsCommand<P = any, R = unknown> {
   readonly execute: (params: P, ctx?: Record<string, unknown>) => Promise<CommandResult<R>>;
 }
 
-/** The effect type carrying an operation's inverse (`{ type, inverse }`). */
+/**
+ * The effect type carrying an operation's inverse: `{ type, inverse, collection }`, where
+ * `collection` is the command namespace — route `revert` to the collection it names.
+ */
 export const INVERSE_EFFECT = 'groupsCollection.inverse';
 
 /** The declarative operations. Names are also the last segment of the command ids. */
@@ -68,6 +71,7 @@ export const operations: readonly OperationDefinition[] = Object.freeze([
   { name: 'deleteItem', label: 'Delete item', scope: 'item', icon: 'trash-2', variant: 'destructive', confirm: true },
   { name: 'renameGroup', label: 'Rename group', scope: 'collection', icon: 'pencil' },
   { name: 'mergeGroups', label: 'Merge groups', scope: 'collection', icon: 'merge' },
+  { name: 'moveInGroup', label: 'Move within group', scope: 'item', icon: 'arrow-up-down' },
   { name: 'deleteGroup', label: 'Delete group', scope: 'collection', icon: 'trash-2', variant: 'destructive', confirm: true },
 ] satisfies OperationDefinition[]);
 
@@ -110,20 +114,21 @@ export const commandParams = {
   deleteItem: z.object({ id: z.string().min(1) }),
   renameGroup: z.object({ group: z.string().min(1), name: z.string().min(1), space, by: z.enum(['label', 'id']).optional() }),
   mergeGroups: z.object({ from: z.string().min(1), into: z.string().min(1), space }),
+  moveInGroup: z.object({ id: z.string().min(1), group: z.string().min(1), before: z.string().min(1).optional(), after: z.string().min(1).optional(), space }),
   deleteGroup: z.object({ group: z.string().min(1), space }),
 } as const;
 
 type Params = { [K in keyof typeof commandParams]: z.infer<(typeof commandParams)[K]> };
 
 /** Turn an operation result into acture's `Result`: the inverse rides along as an effect. */
-export function toCommandResult<T>(result: OperationResult<T>): CommandResult<OperationResult<T>> {
+export function toCommandResult<T>(result: OperationResult<T>, collection = 'groups'): CommandResult<OperationResult<T>> {
   if (!result.succeeded.length && result.failed.length) {
     const first = result.failed[0]!;
     const message = result.failed.length === 1 ? first.reason : `${result.failed.length} failed; first: ${first.id}: ${first.reason}`;
     return { ok: false, error: { code: first.code, message, details: { failed: result.failed } } };
   }
   const changed = result.inverse.items.length > 0 || Object.keys(result.inverse.shared).length > 0;
-  return { ok: true, value: result, ...(changed ? { effects: [{ type: INVERSE_EFFECT, inverse: result.inverse }] } : {}) };
+  return { ok: true, value: result, ...(changed ? { effects: [{ type: INVERSE_EFFECT, inverse: result.inverse, collection }] } : {}) };
 }
 
 export interface CreateCommandsOptions {
@@ -148,14 +153,20 @@ export function createCommands<T extends Record<string, unknown>>(
     deleteItem: (p) => tc.deleteItem(p.id),
     renameGroup: (p) => tc.renameGroup(p.group, p.name, { ...(p.space ? { space: p.space } : {}), ...(p.by ? { by: p.by } : {}) }),
     mergeGroups: (p) => tc.mergeGroups(p.from, p.into, p.space ? { space: p.space } : {}),
+    moveInGroup: (p) => {
+      if ((p.before === undefined) === (p.after === undefined)) throw new Error('moveInGroup needs exactly one of `before` or `after`.');
+      const where = p.before !== undefined ? { before: p.before } : { after: p.after! };
+      return tc.moveInGroup(p.id, p.group, { ...where, ...(p.space ? { space: p.space } : {}) });
+    },
     deleteGroup: (p) => tc.deleteGroup(p.group, p.space ? { space: p.space } : {}),
   };
+  const namespace = options.namespace ?? 'groups';
   return Object.freeze(
     operations.map((op) => {
       const name = op.name as keyof Params;
       const params = commandParams[name] as ZodType<unknown>;
       const command: GroupsCommand = {
-        id: commandId(options.namespace ?? 'groups', op.name),
+        id: commandId(namespace, op.name),
         title: op.label,
         ...(options.category ? { category: options.category } : {}),
         ...(op.icon ? { icon: op.icon } : {}),
@@ -166,7 +177,7 @@ export function createCommands<T extends Record<string, unknown>>(
             return { ok: false, error: { code: 'invalid_params', message: parsed.error.message, details: parsed.error.issues } };
           }
           try {
-            return toCommandResult(await (handlers[name] as (p: unknown) => Promise<OperationResult<T>>)(parsed.data));
+            return toCommandResult(await (handlers[name] as (p: unknown) => Promise<OperationResult<T>>)(parsed.data), namespace);
           } catch (err) {
             // acture's code for a throw inside execute; never the raw error object.
             return { ok: false, error: { code: 'execute_threw', message: err instanceof Error ? err.message : String(err) } };

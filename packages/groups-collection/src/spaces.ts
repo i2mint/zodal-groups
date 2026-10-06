@@ -41,6 +41,17 @@ export const RECORD_EDGE_PREFIX = 'rec:';
 export const recordEdgeId = (group: string, item: string): EdgeId =>
   edgeId(`${RECORD_EDGE_PREFIX}${JSON.stringify([group, item])}`);
 
+/** The group of a record-edge id (`undefined` if it is not one). */
+export function recordEdgeGroup(id: string): string | undefined {
+  if (!id.startsWith(RECORD_EDGE_PREFIX)) return undefined;
+  try {
+    const pair = JSON.parse(id.slice(RECORD_EDGE_PREFIX.length)) as unknown;
+    return Array.isArray(pair) && typeof pair[0] === 'string' ? pair[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Is this edge stored on a record (as opposed to declared in the vocabulary)? */
 export const isRecordEdge = (e: Edge): boolean => e.id.startsWith(RECORD_EDGE_PREFIX);
 
@@ -55,11 +66,25 @@ export function fieldGroups(value: unknown): string[] {
 
 /**
  * The field's next value: `remove` taken out, `add` put in — each added group takes the place of a
- * removed one (so a rename or a merge keeps the item's order), the rest are appended. Entries this
+ * removed one (so a rename or a merge keeps the item's order), the rest are appended. With
+ * `order: 'sorted'` the groups are sorted instead (entries that are not group ids go last). Entries this
  * package does not understand are kept; a new array is always returned (records from a provider
  * may share their arrays).
  */
-export function nextField(current: unknown, remove: ReadonlySet<string>, add: readonly string[]): unknown[] {
+export function nextField(
+  current: unknown,
+  remove: ReadonlySet<string>,
+  add: readonly string[],
+  order: FieldOrder = 'insertion',
+): unknown[] {
+  const out = insertField(current, remove, add);
+  if (order === 'insertion') return out;
+  // Binary (code-unit) order, never locale order: the same sort on every machine and backend.
+  const groups = out.filter((v): v is string => typeof v === 'string').sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+  return [...groups, ...out.filter((v) => typeof v !== 'string')];
+}
+
+function insertField(current: unknown, remove: ReadonlySet<string>, add: readonly string[]): unknown[] {
   const src = Array.isArray(current) ? current : [];
   const staying = (g: string) => src.includes(g) && !remove.has(g);
   const pending = [...new Set(add)].filter((g) => !staying(g));
@@ -76,6 +101,9 @@ export function nextField(current: unknown, remove: ReadonlySet<string>, add: re
   return out;
 }
 
+/** How an embedded field orders its group ids. */
+export type FieldOrder = 'insertion' | 'sorted';
+
 export const isEmbedded = (edges: SpaceEdges): edges is EmbeddedEdges =>
   typeof (edges as EmbeddedEdges).embedded === 'string';
 
@@ -84,13 +112,17 @@ export type CommitOutcome =
   | { readonly kind: 'ok'; readonly inverse: EdgeDelta; readonly before: GroupSpace }
   | { readonly kind: 'conflict'; readonly violations: readonly Violation[] }
   | { readonly kind: 'refused'; readonly violations: readonly Violation[] }
-  | { readonly kind: 'io'; readonly error: unknown };
+  | { readonly kind: 'io'; readonly error: unknown }
+  /** The store threw, and re-reading it cannot tell whether the delta landed. */
+  | { readonly kind: 'unknown'; readonly error: unknown };
 
 export interface SpaceRuntime {
   readonly name: string;
   readonly mode: 'embedded' | 'store';
   /** Embedded: the record field. */
   readonly field: string | undefined;
+  /** Embedded: how the field orders its group ids. */
+  readonly fieldOrder: FieldOrder;
   readonly store: GroupStore | undefined;
   readonly profile: GroupProfile;
   /** Embedded: the vocabulary's node ids (never garbage-collected as emptied groups). */
@@ -111,6 +143,10 @@ export function createSpaceRuntime(name: string, config: SpaceConfig): SpaceRunt
   if (isEmbedded(config.edges)) {
     const field = config.edges.embedded;
     if (!field) throw new Error(`Space '${name}': \`edges.embedded\` must name a record field.`);
+    const order = config.edges.order;
+    if (order !== undefined && order !== 'insertion' && order !== 'sorted') {
+      throw new Error(`Space '${name}': \`edges.order\` must be 'insertion' or 'sorted', got ${JSON.stringify(order)}.`);
+    }
     const profile = resolveProfile(config.profile ?? 'polyhierarchy', config.overrides);
     for (const e of config.vocabulary?.edges ?? []) {
       if (e.id.startsWith(RECORD_EDGE_PREFIX)) {
@@ -121,6 +157,7 @@ export function createSpaceRuntime(name: string, config: SpaceConfig): SpaceRunt
       name,
       mode: 'embedded',
       field,
+      fieldOrder: config.edges.order ?? 'insertion',
       store: undefined,
       profile,
       vocabularyNodes: new Set([
@@ -158,6 +195,7 @@ export function createSpaceRuntime(name: string, config: SpaceConfig): SpaceRunt
     name,
     mode: 'store',
     field: undefined,
+    fieldOrder: 'insertion',
     store,
     profile: store.profile,
     vocabularyNodes: new Set(),
@@ -248,7 +286,11 @@ export async function commit(rt: SpaceRuntime, delta: EdgeDelta): Promise<Commit
   try {
     result = await rt.store!.apply(delta, options);
   } catch (error) {
-    return { kind: 'io', error };
+    // A store may commit and THEN throw (the fs store releases its lock after the rename). Look
+    // before assuming nothing happened: compensating a write that landed would split record and edges.
+    const verdict = await landed(rt, before, delta);
+    if (verdict === 'yes') return { kind: 'ok', inverse: invert(before, delta), before };
+    return verdict === 'no' ? { kind: 'io', error } : { kind: 'unknown', error };
   }
   if (!result.ok) {
     return result.violations.some((v) => v.code === 'conflict')
@@ -265,4 +307,37 @@ export async function commit(rt: SpaceRuntime, delta: EdgeDelta): Promise<Commit
     else rt.current = await rt.store!.load();
   }
   return { kind: 'ok', inverse: result.value.inverse, before };
+}
+
+/**
+ * After a store threw: did `delta` land on `before`? Re-reads the store and decides by revision and
+ * by the delta's own effects. Store edge ids are unique, so an added edge that is present is ours;
+ * a delta that only removes is decided only when exactly one write happened since `before`.
+ */
+async function landed(rt: SpaceRuntime, before: GroupSpace, delta: EdgeDelta): Promise<'yes' | 'no' | 'unknown'> {
+  try {
+    await loadStore(rt);
+  } catch {
+    return 'unknown';
+  }
+  const after = rt.current;
+  if (after.revision === before.revision) return 'no';
+  const added = delta.added ?? [];
+  const present = added.filter((e) => after.edges.has(e.id)).length;
+  const oneWrite = after.revision === before.revision + 1;
+  if (added.length) {
+    if (present === added.length && effectsVisible(after, delta)) return 'yes';
+    return present === 0 && oneWrite ? 'no' : 'unknown';
+  }
+  if (!oneWrite) return 'unknown';
+  return effectsVisible(after, delta) ? 'yes' : 'no';
+}
+
+function effectsVisible(space: GroupSpace, delta: EdgeDelta): boolean {
+  return (
+    (delta.added ?? []).every((e) => space.edges.has(e.id)) &&
+    (delta.removed ?? []).every((id) => !space.edges.has(id) || (delta.added ?? []).some((e) => e.id === id)) &&
+    (delta.addedNodes ?? []).every((x) => space.nodes.has(x.id)) &&
+    (delta.removedNodes ?? []).every((x) => !space.nodes.has(x.id))
+  );
 }

@@ -248,7 +248,7 @@ for (const { name, make } of BACKINGS) {
         await tc.renameGroup('work', 'Job');
         const undo = await tc.revert(r.inverse);
         expect(undo.ok).toBe(false);
-        expect(undo.failed[0]).toMatchObject({ code: 'violation' });
+        expect(undo.failed[0]).toMatchObject({ code: 'conflict' });
         expect(undo.failed[0]!.reason).toMatch(/changed since/);
         expect(tc.space().nodes.get('work' as never)?.label).toBe('Job');
       });
