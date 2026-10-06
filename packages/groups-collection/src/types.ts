@@ -174,6 +174,11 @@ export interface CollectionInverse<T> {
    * rename).
    */
   readonly expect: Readonly<Record<string, readonly Node[]>>;
+  /**
+   * Per space, the edges the operation replaced under their own ids (a move's new rank), as it left
+   * them. `revert` refuses (`conflict`) to restore one that was removed or changed since.
+   */
+  readonly expectEdges?: Readonly<Record<string, readonly Edge[]>>;
 }
 
 export interface OperationResult<T> {

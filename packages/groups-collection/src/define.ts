@@ -19,6 +19,7 @@ import {
   newEpoch,
   nodeId,
   orderBetween,
+  type Edge,
   type EdgeDelta,
   type EdgeId,
   type EdgeKind,
@@ -190,27 +191,65 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
   ): EdgeDelta => {
     const fresh = ids.filter((id) => !edgesInto(space, nodeId(id)).some((e) => e.parent === group && e.kind === kind));
     if (!isRanked(rt) || !fresh.length) return { added: fresh.map((id) => rt.mintEdge(group, id, kind)) };
-    let [lo, hi] = slot(space, group, position, new Set(fresh));
-    return {
-      added: fresh.map((id) => {
-        lo = orderBetween(lo, hi);
-        return { ...rt.mintEdge(group, id, kind), order: lo };
-      }),
-    };
+    const { ordered, reranked } = ranking(space, group, new Set(fresh));
+    let [lo, hi] = slot(ordered, position);
+    const added = fresh.map((id) => {
+      lo = orderBetween(lo, hi);
+      return { ...rt.mintEdge(group, id, kind), order: lo };
+    });
+    return concatDeltas([rerankDelta(reranked), { added }]);
   };
 
-  /** The ranks a new member goes between: at the end, or around the `position` anchor. */
-  const slot = (space: GroupSpace, group: string, position: Position | undefined, moving: ReadonlySet<string>): [string | undefined, string | undefined] => {
-    const ranked = edgesOf(space, nodeId(group))
+  /**
+   * The members of an ordered group in rank order (minus `moving`), every unranked member given a
+   * rank after the ranked ones, in its current place — seeded data, or a profile made ordered later.
+   * Unranked members sort last, so without this an appended member would land before them.
+   * `reranked` are those edges with their new rank (same id), to put in the delta.
+   */
+  const ranking = (space: GroupSpace, group: string, moving: ReadonlySet<string>): { ordered: Edge[]; reranked: Edge[] } => {
+    const sorted = edgesOf(space, nodeId(group))
       .filter((e) => !moving.has(e.child))
       .sort((x, y) => compareOrder(x.order, y.order));
-    const last = ranked.filter((e) => e.order !== undefined).at(-1)?.order;
+    let last = sorted.filter((e) => e.order !== undefined).at(-1)?.order;
+    const reranked: Edge[] = [];
+    const ordered = sorted.map((e) => {
+      if (e.order !== undefined) return e;
+      last = orderBetween(last, undefined);
+      const ranked = { ...e, order: last };
+      reranked.push(ranked);
+      return ranked;
+    });
+    return { ordered, reranked };
+  };
+
+  /** Re-ranked edges are replaced under their own ids (removed and re-added), so the inverse restores them. */
+  const rerankDelta = (reranked: readonly Edge[]): EdgeDelta => ({ removed: reranked.map((e) => e.id), added: [...reranked] });
+
+  /** The ranks a member goes between: at the end, or around the `position` anchor. Throws on a tie (orderBetween). */
+  const slot = (ordered: readonly Edge[], position: Position | undefined): [string | undefined, string | undefined] => {
     const anchor = position && (position.before ?? position.after);
-    const at = anchor === undefined ? -1 : ranked.findIndex((e) => e.child === anchor);
-    if (at < 0) return [last, undefined];
-    return position!.before !== undefined
-      ? [ranked[at - 1]?.order, ranked[at]!.order]
-      : [ranked[at]!.order, ranked[at + 1]?.order];
+    const at = anchor === undefined ? -1 : ordered.findIndex((e) => e.child === anchor);
+    if (at < 0) return [ordered.at(-1)?.order, undefined];
+    return position!.before !== undefined ? [ordered[at - 1]?.order, ordered[at]!.order] : [ordered[at]!.order, ordered[at + 1]?.order];
+  };
+
+  /**
+   * After a merge into `into` in an ordered space, the moved memberships keep `from`'s ranks, which
+   * may tie with `into`'s: rank them after `into`'s last member instead, in their old order.
+   */
+  const rankMerge = (rt: SpaceRuntime, space: GroupSpace, into: string, delta: EdgeDelta): EdgeDelta => {
+    if (!isRanked(rt)) return delta;
+    const moved = (delta.added ?? []).filter((e) => e.parent === into).sort((x, y) => compareOrder(x.order, y.order));
+    if (!moved.length) return delta;
+    const { ordered, reranked } = ranking(space, into, new Set());
+    let last = ordered.at(-1)?.order;
+    const ranks = new Map(
+      moved.map((e) => {
+        last = orderBetween(last, undefined);
+        return [e.id, { ...e, order: last }] as const;
+      }),
+    );
+    return concatDeltas([{ ...delta, added: (delta.added ?? []).map((e) => ranks.get(e.id) ?? e) }, rerankDelta(reranked)]);
   };
 
   /** Does this space keep ranks? A store under an `ordered` profile; never an embedded field (it cannot hold one). */
@@ -435,7 +474,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
           units: units(members),
           spaces: [rt],
           subject: from,
-          build: perMember((space) => mergeDelta(space, f, nodeId(into), { mintId: mergeIds(rt, space, from) }), members),
+          build: perMember((space) => rankMerge(rt, space, into, mergeDelta(space, f, nodeId(into), { mintId: mergeIds(rt, space, from) })), members),
         };
       });
     },
@@ -483,7 +522,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
             // A rename by id is a merge into a new node that keeps the old one's label, payload and
             // family. The new node is created even when only some members move, so a partly applied
             // rename is completed by mergeGroups(from, to) without losing those fields.
-            const moved = perMember((s2) => mergeDelta(s2, g, to, { mintId: mergeIds(rt, s2, group) }), members)(r, space, ids);
+            const moved = perMember((s2) => rankMerge(rt, s2, name, mergeDelta(s2, g, to, { mintId: mergeIds(rt, s2, group) })), members)(r, space, ids);
             return space.nodes.has(to) ? moved : concatDeltas([{ addedNodes: [{ ...live, id: to } as Node] }, moved]);
           },
         };
@@ -509,9 +548,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
           build: (_r, space, ids) => {
             const edge = ids.length ? edgesOf(space, g).find((e) => e.child === ids[0]) : undefined;
             if (!edge) return {};
-            const [lo, hi] = slot(space, group, position, new Set([edge.child as string]));
+            const { ordered, reranked } = ranking(space, group, new Set([edge.child as string]));
+            const [lo, hi] = slot(ordered, position);
             // Same edge, new rank: removed and re-added under its id, so the inverse restores it exactly.
-            return { removed: [edge.id], added: [{ ...edge, order: orderBetween(lo, hi) }] };
+            return concatDeltas([rerankDelta(reranked), { removed: [edge.id], added: [{ ...edge, order: orderBetween(lo, hi) }] }]);
           },
         };
       });
@@ -559,16 +599,20 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       })),
       // A re-added membership must not bring back a group deleted since (the edge would create it
       // implicitly, past the tombstone guard) — unless the inverse itself restores that group.
-      check: (_rt, space, delta) => {
+      check: (rt, space, delta) => {
         const restored = new Set([...(delta.addedNodes ?? []), ...(delta.upsertNodes ?? [])].map((x) => x.id as string));
         return (delta.added ?? [])
           .filter((e) => !space.nodes.has(e.parent) && !restored.has(e.parent))
           .map((e) => ({
             code: 'conflict' as const,
             edge: e,
-            message: `Group '${e.parent}' was deleted after this operation; undoing it would bring the group back. Re-create the group first if that is meant.`,
+            message:
+              rt.mode === 'embedded'
+                ? `Group '${e.parent}' is gone since this operation — deleted, or emptied (an embedded space keeps a group only while something is in it); undoing would bring it back. Tag the item again if that is meant.`
+                : `Group '${e.parent}' was deleted after this operation; undoing it would bring the group back. Re-create the group first if that is meant.`,
           }));
       },
+      expectEdges: inverse.expectEdges ?? {},
       spaces,
       expect: inverse.expect ?? {},
       ...(inverse.items.length ? {} : { subject: (sharedNode?.id as string | undefined) ?? 'revert' }),

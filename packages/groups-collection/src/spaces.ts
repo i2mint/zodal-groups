@@ -33,6 +33,7 @@ import {
   type Violation,
 } from '@zodal/groups-core';
 import type { SpaceConfig, SpaceEdges, EmbeddedEdges } from './types.js';
+import { sameData } from './delta.js';
 
 /** Prefix of every record-edge id. Vocabulary edge ids must not start with it. */
 export const RECORD_EDGE_PREFIX = 'rec:';
@@ -310,9 +311,17 @@ export async function commit(rt: SpaceRuntime, delta: EdgeDelta): Promise<Commit
 }
 
 /**
- * After a store threw: did `delta` land on `before`? Re-reads the store and decides by revision and
- * by the delta's own effects. Store edge ids are unique, so an added edge that is present is ours;
- * a delta that only removes is decided only when exactly one write happened since `before`.
+ * After a store threw: did `delta` land on `before`? Re-reads the store and answers only on
+ * evidence that the change is OURS, because another writer may have committed in between:
+ *
+ * - the revision did not move → no;
+ * - the delta adds edges under ids `before` did not have (store ids are unique, nobody else can
+ *   mint them): all present with every other effect visible → yes; none present after exactly one
+ *   write (which was then someone else's) → no;
+ * - otherwise the only evidence is content that CHANGED to exactly ours — an edge re-added under
+ *   its id with our fields (a move's new rank), a node upserted to our fields. With all effects
+ *   visible and such evidence → yes. A delta that only removes, or whose effects are not visible,
+ *   cannot be told apart from another writer's work → unknown (the caller fails it, inconsistent).
  */
 async function landed(rt: SpaceRuntime, before: GroupSpace, delta: EdgeDelta): Promise<'yes' | 'no' | 'unknown'> {
   try {
@@ -322,22 +331,33 @@ async function landed(rt: SpaceRuntime, before: GroupSpace, delta: EdgeDelta): P
   }
   const after = rt.current;
   if (after.revision === before.revision) return 'no';
-  const added = delta.added ?? [];
-  const present = added.filter((e) => after.edges.has(e.id)).length;
   const oneWrite = after.revision === before.revision + 1;
-  if (added.length) {
-    if (present === added.length && effectsVisible(after, delta)) return 'yes';
+  const visible = effectsVisible(after, delta);
+  const fresh = (delta.added ?? []).filter((e) => !before.edges.has(e.id));
+  if (fresh.length) {
+    const present = fresh.filter((e) => after.edges.has(e.id)).length;
+    if (present === fresh.length && visible) return 'yes';
     return present === 0 && oneWrite ? 'no' : 'unknown';
   }
-  if (!oneWrite) return 'unknown';
-  return effectsVisible(after, delta) ? 'yes' : 'no';
+  const changedToOurs =
+    (delta.added ?? []).some((e) => sameData(after.edges.get(e.id), e) && !sameData(before.edges.get(e.id), e)) ||
+    (delta.upsertNodes ?? []).some((x) => fieldsMatch(after.nodes.get(x.id), x) && !fieldsMatch(before.nodes.get(x.id), x));
+  return visible && changedToOurs ? 'yes' : 'unknown';
+}
+
+/** Does `node` carry every field `patch` sets (a field set to `undefined` must be absent)? */
+function fieldsMatch(node: Node | undefined, patch: Node): boolean {
+  if (!node) return false;
+  return Object.entries(patch).every(([k, v]) => sameData((node as unknown as Record<string, unknown>)[k], v));
 }
 
 function effectsVisible(space: GroupSpace, delta: EdgeDelta): boolean {
+  const added = new Set((delta.added ?? []).map((e) => e.id as string));
   return (
-    (delta.added ?? []).every((e) => space.edges.has(e.id)) &&
-    (delta.removed ?? []).every((id) => !space.edges.has(id) || (delta.added ?? []).some((e) => e.id === id)) &&
+    (delta.added ?? []).every((e) => sameData(space.edges.get(e.id), e)) &&
+    (delta.removed ?? []).every((id) => added.has(id) || !space.edges.has(id)) &&
     (delta.addedNodes ?? []).every((x) => space.nodes.has(x.id)) &&
+    (delta.upsertNodes ?? []).every((x) => fieldsMatch(space.nodes.get(x.id), x)) &&
     (delta.removedNodes ?? []).every((x) => !space.nodes.has(x.id))
   );
 }

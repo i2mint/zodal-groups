@@ -59,6 +59,8 @@ export interface Plan<T> {
    * like `applyDelta`'s (by `edge.child` or `node`) and fail that item; a `conflict` fails it as one.
    */
   readonly check?: (rt: SpaceRuntime, space: GroupSpace, delta: EdgeDelta) => Violation[];
+  /** Per space, edges that must still look like this (revert of a move): owned by `edge.child`. */
+  readonly expectEdges?: Readonly<Record<string, readonly Edge[]>>;
   readonly subject?: string;
 }
 
@@ -171,15 +173,43 @@ export async function execute<T extends Record<string, unknown>>(
     return out;
   };
 
+  /** `plan.build`, with a throw (e.g. ranks that tie in foreign data) turned into a failure. */
+  const build = (rt: SpaceRuntime, ids: readonly string[]): { delta: EdgeDelta } | { error: FailureInfo } => {
+    try {
+      return { delta: plan.build(rt, rt.current, ids) };
+    } catch (e) {
+      return { error: { code: 'violation', reason: `Space '${rt.name}': ${message(e)}` } };
+    }
+  };
+
+  /** A move undone must find the edge as the move left it: not removed, not moved again since. */
+  const edgeExpectations = (rt: SpaceRuntime): Violation[] =>
+    (plan.expectEdges?.[rt.name] ?? []).flatMap((e) => {
+      const live = rt.current.edges.get(e.id);
+      if (live && sameData(live, e)) return [];
+      return [
+        {
+          code: 'conflict' as const,
+          edge: e,
+          message: live
+            ? `'${e.child}' was moved or changed in '${e.parent}' since this operation; undoing it would overwrite that.`
+            : `'${e.child}' was removed from '${e.parent}' since this operation; undoing it would put it back.`,
+        },
+      ];
+    });
+
   /** Which items `rt`'s current space refuses: per item, or all of them. Does not mutate `units`. */
   const validate = (rt: SpaceRuntime): { dropped: Array<[Unit<T>, FailureInfo]>; all?: FailureInfo } => {
     let live = [...units];
     const dropped: Array<[Unit<T>, FailureInfo]> = [];
     for (;;) {
-      const delta = plan.build(rt, rt.current, live.map((u) => u.id));
+      const built = build(rt, live.map((u) => u.id));
+      if ('error' in built) return { dropped, all: built.error };
+      const delta = built.delta;
       const dry = isEmptyDelta(delta) ? undefined : applyDelta(rt.current, delta);
       const owned = [
         ...(plan.check?.(rt, rt.current, delta) ?? []),
+        ...edgeExpectations(rt),
         ...fieldConflicts(rt, delta, live),
         ...(dry && !dry.ok ? dry.violations : []),
       ];
@@ -352,7 +382,12 @@ export async function execute<T extends Record<string, unknown>>(
   for (const rt of plan.spaces) {
     if (rt.mode !== 'store') continue;
     for (let retries = 0; !nothingLeft(); ) {
-      const delta = plan.build(rt, rt.current, ids());
+      const built = build(rt, ids());
+      if ('error' in built) {
+        await abandonAll(built.error);
+        break;
+      }
+      const delta = built.delta;
       if (isEmptyDelta(delta)) break;
       const out = await commit(rt, delta);
       if (out.kind === 'ok') {
@@ -394,7 +429,12 @@ export async function execute<T extends Record<string, unknown>>(
   // 5. embedded caches ──────────────────────────────────────────────────────
   for (const rt of plan.spaces) {
     if (rt.mode !== 'embedded' || nothingLeft()) continue;
-    const delta = plan.build(rt, rt.current, ids());
+    const built = build(rt, ids());
+    if ('error' in built) {
+      rt.stale = true; // records are written; re-derive the cache before the next operation
+      continue;
+    }
+    const delta = built.delta;
     if (isEmptyDelta(delta)) continue;
     const out = await commit(rt, delta);
     if (out.kind === 'ok') applied.push({ rt, delta, inverse: out.inverse, before: out.before, owners: new Set(ids()), compensated: new Set() });
@@ -421,6 +461,7 @@ export async function execute<T extends Record<string, unknown>>(
   }
   const shared: Record<string, EdgeDelta> = {};
   const expect: Record<string, Node[]> = {};
+  const expectEdges: Record<string, Edge[]> = {};
   for (const a of applied) {
     // Partitioned by the units the write was made for: a compensated unit's part is already undone.
     const parts = partition(a.inverse, edgeLookup(a), a.owners);
@@ -431,11 +472,16 @@ export async function execute<T extends Record<string, unknown>>(
       return live ? [live] : [];
     });
     if (after.length) expect[a.rt.name] = after;
+    // Edges replaced under their own id (a new rank): as left, for the owners still standing.
+    const replaced = new Set<string>(a.delta.removed ?? []);
+    const left = (a.delta.added ?? []).filter((e) => replaced.has(e.id) && (finalIds.has(e.child) || !a.owners.has(e.child)));
+    if (left.length) expectEdges[a.rt.name] = left;
   }
   const inverse: CollectionInverse<T> = {
     items: [...items.values()].filter((i) => i.record || Object.keys(i.edges).length) as ItemInverse<T>[],
     shared,
     expect,
+    ...(Object.keys(expectEdges).length ? { expectEdges } : {}),
   };
 
   // A group operation names its group as succeeded iff the group-level change applied (no member was left behind).

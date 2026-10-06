@@ -28,8 +28,8 @@ const members = (tc: TaggedCollection<Item>, group: string, space?: string) =>
 describe('B1 — a store write that commits and then throws', () => {
   it('is recognized as applied: the record is kept, the edges are reported, the inverse undoes both', async () => {
     const inner = createMemoryGroupStore();
-    const store = interceptStore(inner, (_call, delta, options) =>
-      inner.apply(delta, options).then(() => Promise.reject(new Error('lock release failed'))),
+    const store = interceptStore(inner, (call, delta, options) =>
+      call === 1 ? inner.apply(delta, options).then(() => Promise.reject(new Error('lock release failed'))) : undefined,
     );
     const { provider } = flakyProvider(items());
     const tc = defineTaggedCollection<Item>({ provider, spaces: { tags: { edges: store } } });
@@ -39,7 +39,7 @@ describe('B1 — a store write that commits and then throws', () => {
     expect(r.succeeded).toEqual(['z']);
     expect(await provider.getOne('z')).toMatchObject({ id: 'z' });
     expect(groupsOf(tc, 'z')).toEqual(['proj']);
-    // The store's later applies keep throwing after committing; the revert still lands.
+    // (A remove-only revert that throws after committing would be undecidable: see review2, N1.)
     expect((await tc.revert(r.inverse)).failed).toEqual([]);
     expect(await state(tc)).toEqual(start);
   });

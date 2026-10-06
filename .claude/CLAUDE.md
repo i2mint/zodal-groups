@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE + COLLECTION FACADE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (119) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). Next: selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests), `@zodal/groups-store-fs` (72) and `@zodal/groups-collection` (129) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). Next: selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 
@@ -90,7 +90,7 @@ pnpm install
 pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
 pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
 pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
-pnpm --filter @zodal/groups-collection test  # 119 tests: every operation × (embedded, memory store, fs store), failures, two writers
+pnpm --filter @zodal/groups-collection test  # 129 tests: every operation × (embedded, memory store, fs store), failures, two writers
 pnpm build                                   # turbo, all packages
 ```
 
