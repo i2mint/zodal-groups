@@ -66,7 +66,7 @@ The kit (32 cases) checks: empty load; persistence with consistent `forward`/`in
 - Everything keyed on the **real path** (`realTarget`): one save queue per real file across instances in the process, so a symlinked directory cannot split the queue; a symlinked manifest stays a symlink and its target is replaced.
 - **Another process is detected, not overwritten**: the manifest is re-read just before the rename; if it changed since this write read it, nothing is written and `apply` returns `conflict`. Detection, not locking — the check-to-rename window is microseconds, not zero.
 - The file mode is kept (`0600` stays `0600`); `mode` sets it for a new manifest.
-- Temp files a dead process left (`.<manifest>.<pid>.<n>.tmp`, pid not running) are swept once per manifest per process.
+- Temp files a dead process left are swept once per manifest per process — only names matching exactly `^\.<escaped manifest>\.(\d+)\.(\d+)\.tmp$` whose pid is not running; anything else in the directory is not ours and is left alone.
 - Unknown top-level fields are preserved; older versions go through a `migrations` map keyed by version (`MANIFEST_MIGRATIONS` + the `migrations` option); a version with no migration is a `ManifestError`.
 - A corrupt manifest (invalid JSON, empty, wrong `format`, newer `version`, malformed node/edge) is a `ManifestError` naming the file, for `load` *and* `apply`, and is never overwritten; a failed write rejects without poisoning the queue.
 

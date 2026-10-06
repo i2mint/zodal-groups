@@ -124,6 +124,38 @@ describe('the manifest format evolves', () => {
   });
 });
 
+async function deadPid(): Promise<number> {
+  for (let pid = 4_000_000; ; pid++) {
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ESRCH') return pid;
+    }
+  }
+}
+
+describe('the temp sweep removes only its own leftovers (S-2)', () => {
+  it('leaves every file that is not exactly .<manifest>.<pid>.<n>.tmp', async () => {
+    const base = 'my.groups(1).json'; // regex metacharacters in the name
+    const path = join(dir, base);
+    const dead = await deadPid();
+    const ours = `.${base}.${dead}.7.tmp`;
+    const others = [
+      `.${base}.backup.tmp`, // NaN pid — used to be treated as dead
+      `.${base}.${dead}.tmp`, // one number
+      `.${base}.${dead}.7.tmp.keep`,
+      `.${base}.${dead}x.7.tmp`,
+      `.myXgroups(1).json.${dead}.7.tmp`, // '.' must not match any character
+      `.${base}.${dead}.7.tmpx`,
+    ];
+    for (const name of [ours, ...others]) await writeFile(join(dir, name), 'x');
+    await createFsGroupStore({ path }).apply({ added: [e('g', 'a')] });
+    const left = await readdir(dir);
+    expect(left).not.toContain(ours);
+    for (const name of others) expect(left).toContain(name);
+  });
+});
+
 describe('files', () => {
   it('keeps the manifest file mode across writes', async () => {
     const path = join(dir, 'groups.json');

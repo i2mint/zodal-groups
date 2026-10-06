@@ -230,9 +230,14 @@ const isAlive = (pid: number): boolean => {
   }
 };
 
-/** Remove `.<manifest>.<pid>.<n>.tmp` files whose writer is no longer running. */
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Remove temp files this package wrote — exactly `.<manifest>.<pid>.<n>.tmp`, nothing else — whose
+ * writer is no longer running. A name that does not match exactly is not ours and is left alone.
+ */
 async function removeStaleTemps(target: string): Promise<void> {
-  const prefix = `.${basename(target)}.`;
+  const ours = new RegExp(`^\\.${escapeRegExp(basename(target))}\\.(\\d+)\\.(\\d+)\\.tmp$`);
   let names: string[];
   try {
     names = await readdir(dirname(target));
@@ -240,10 +245,11 @@ async function removeStaleTemps(target: string): Promise<void> {
     return;
   }
   for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
-    const pid = Number(name.slice(prefix.length).split('.')[0]);
+    const match = ours.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
     // Ours are never in flight here (we run inside this manifest's queue); a live other pid may be.
-    if (Number.isInteger(pid) && pid !== process.pid && isAlive(pid)) continue;
+    if (pid !== process.pid && isAlive(pid)) continue;
     await rm(join(dirname(target), name), { force: true }).catch(() => undefined);
   }
 }
