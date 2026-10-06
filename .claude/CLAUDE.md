@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (181 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (59) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
+`@zodal/groups-core` (228 tests), `@zodal/groups-ui` (6), `@zodal/groups-ui-vanilla` (8 DOM tests) and `@zodal/groups-store-fs` (72) are implemented and green. groups-core now holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 32-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. Next: the `@zodal/groups-collection` facade (issue #1), selection-level tagging UI (#3), shadcn and Ark renderers.
 
 ## What zodal-groups Is
 
@@ -64,7 +64,7 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ## Reference Materials
 
-- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 29 numbered decisions (D25–D29 in §8 came from issues), the conflicts and how they resolved. **Read before designing anything.**
+- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 30 numbered decisions (D25–D30 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
 - **The thesis**: [`docs/zodal-groups-concept.md`](../docs/zodal-groups-concept.md)
 - **Research corpus**: `docs/research/` — 5 reports, ~3,900 lines, ~264 cited sources. Route via `docs/research/README.md`; don't read linearly.
 
@@ -85,8 +85,8 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 181 tests (+3 skipped: the memory store is not persistent)
-pnpm --filter @zodal/groups-store-fs test    # 59 tests: the contract kit + fs hardening, in a temp dir
+pnpm --filter @zodal/groups-core test        # 228 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-store-fs test    # 72 tests: the contract kit, fs hardening, the lock, and a real 4-process run
 pnpm --filter @zodal/groups-ui-vanilla test  # 8 DOM tests (jsdom)
 pnpm build                                   # turbo, all packages
 ```

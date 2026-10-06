@@ -7,7 +7,7 @@ metadata:
 
 # zodal-groups · the canonical model + profiles (the keystone)
 
-`@zodal/groups-core` is **built and green** (181 tests). This skill maps the shipped surface and the
+`@zodal/groups-core` is **built and green** (228 tests). This skill maps the shipped surface and the
 rules behind it. The *why* and the surveyed alternatives live in the research (routed below); this
 is the procedural guide. When you touch the model, edit the shapes here in the same change.
 

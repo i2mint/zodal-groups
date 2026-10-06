@@ -22,10 +22,15 @@
  * - **serialized per real file** — saves are queued by the manifest's `realpath`, across every store
  *   instance in the process, so two stores reaching one file through a symlinked directory never
  *   lose an update; a symlinked manifest stays a symlink (its target is replaced);
- * - **another process is detected, not overwritten** — just before the rename the manifest is
- *   re-read; if it changed since this write read it, the write is abandoned and `apply` returns a
- *   `conflict` violation. (Detection, not locking: the check-to-rename window is microseconds wide,
- *   not zero. Keep one writing process per manifest for guarantees.)
+ * - **other processes are excluded** — every `apply` holds an exclusive `<manifest>.lock` (created
+ *   with `wx`, holding pid + timestamp) from its read to its rename. A lock whose process is dead,
+ *   or older than `staleLockMs` (30 s), is broken safely; a live holder is waited for with backoff
+ *   until `lockTimeoutMs` (10 s), then `ManifestLockError`. Reads take no lock (renames are atomic).
+ *   On top of that, the manifest is re-read just before the rename, and a change since this write's
+ *   read (a hand edit, a writer that ignores the lock) is returned as `conflict`, not overwritten —
+ *   but that check alone leaves a window of ~270 µs median between check and rename, which lost
+ *   writes across processes before the lock existed. Local filesystems: a lock's pid cannot be
+ *   checked across machines on a network share.
  * - **the file mode is kept** (a `0600` manifest stays `0600`; `mode` sets it for a new one);
  * - **stale temp files** a dead process left behind are removed (once per manifest per process);
  * - **parent directory created** on first write;
@@ -46,7 +51,7 @@
  * @see `@zodal/groups-core` `GroupStore` for the contract; this adapter runs its test-kit.
  */
 
-import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, stat } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   CLIENT_SIDE_CAPABILITIES,
@@ -61,7 +66,11 @@ import {
   type GroupSpace,
   type GroupStore,
   type GroupStoreChange,
+  type EdgeDelta,
   type ProfileName,
+  type Result,
+  type StoreApplied,
+  type StoreApplyOptions,
 } from '@zodal/groups-core';
 
 /** The `format` marker every manifest carries. */
@@ -114,12 +123,119 @@ export interface ManifestWriteOptions {
   readonly mode?: number;
 }
 
+/** Could not take the manifest's lock in time: another writer holds it (and is alive). */
+export class ManifestLockError extends Error {
+  readonly path: string;
+  constructor(path: string, holder: string, timeoutMs: number) {
+    super(
+      `${path}: could not take ${path}.lock within ${timeoutMs} ms — held by ${holder}. Nothing was written. ` +
+        'If no process is writing this manifest, delete the lock file.',
+    );
+    this.name = 'ManifestLockError';
+    this.path = path;
+  }
+}
+
 /** File access, injectable for tests and non-default hosts. */
 export interface ManifestIO {
   /** The file's text, or `undefined` when it does not exist. */
   read(path: string): Promise<string | undefined>;
   /** Replace the file's contents atomically, creating its parent directory if needed. */
   write(path: string, text: string, options?: ManifestWriteOptions): Promise<void>;
+  /**
+   * Take an exclusive, cross-process lock on the manifest; resolve to its release. The store holds
+   * it from the read to the rename of every `apply`. Optional: without it, writers in other
+   * processes are only *detected* (best effort), not excluded.
+   */
+  lock?(path: string): Promise<() => Promise<void>>;
+}
+
+export interface NodeManifestIOOptions {
+  /** Give up taking the lock after this long (`ManifestLockError`). Default 10 s. */
+  readonly lockTimeoutMs?: number;
+  /** A lock older than this is broken even if its process is alive (it hung). Default 30 s. */
+  readonly staleLockMs?: number;
+}
+
+const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+const DEFAULT_STALE_LOCK_MS = 30_000;
+let lockCounter = 0;
+
+const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+/** Who holds a lock, as read from its file — or `undefined` if the lock is gone. */
+async function lockHolder(lockPath: string): Promise<{ text: string; pid?: number; at: number } | undefined> {
+  const text = await readText(lockPath);
+  if (text === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(text) as { pid?: unknown; at?: unknown };
+    if (Number.isInteger(parsed.pid) && typeof parsed.at === 'number') return { text, pid: parsed.pid as number, at: parsed.at };
+  } catch {
+    /* half-written, or not ours: judge it by its age */
+  }
+  try {
+    return { text, at: (await stat(lockPath)).mtimeMs };
+  } catch (error) {
+    if (errno(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Break a stale lock without ever breaking a fresh one: rename it away (atomic — only one breaker
+ * wins), then check that what we took is the stale lock we judged; if someone had re-taken it in
+ * between, put theirs back (`link` fails if yet another writer already holds the name).
+ */
+async function breakLock(lockPath: string, stale: { text: string }): Promise<void> {
+  const aside = `${lockPath}.stale.${process.pid}.${(lockCounter += 1)}`;
+  try {
+    await rename(lockPath, aside);
+  } catch (error) {
+    if (errno(error) === 'ENOENT') return; // already released or broken by someone else
+    throw error;
+  }
+  try {
+    if ((await readText(aside)) !== stale.text) await link(aside, lockPath).catch(() => undefined);
+  } finally {
+    await rm(aside, { force: true }).catch(() => undefined);
+  }
+}
+
+async function acquireLock(path: string, timeoutMs: number, staleMs: number): Promise<() => Promise<void>> {
+  const lockPath = `${path}.lock`;
+  await mkdir(dirname(path), { recursive: true });
+  const body = JSON.stringify({ pid: process.pid, at: Date.now(), n: (lockCounter += 1), r: Math.random() });
+  const deadline = Date.now() + timeoutMs;
+  let backoff = 1;
+  for (;;) {
+    try {
+      const handle = await open(lockPath, 'wx');
+      try {
+        await handle.writeFile(body, 'utf8');
+      } finally {
+        await handle.close();
+      }
+      // Release only OUR lock: if it was broken as stale and re-taken, the file is someone else's.
+      return async () => {
+        if ((await readText(lockPath)) === body) await rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (errno(error) !== 'EEXIST') throw error;
+    }
+    const holder = await lockHolder(lockPath);
+    if (!holder) continue; // released between our attempt and our look: try again at once
+    const dead = holder.pid !== undefined && holder.pid !== process.pid && !isAlive(holder.pid);
+    if (dead || Date.now() - holder.at > staleMs) {
+      await breakLock(lockPath, holder);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      const who = holder.pid !== undefined ? `pid ${holder.pid} since ${new Date(holder.at).toISOString()}` : 'an unreadable lock file';
+      throw new ManifestLockError(path, who, timeoutMs);
+    }
+    await sleep(backoff + Math.random() * backoff);
+    backoff = Math.min(backoff * 2, 25);
+  }
 }
 
 let tempCounter = 0;
@@ -149,10 +265,17 @@ async function syncDirectory(dir: string): Promise<void> {
   }
 }
 
-/** The default `ManifestIO`: Node fs, with an fsynced temp file renamed over the target. */
-export function nodeManifestIO(): ManifestIO {
+/**
+ * The default `ManifestIO`: Node fs, with an fsynced temp file renamed over the target, and an
+ * exclusive `<manifest>.lock` (pid + timestamp) for cross-process writers. Local filesystems: a
+ * lock's pid cannot be checked across machines on a network share.
+ */
+export function nodeManifestIO(options: NodeManifestIOOptions = {}): ManifestIO {
+  const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const staleMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
   return {
     read: readText,
+    lock: (path) => acquireLock(path, timeoutMs, staleMs),
     async write(path, text, options = {}) {
       const dir = dirname(path);
       await mkdir(dir, { recursive: true });
@@ -280,8 +403,12 @@ export interface FsGroupStoreOptions {
   /** The profile every write is validated against. Defaults to `polyhierarchy`. */
   readonly profile?: ProfileName | GroupProfile;
   readonly overrides?: Partial<Omit<GroupProfile, 'name'>>;
-  /** File access. Defaults to `nodeManifestIO()`. */
+  /** File access. Defaults to `nodeManifestIO({ lockTimeoutMs, staleLockMs })`. */
   readonly io?: ManifestIO;
+  /** How long `apply` waits for another process's lock before `ManifestLockError`. Default 10 s. */
+  readonly lockTimeoutMs?: number;
+  /** A lock older than this is broken even if its holder is alive (it hung). Default 30 s. */
+  readonly staleLockMs?: number;
   /** `JSON.stringify` indentation. Defaults to 2 — the manifest is meant to be diffable. */
   readonly indent?: number | string;
   /** File mode for a NEW manifest (e.g. `0o600` for private data). An existing file keeps its own. */
@@ -311,7 +438,12 @@ interface ManifestRead<P> {
 /** Create a `GroupStore` persisted as a sidecar manifest. See the module docstring. */
 export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): FsGroupStore<P> {
   const path = resolve(options.path);
-  const io = options.io ?? nodeManifestIO();
+  const io =
+    options.io ??
+    nodeManifestIO({
+      ...(options.lockTimeoutMs !== undefined ? { lockTimeoutMs: options.lockTimeoutMs } : {}),
+      ...(options.staleLockMs !== undefined ? { staleLockMs: options.staleLockMs } : {}),
+    });
   const indent = options.indent ?? 2;
   const migrations = { ...MANIFEST_MIGRATIONS, ...(options.migrations ?? {}) };
   const empty = fromSnapshot<P>(
@@ -390,50 +522,64 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
     apply: async (delta, applyOptions) => {
       const target = await realTarget(path);
       return enqueue(target, async () => {
-        if (!swept.has(target)) {
-          swept.add(target);
-          await removeStaleTemps(target);
-        }
-        // Read, check the revision, compute the inverse and apply — all inside the queue, against
-        // the state actually on disk (an inverse computed from an earlier read undoes the wrong state).
-        const before = await read(target);
-        // A new manifest (or one from before epochs) starts a new history.
-        const epoch = before.epoch ?? newEpoch();
-        const result = commitDelta(before.space, delta, applyOptions ?? {}, epoch);
-        if (!result.ok) return result;
+        // Other processes: hold the manifest's lock from this read to the rename.
+        const release = await io.lock?.(target);
         try {
-          await io.write(target, serializeManifest(toSnapshot(result.value.space), { indent, extra: before.extra, epoch }), {
-            ifUnchanged: before.text,
-            ...(options.mode !== undefined ? { mode: options.mode } : {}),
-          });
-        } catch (error) {
-          if (!(error instanceof ManifestConflictError)) throw error;
-          // Report where the file actually is now, not the revision we read before the other writer.
-          const actual = await read(target).then(
-            (now) => now.space.revision,
-            () => undefined,
-          );
-          const expected = applyOptions?.expectedRevision;
-          return {
-            ok: false,
-            violations: [
-              {
-                code: 'conflict',
-                ...(expected !== undefined ? { expectedRevision: expected } : {}),
-                ...(actual !== undefined ? { actualRevision: actual } : {}),
-                message: error.message,
-              },
-            ],
-          };
+          return await applyLocked(target, delta, applyOptions);
+        } finally {
+          await release?.();
         }
-        listeners.emit({ delta, inverse: result.value.inverse, revision: result.value.revision, epoch });
-        return result;
       });
     },
     getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
     subscribe: (listener) => listeners.add(listener),
     dispose: () => listeners.clear(),
   };
+
+  async function applyLocked(
+    target: string,
+    delta: EdgeDelta,
+    applyOptions: StoreApplyOptions | undefined,
+  ): Promise<Result<StoreApplied<P>>> {
+    if (!swept.has(target)) {
+      swept.add(target);
+      await removeStaleTemps(target);
+    }
+    // Read, check the revision, compute the inverse and apply — all inside the queue, against
+    // the state actually on disk (an inverse computed from an earlier read undoes the wrong state).
+    const before = await read(target);
+    // A new manifest (or one from before epochs) starts a new history.
+    const epoch = before.epoch ?? newEpoch();
+    const result = commitDelta(before.space, delta, applyOptions ?? {}, epoch);
+    if (!result.ok) return result;
+    try {
+      await io.write(target, serializeManifest(toSnapshot(result.value.space), { indent, extra: before.extra, epoch }), {
+        ifUnchanged: before.text,
+        ...(options.mode !== undefined ? { mode: options.mode } : {}),
+      });
+    } catch (error) {
+      if (!(error instanceof ManifestConflictError)) throw error;
+      // Report where the file actually is now, not the revision we read before the other writer.
+      const actual = await read(target).then(
+        (now) => now.space.revision,
+        () => undefined,
+      );
+      const expected = applyOptions?.expectedRevision;
+      return {
+        ok: false,
+        violations: [
+          {
+            code: 'conflict',
+            ...(expected !== undefined ? { expectedRevision: expected } : {}),
+            ...(actual !== undefined ? { actualRevision: actual } : {}),
+            message: error.message,
+          },
+        ],
+      };
+    }
+    listeners.emit({ delta, inverse: result.value.inverse, revision: result.value.revision, epoch });
+    return result;
+  }
 }
 
 /**
