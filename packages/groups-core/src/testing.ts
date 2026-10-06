@@ -440,6 +440,21 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     if (applied.space) sameSpace(applied.space, loaded, 'returned space vs load()');
   });
 
+  add('every apply reports the store history it belongs to (epoch); an expectedEpoch from another is refused', async ({ store }) => {
+    const first = expectOk(await store.apply({ added: [edge('g', 'a')] }), 'first write');
+    if (typeof first.epoch !== 'string' || first.epoch === '') fail(`apply result: expected a non-empty epoch, got ${show(first.epoch)}`);
+    const second = expectOk(await store.apply({ added: [edge('g', 'b')] }, { expectedEpoch: first.epoch }), 'a write in the same epoch');
+    equal(second.epoch, first.epoch, 'epoch of the next write');
+    const before = await store.load();
+    const v = expectRefused(
+      await store.apply({ added: [edge('g', 'c')] }, { expectedEpoch: `${first.epoch}-not`, expectedRevision: second.revision }),
+      'conflict',
+      'a write expecting another history',
+    );
+    equal(v.expectedRevision, second.revision, 'conflict.expectedRevision');
+    sameSpace(await store.load(), before, 'load() after the refused write');
+  });
+
   add('concurrent applies each get the inverse of their own write (exactly one creates the contested node)', async ({ store }) => {
     // Six writers file an item under a group X that does not exist yet. Exactly one of them
     // creates X, so exactly one inverse may tombstone it. A store that computes inverses from a
@@ -623,6 +638,7 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
       equal(seen.length, 1, 'notifications');
       equal(seen[0]!.revision, r.revision, 'notified revision');
       equal(seen[0]!.inverse, r.inverse, 'notified inverse');
+      equal(seen[0]!.epoch, r.epoch, 'notified epoch');
       equal(seen[0]!.delta.added?.map((e) => e.id), ['a>b'], 'notified delta');
       off();
       expectOk(await store.apply({ added: [edge('a', 'c')] }), 'apply after unsubscribe');

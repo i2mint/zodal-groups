@@ -18,9 +18,10 @@ The contract lives in `packages/groups-core/src/store.ts` (decision D28), export
 interface GroupStore<P = unknown> {
   readonly profile: GroupProfile;                          // code, not data: validates writes, never persisted
   load(): Promise<GroupSpace<P>>;                          // NOT validated against the profile (D8)
-  apply(delta: EdgeDelta, options?: { expectedRevision?: number })
-    : Promise<Result<{ revision: number; inverse: EdgeDelta; space?: GroupSpace<P> }>>;
-    // a violation is { ok: false } (stale expectedRevision → 'conflict'); only I/O rejects
+  apply(delta: EdgeDelta, options?: { expectedRevision?: number; expectedEpoch?: string })
+    : Promise<Result<{ revision: number; epoch: string; inverse: EdgeDelta; space?: GroupSpace<P> }>>;
+    // a violation is { ok: false } (stale revision or another epoch → 'conflict'); only I/O rejects.
+    // No options ⇒ last write wins. `epoch` = the backing's history id, new if it is re-created.
   getCapabilities(): GroupStoreCapabilities;               // the D19 record, below
   closureIds?(group: NodeId): Promise<NodeId[]>;           // present IFF closure.read === 'native'
   subscribe?(listener: (c: GroupStoreChange) => void): () => void;  // isolate throwing listeners
@@ -33,7 +34,7 @@ Shipped: `createMemoryGroupStore()` in groups-core (the default — real, not a 
 **Writing an adapter** (copy `groups-store-fs`'s layout):
 
 1. Persist a **snapshot**: `toSnapshot(space)` → flat `nodes[]` + `edges[]` + `revision` (D20). Read back with `parseSnapshot` (structure, throws with the offending path) then `fromSnapshot(snapshot, { profile })` (indexes only). Never treat unreadable data as empty — raise an error naming the location.
-2. `apply` = **inside the serialized section**: read current space → `commitDelta(space, delta, options)` (checks `expectedRevision`, computes the inverse against *this* state, applies) → if ok, write atomically → `emit({ delta, inverse, revision })` → return the result. Delegating gives you cycle refusal with the path, every profile rule, family rules (D26), tombstones (D25) and the `conflict` check for free. A native backend that validates server-side must produce the same violations and compute the inverse in the same transaction. Return `space` only if you hold it anyway (D10).
+2. `apply` = **inside the serialized section**: read current space → `commitDelta(space, delta, options, epoch)` (checks `expectedEpoch` and `expectedRevision`, computes the inverse against *this* state, applies) → if ok, write atomically → `emit({ delta, inverse, revision })` → return the result. Delegating gives you cycle refusal with the path, every profile rule, family rules (D26), tombstones (D25) and the `conflict` check for free. A native backend that validates server-side must produce the same violations and compute the inverse in the same transaction. Return `space` only if you hold it anyway (D10).
 3. **Serialize** applies (a promise queue per backing location); a read–modify–write without one loses updates.
 4. Use `createListenerSet(onListenerError)` from groups-core for `subscribe`; emit only after the write is durable.
 5. Report capabilities honestly. Client-side closure is `CLIENT_SIDE_CAPABILITIES` (`read: 'client'`, `maintainedOnInsert: true`, `maintainedOnDelete: 'exact'` — a read-time walk has no cache to go stale). Only declare `'native'` if you implement `closureIds`.

@@ -62,10 +62,32 @@ describe('another process writing the manifest', () => {
       },
       write: real.write,
     };
-    const r = await createFsGroupStore({ path, io }).apply({ added: [e('g', 'b')] });
+    const r = await createFsGroupStore({ path, io }).apply({ added: [e('g', 'b')] }, { expectedRevision: 1 });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.violations[0]!.code).toBe('conflict');
+    if (!r.ok) {
+      expect(r.violations[0]!.code).toBe('conflict');
+      expect(r.violations[0]!.expectedRevision).toBe(1);
+      expect(r.violations[0]!.actualRevision).toBe(9); // re-read: theirs, not our stale 1
+    }
     expect(await readFile(path, 'utf8')).toBe(theirs);
+  });
+});
+
+describe('a deleted and re-created manifest is a new history', () => {
+  it('an (epoch, revision) from the old file is refused, even when the revision number matches', async () => {
+    const path = join(dir, 'groups.json');
+    const store = createFsGroupStore({ path });
+    const old = await store.apply({ added: [e('g', 'a')] });
+    if (!old.ok) throw new Error('seed');
+    await rm(path);
+    const fresh = await store.apply({ added: [e('h', 'z')] }); // revision 1 again
+    if (!fresh.ok) throw new Error('fresh');
+    expect(fresh.value.revision).toBe(old.value.revision);
+    expect(fresh.value.epoch).not.toBe(old.value.epoch);
+    const stale = await store.apply(old.value.inverse, { expectedRevision: old.value.revision, expectedEpoch: old.value.epoch });
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.violations[0]!.code).toBe('conflict');
+    expect(JSON.parse(await readFile(path, 'utf8')).epoch).toBe(fresh.value.epoch);
   });
 });
 

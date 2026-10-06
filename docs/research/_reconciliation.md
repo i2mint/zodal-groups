@@ -377,7 +377,8 @@ The skill's sketch is now real code in groups-core (`store.ts`): `load()`, `appl
 
 - `apply(delta, { expectedRevision? }) → Result<{ revision, inverse, space? }>`. The **inverse is computed inside the store's serialized section against the state it applied to**; `space` is optional.
 - A stale `expectedRevision` is refused with a `conflict` violation (`expectedRevision`, `actualRevision`) and writes nothing — so a compensation or undo applied with the revision it came from can never clobber a newer write. (a) becomes a clean `conflict` the caller can act on (re-read, compensate minimally); (b) is refused.
-- `commitDelta(space, delta, options)` in groups-core is that serialized-section logic for any store holding a space in memory; change notifications carry the `inverse` too.
+- **Round 2:** `StoreApplyOptions` states up front that without options the last write wins. A `conflict` reports the revision the caller expected and the store's *current* revision (the fs store re-reads it rather than reporting the one it read before the other writer). Revisions restart when a backing is deleted and re-created, so every apply also returns an **`epoch`** — the backing's history id, minted at creation (the fs manifest stores it) — and `expectedEpoch` from another history is refused with `conflict`, even when the revision number happens to match.
+- `commitDelta(space, delta, options, epoch)` in groups-core is that serialized-section logic for any store holding a space in memory; change notifications carry the `inverse` too.
 
 **Amendment (PR review): a smaller, fully tested capability record; a stronger kit.**
 

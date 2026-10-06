@@ -89,7 +89,7 @@ describe('the contract kit catches a store that breaks the contract', () => {
           const s = toSnapshot(space);
           const inverse = invert(space, delta);
           space = fromSnapshot({ nodes: s.nodes, edges: [...s.edges, ...(delta.added ?? [])], revision: space.revision + 1 }, { profile });
-          return { ok: true, value: { revision: space.revision, inverse, space } };
+          return { ok: true, value: { revision: space.revision, inverse, epoch: 'e', space } };
         },
         getCapabilities: () => CLIENT_SIDE_CAPABILITIES,
       } satisfies GroupStore;
@@ -120,7 +120,7 @@ describe('the contract kit catches a store that breaks the contract', () => {
         apply: async (delta) => {
           const base = space; // read…
           await new Promise((r) => setTimeout(r, 1)); // …yield…
-          const result = commitDelta(base, delta); // …write from a stale read: lost updates
+          const result = commitDelta(base, delta, {}, 'e'); // …write from a stale read: lost updates
           if (result.ok) space = result.value.space;
           return result;
         },
@@ -141,7 +141,7 @@ describe('the contract kit catches a store that breaks the contract', () => {
           apply: async (delta) => {
             const stale = space; // read before the serialized section…
             await new Promise((r) => setTimeout(r, 1));
-            const result = commitDelta(space, delta); // …writes correctly…
+            const result = commitDelta(space, delta, {}, 'e'); // …writes correctly…
             if (!result.ok) return result;
             space = result.value.space;
             return { ok: true, value: { ...result.value, inverse: invert(stale, delta) } }; // …but undoes against the stale read

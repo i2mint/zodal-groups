@@ -76,23 +76,42 @@ export interface GroupStoreChange {
   /** The delta that undoes this change, against the state it was applied to. */
   readonly inverse: EdgeDelta;
   readonly revision: number;
+  /** The store history this revision belongs to (see `StoreApplied.epoch`). */
+  readonly epoch: string;
 }
 
-/** Options for `GroupStore.apply`. */
+/**
+ * Options for `GroupStore.apply`.
+ *
+ * **Without them, the last write wins**: the delta is validated against whatever the store holds
+ * when it gets there, and nothing tells you another writer got there first. Pass the
+ * `(epoch, revision)` your delta was computed against — always, for an undo or a compensation.
+ */
 export interface StoreApplyOptions {
   /**
    * Apply only if the store is at exactly this revision; otherwise refuse with `conflict` and write
    * nothing. Pass the revision your undo or compensation was computed against.
    */
   readonly expectedRevision?: number;
+  /**
+   * Apply only if the store is still the same history (`StoreApplied.epoch`); otherwise `conflict`.
+   * Revisions restart when a store's backing is deleted and re-created, so a revision alone can
+   * match by accident — the epoch cannot.
+   */
+  readonly expectedEpoch?: string;
 }
 
 /** What a successful `GroupStore.apply` returns. */
 export interface StoreApplied<P = unknown> {
   /** The store's revision after this write. */
   readonly revision: number;
-  /** Undoes exactly this write. Apply it with `expectedRevision: revision` to undo safely. */
+  /** Undoes exactly this write. Apply it with `{ expectedRevision: revision, expectedEpoch: epoch }`. */
   readonly inverse: EdgeDelta;
+  /**
+   * Identifies the store's history: minted when the backing is created (a manifest, a table), kept
+   * for its lifetime, new if it is deleted and re-created. Revisions compare only within an epoch.
+   */
+  readonly epoch: string;
   /** The whole new space — only from a store that holds it anyway (memory, a manifest). */
   readonly space?: GroupSpace<P>;
 }
@@ -104,9 +123,23 @@ export interface StoreApplied<P = unknown> {
 export function commitDelta<P>(
   space: GroupSpace<P>,
   delta: EdgeDelta,
-  options: StoreApplyOptions = {},
+  options: StoreApplyOptions,
+  epoch: string,
 ): Result<StoreApplied<P> & { readonly space: GroupSpace<P> }> {
   const expected = options.expectedRevision;
+  if (options.expectedEpoch !== undefined && options.expectedEpoch !== epoch) {
+    return {
+      ok: false,
+      violations: [
+        {
+          code: 'conflict',
+          ...(expected !== undefined ? { expectedRevision: expected } : {}),
+          actualRevision: space.revision,
+          message: `The store's history was replaced (epoch ${epoch}, expected ${options.expectedEpoch}) — its backing was deleted and re-created. Nothing was written; re-read and retry.`,
+        },
+      ],
+    };
+  }
   if (expected !== undefined && expected !== space.revision) {
     return {
       ok: false,
@@ -123,7 +156,13 @@ export function commitDelta<P>(
   const inverse = invert(space, delta);
   const result = applyDelta(space, delta);
   if (!result.ok) return result;
-  return { ok: true, value: { revision: result.value.revision, inverse, space: result.value } };
+  return { ok: true, value: { revision: result.value.revision, inverse, epoch, space: result.value } };
+}
+
+/** A fresh, practically unique epoch id. */
+export function newEpoch(): string {
+  const uuid = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto?.randomUUID?.();
+  return uuid ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
 }
 
 /** The persistence contract. See the module docstring. */
@@ -222,6 +261,7 @@ export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOpt
       });
   // What callers get: a read-only view, so nobody can mutate the store's state through `load()`.
   let view = readonlySpace(space);
+  const epoch = newEpoch(); // a memory store's history is its instance
   const listeners = createListenerSet<GroupStoreChange>(options.onListenerError);
 
   return {
@@ -232,11 +272,11 @@ export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOpt
       return view;
     },
     async apply(delta, applyOptions) {
-      const result = commitDelta(space, delta, applyOptions);
+      const result = commitDelta(space, delta, applyOptions ?? {}, epoch);
       if (!result.ok) return result;
       space = result.value.space;
       view = readonlySpace(space);
-      listeners.emit({ delta, inverse: result.value.inverse, revision: space.revision });
+      listeners.emit({ delta, inverse: result.value.inverse, revision: space.revision, epoch });
       return { ok: true, value: { ...result.value, space: view } };
     },
     getCapabilities: () => CLIENT_SIDE_CAPABILITIES,

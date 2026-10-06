@@ -88,8 +88,9 @@ A `GroupStore` loads a space, applies deltas (validated, atomically) and reports
 import { createFsGroupStore } from '@zodal/groups-store-fs';
 
 const store = createFsGroupStore({ path: './photos/.groups.json', profile: 'labels' });
-const r = await store.apply(delta);  // → { ok: true, value: { revision, inverse } } or { ok: false, violations }
-if (r.ok) await store.apply(r.value.inverse, { expectedRevision: r.value.revision });  // a safe undo: refused if someone wrote since
+const r = await store.apply(delta);  // → { ok: true, value: { revision, epoch, inverse } } or { ok: false, violations }
+// A safe undo: refused (`conflict`) if anyone wrote since. Without these options, the last write wins.
+if (r.ok) await store.apply(r.value.inverse, { expectedRevision: r.value.revision, expectedEpoch: r.value.epoch });
 const space = await store.load();    // hand it to any projection
 ```
 

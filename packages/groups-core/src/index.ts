@@ -120,6 +120,7 @@ export {
   createMemoryGroupStore,
   createListenerSet,
   commitDelta,
+  newEpoch,
   CLIENT_SIDE_CAPABILITIES,
   type GroupStore,
   type GroupStoreCapabilities,

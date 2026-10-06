@@ -34,7 +34,10 @@
  *   malformed node/edge all reject with a `ManifestError` naming the file, and nothing is written
  *   over it;
  * - **forward-compatible** — top-level fields this version does not know are kept on every write,
- *   and older versions are upgraded through a `migrations` map keyed by version.
+ *   and older versions are upgraded through a `migrations` map keyed by version;
+ * - **one history per file** — the manifest carries an `epoch` minted when it is created, so an
+ *   `(expectedEpoch, expectedRevision)` from a deleted-and-re-created manifest is refused even when
+ *   the revision number happens to match.
  *
  * Each `load`/`apply` re-reads the manifest, so edits made between operations (by hand, by another
  * tool) are seen. Data on disk is not validated against the profile on read (D8: enforce on write,
@@ -50,6 +53,7 @@ import {
   commitDelta,
   createListenerSet,
   fromSnapshot,
+  newEpoch,
   parseSnapshot,
   toSnapshot,
   type GroupProfile,
@@ -73,7 +77,7 @@ export type ManifestMigration = (manifest: ManifestRecord) => ManifestRecord;
 export const MANIFEST_MIGRATIONS: Readonly<Record<number, ManifestMigration>> = Object.freeze({});
 
 /** The fields the manifest format owns; any other top-level field is kept as is. */
-const OWN_FIELDS = new Set(['format', 'version', 'revision', 'nodes', 'edges']);
+const OWN_FIELDS = new Set(['format', 'version', 'epoch', 'revision', 'nodes', 'edges']);
 
 /** The manifest file is unreadable as a zodal-groups manifest. Never treated as an empty space. */
 export class ManifestError extends Error {
@@ -294,6 +298,8 @@ interface ManifestRead<P> {
   readonly space: GroupSpace<P>;
   /** Top-level fields this version does not own, kept on the next write. */
   readonly extra: ManifestRecord;
+  /** The manifest's history id; `undefined` for no file yet (or one written before epochs). */
+  readonly epoch: string | undefined;
 }
 
 /** Create a `GroupStore` persisted as a sidecar manifest. See the module docstring. */
@@ -342,7 +348,7 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
 
   const read = async (target: string): Promise<ManifestRead<P>> => {
     const text = await io.read(target);
-    if (text === undefined) return { text: null, space: empty, extra: {} };
+    if (text === undefined) return { text: null, space: empty, extra: {}, epoch: undefined };
     if (text.trim() === '') throw new ManifestError(path, 'the manifest is empty');
     let json: unknown;
     try {
@@ -355,6 +361,9 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
       throw new ManifestError(path, `not a zodal-groups manifest (expected "format": "${MANIFEST_FORMAT}")`);
     }
     record = migrate(path, record);
+    if (record.epoch !== undefined && (typeof record.epoch !== 'string' || record.epoch === '')) {
+      throw new ManifestError(path, `"epoch" must be a non-empty string, got ${JSON.stringify(record.epoch)}`);
+    }
     let snapshot;
     try {
       snapshot = parseSnapshot<P>(record);
@@ -362,7 +371,7 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
       throw new ManifestError(path, `malformed manifest: ${(error as Error).message}`, { cause: error });
     }
     const extra = Object.fromEntries(Object.entries(record).filter(([key]) => !OWN_FIELDS.has(key)));
-    return { text, space: fromSnapshot(snapshot, { profile }), extra };
+    return { text, space: fromSnapshot(snapshot, { profile }), extra, epoch: record.epoch as string | undefined };
   };
 
   return {
@@ -382,21 +391,36 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
         // Read, check the revision, compute the inverse and apply — all inside the queue, against
         // the state actually on disk (an inverse computed from an earlier read undoes the wrong state).
         const before = await read(target);
-        const result = commitDelta(before.space, delta, applyOptions);
+        // A new manifest (or one from before epochs) starts a new history.
+        const epoch = before.epoch ?? newEpoch();
+        const result = commitDelta(before.space, delta, applyOptions ?? {}, epoch);
         if (!result.ok) return result;
         try {
-          await io.write(target, serializeManifest(toSnapshot(result.value.space), { indent, extra: before.extra }), {
+          await io.write(target, serializeManifest(toSnapshot(result.value.space), { indent, extra: before.extra, epoch }), {
             ifUnchanged: before.text,
             ...(options.mode !== undefined ? { mode: options.mode } : {}),
           });
         } catch (error) {
           if (!(error instanceof ManifestConflictError)) throw error;
+          // Report where the file actually is now, not the revision we read before the other writer.
+          const actual = await read(target).then(
+            (now) => now.space.revision,
+            () => undefined,
+          );
+          const expected = applyOptions?.expectedRevision;
           return {
             ok: false,
-            violations: [{ code: 'conflict', actualRevision: before.space.revision, message: error.message }],
+            violations: [
+              {
+                code: 'conflict',
+                ...(expected !== undefined ? { expectedRevision: expected } : {}),
+                ...(actual !== undefined ? { actualRevision: actual } : {}),
+                message: error.message,
+              },
+            ],
           };
         }
-        listeners.emit({ delta, inverse: result.value.inverse, revision: result.value.revision });
+        listeners.emit({ delta, inverse: result.value.inverse, revision: result.value.revision, epoch });
         return result;
       });
     },
@@ -413,9 +437,22 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
  */
 export function serializeManifest(
   snapshot: GroupSnapshot,
-  options: { readonly indent?: number | string; readonly extra?: Readonly<Record<string, unknown>> } = {},
+  options: {
+    readonly indent?: number | string;
+    readonly extra?: Readonly<Record<string, unknown>>;
+    /** The history id; omit for a seed (the store mints one on its first write). */
+    readonly epoch?: string;
+  } = {},
 ): string {
   const { revision = 0, nodes, edges } = snapshot;
-  const manifest = { ...(options.extra ?? {}), format: MANIFEST_FORMAT, version: MANIFEST_VERSION, revision, nodes, edges };
+  const manifest = {
+    ...(options.extra ?? {}),
+    format: MANIFEST_FORMAT,
+    version: MANIFEST_VERSION,
+    ...(options.epoch !== undefined ? { epoch: options.epoch } : {}),
+    revision,
+    nodes,
+    edges,
+  };
   return `${JSON.stringify(manifest, null, options.indent ?? 2)}\n`;
 }
