@@ -10,12 +10,13 @@
  * *storage* of nesting as a string is what makes their polyhierarchy impossible.
  *
  * Persisting is the host's: pass `onWrite`, and every edit is applied to the in-memory `Groups` at
- * once (optimistic), then handed to `onWrite` as the exact `EdgeDelta`. If it rejects, the edit is
- * rolled back — by `undo()` when nothing was written since, by its inverse otherwise — and the
- * reason is announced in the input's live status.
+ * once (optimistic) and handed to `onWrite` as its exact `EdgeDelta`. Writes go out **one at a
+ * time, in order**: a later edit may be built on an earlier one (add a tag, then remove it), so when
+ * a write rejects, that edit *and every queued edit after it* are rolled back, newest first, and
+ * the queued ones are never sent. The reason is announced in the input's live status.
  */
 
-import { invert, type EdgeDelta, type Groups, type GroupSpace, type NodeId, type Result } from '@zodal/groups-core';
+import { invert, nodeId, type EdgeDelta, type Groups, type GroupSpace, type NodeId, type Result } from '@zodal/groups-core';
 import { toTagTokens } from '@zodal/groups-ui';
 
 export interface TagInputRenderer {
@@ -29,11 +30,30 @@ export interface TagInputOptions {
   readonly onChange?: () => void;
   /**
    * Persist an edit, e.g. PATCH a server. Receives the delta that was just applied locally;
-   * resolve to keep it, reject (or throw) to roll it back.
+   * resolve to keep it, reject (or throw) to roll it back. Called one edit at a time, in order.
    */
   readonly onWrite?: (delta: EdgeDelta) => Promise<void> | void;
-  /** Called when `onWrite` rejected, after the rollback (`rolledBack: false` if it was refused). */
-  readonly onError?: (error: unknown, context: { readonly delta: EdgeDelta; readonly rolledBack: boolean }) => void;
+  /**
+   * Called when `onWrite` rejected, after the rollback. `discarded` are the later edits that were
+   * waiting behind it, rolled back too and never sent; `rolledBack: false` if any part of the
+   * rollback was refused (the model changed underneath in a way that conflicts).
+   */
+  readonly onError?: (
+    error: unknown,
+    context: { readonly delta: EdgeDelta; readonly discarded: readonly EdgeDelta[]; readonly rolledBack: boolean },
+  ) => void;
+}
+
+/** An optimistic edit, applied locally, whose write has not succeeded yet. */
+interface Pending<P> {
+  readonly delta: EdgeDelta;
+  /** The space the delta was applied to: what `invert` needs. */
+  readonly before: GroupSpace<P>;
+  /** The revision our commit produced, and the undo depth right after it. */
+  readonly revision: number;
+  readonly depth: number;
+  /** The undo depth before it: tells whether the previous pending edit sits right under it. */
+  readonly depthBefore: number;
 }
 
 export function renderTagInput<P>(
@@ -43,23 +63,96 @@ export function renderTagInput<P>(
 ): TagInputRenderer {
   let item: NodeId | null = null;
   let destroyed = false;
-  let pending = 0;
+  /** Oldest first; `queue[0]` is the one being written while `writing` is true. */
+  const queue: Pending<P>[] = [];
+  let writing = false;
 
   const root = document.createElement('div');
   root.className = 'zg-tags';
   container.appendChild(root);
 
-  // Lives across re-renders, so an announcement is not wiped by the render that follows it.
+  // Chips and input are re-rendered; the status is not, so an announcement is never detached
+  // from the page right after it is set (some screen readers would skip it).
+  const body = document.createElement('span');
+  body.className = 'zg-tags-body';
   const status = document.createElement('span');
   status.className = 'zg-tag-status';
   status.setAttribute('role', 'status');
+  root.append(body, status);
 
-  /** Apply locally, then persist; roll back if persisting fails. Returns the local result. */
-  const write = (op: () => Result<GroupSpace<P>>): Result<GroupSpace<P>> => {
+  const nameOf = (id: NodeId): string => groups.space.nodes.get(id)?.label ?? id;
+  const describe = (p: Pending<P>): string => {
+    const added = (p.delta.added ?? []).map((e) => `adding “${nameOf(e.parent)}”`);
+    const removed = (p.delta.removed ?? []).map((id) => {
+      const edge = p.before.edges.get(id);
+      return edge ? `removing “${nameOf(edge.parent)}”` : 'a removal';
+    });
+    return [...added, ...removed].join(', ') || 'an edit';
+  };
+
+  /** Undo `entries` (oldest first) newest first. `undo()` while nothing else was written since. */
+  const rollBack = (entries: readonly Pending<P>[]): boolean => {
+    let ok = true;
+    // `clean`: the top of the undo history is still this entry's own commit.
+    let clean = (() => {
+      const newest = entries[entries.length - 1]!;
+      return groups.revision === newest.revision && groups.undoDepth === newest.depth;
+    })();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]!;
+      if (clean && groups.undo()) {
+        const below = entries[i - 1];
+        // The entry below is next on the history only if this one was committed right on top of it.
+        clean = !!below && entry.before.revision === below.revision && entry.depthBefore === below.depth;
+        continue;
+      }
+      clean = false;
+      if (!groups.apply(invert(entry.before, entry.delta)).ok) ok = false;
+    }
+    return ok;
+  };
+
+  const pump = (): void => {
+    if (writing || !queue.length || !options.onWrite) return;
+    writing = true;
+    root.setAttribute('aria-busy', 'true');
+    const head = queue[0]!;
+    void (async () => {
+      try {
+        await options.onWrite!(head.delta);
+        queue.shift();
+      } catch (error) {
+        // Everything queued was built on `head`: none of it may stay, and none of it is sent.
+        const failed = queue.splice(0);
+        const rolledBack = rollBack(failed);
+        const reason = error instanceof Error ? error.message : String(error);
+        status.textContent = `${rolledBack ? 'Not saved' : 'Not saved, and could not be undone'} (${describe(head)}): ${reason}`;
+        options.onChange?.();
+        options.onError?.(error, { delta: head.delta, discarded: failed.slice(1).map((p) => p.delta), rolledBack });
+        if (!destroyed) render();
+      } finally {
+        writing = false;
+        if (!queue.length) root.removeAttribute('aria-busy');
+        pump();
+      }
+    })();
+  };
+
+  /**
+   * Apply locally, queue the write. Returns the local result.
+   *
+   * `isOurs` picks our commit out of the notices `op` causes: a host listener that writes from
+   * inside its callback commits too, and its notice may reach us first (with the later revision).
+   */
+  const write = (
+    op: () => Result<GroupSpace<P>>,
+    isOurs: (delta: EdgeDelta, before: GroupSpace<P>) => boolean,
+  ): Result<GroupSpace<P>> => {
     const before = groups.space;
+    const depthBefore = groups.undoDepth;
     let delta: EdgeDelta | undefined;
     const off = groups.subscribe((change) => {
-      delta ??= change.delta;
+      if (!delta && isOurs(change.delta, before)) delta = change.delta;
     });
     let result: Result<GroupSpace<P>>;
     try {
@@ -69,36 +162,18 @@ export function renderTagInput<P>(
     }
     if (!result.ok || !delta) return result;
     status.textContent = '';
-    if (!options.onWrite) return result;
-
-    const committed = delta;
-    const after = groups.revision;
-    pending += 1;
-    root.setAttribute('aria-busy', 'true');
-    void (async () => {
-      try {
-        await options.onWrite!(committed);
-      } catch (error) {
-        // Nothing written since: undo pops our own history entry. Otherwise apply the inverse,
-        // computed against the space our delta was applied to.
-        const rolledBack =
-          (groups.revision === after && groups.undo()) || groups.apply(invert(before, committed)).ok;
-        const reason = error instanceof Error ? error.message : String(error);
-        status.textContent = rolledBack ? `Not saved: ${reason}` : `Not saved, and could not be undone: ${reason}`;
-        options.onChange?.();
-        options.onError?.(error, { delta: committed, rolledBack });
-        if (!destroyed) render();
-      } finally {
-        pending -= 1;
-        if (!pending) root.removeAttribute('aria-busy');
-      }
-    })();
+    if (options.onWrite) {
+      // Every commit adds exactly one revision and one undo entry, so this is the state right
+      // after ours — which `rollBack` compares with, to know nothing else was written since.
+      queue.push({ delta, before, depthBefore, revision: before.revision + 1, depth: depthBefore + 1 });
+      pump();
+    }
     return result;
   };
 
   const render = (): void => {
     if (!item) {
-      root.replaceChildren();
+      body.replaceChildren();
       return;
     }
     const current = item;
@@ -119,7 +194,14 @@ export function renderTagInput<P>(
       // Remove ≠ delete. The item survives, and so do its other memberships.
       remove.setAttribute('aria-label', `Remove from ${token.label}`);
       remove.addEventListener('click', () => {
-        write(() => groups.remove(current, token.nodeId));
+        write(
+          () => groups.remove(current, token.nodeId),
+          (d, before) =>
+            (d.removed ?? []).some((id) => {
+              const edge = before.edges.get(id);
+              return edge?.child === current && edge.parent === token.nodeId;
+            }),
+        );
         options.onChange?.();
         render();
       });
@@ -133,7 +215,11 @@ export function renderTagInput<P>(
     input.setAttribute('aria-label', 'Add to group');
     input.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || !input.value.trim()) return;
-      const result = write(() => groups.add(current, input.value.trim()));
+      const tag = nodeId(input.value.trim());
+      const result = write(
+        () => groups.add(current, tag),
+        (d) => (d.added ?? []).some((e) => e.child === current && e.parent === tag),
+      );
       if (!result.ok) {
         input.setCustomValidity(result.violations[0]!.message);
         input.reportValidity();
@@ -146,7 +232,7 @@ export function renderTagInput<P>(
       input.focus();
     });
 
-    root.replaceChildren(...chips, input, status);
+    body.replaceChildren(...chips, input);
   };
 
   return {

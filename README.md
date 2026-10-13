@@ -31,10 +31,10 @@ const g = defineGroups({ profile: 'flatTags', edges });   // or createGroupSpace
 **A faceted sidebar** is one `facets()` call per family; each counts in one pass over the items, with that family's own selection left out (so unpicked values never read zero):
 
 ```ts
-const panels = families.map((fam) => g.facets({ under: fam, selected, items: searchHits }));
+const panels = families.map((fam) => g.facets({ under: nodeId(fam), selected, items: searchHits }));
 ```
 
-**Saving edits to a server**: `renderTagInput(el, g, { onWrite: (delta) => api.patch(delta) })` applies an edit at once and rolls it back if the promise rejects.
+**Saving edits to a server**: `renderTagInput(el, g, { onWrite: (delta) => api.patch(delta) })` applies an edit at once, sends writes one at a time, and rolls an edit back (with any queued edits built on it) if its promise rejects.
 
 ## The idea
 

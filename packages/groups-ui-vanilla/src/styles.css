@@ -44,6 +44,9 @@
 .zg-facet.has-children .zg-facet-label { font-weight: 600; }
 
 .zg-tags { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; font: 13px ui-sans-serif, system-ui, sans-serif; }
+.zg-tags-body { display: contents; }
+.zg-tag-status:empty { display: none; }
+.zg-tag-status { flex-basis: 100%; font-size: .9em; opacity: .8; }
 .zg-chip { display: inline-flex; align-items: center; gap: .25rem; padding: .1em .2em .1em .5em;
   border-radius: 999px; background: color-mix(in srgb, currentColor 12%, transparent); }
 .zg-chip-remove { background: none; border: 0; cursor: pointer; opacity: .6; color: inherit; font-size: 1.1em; line-height: 1; }

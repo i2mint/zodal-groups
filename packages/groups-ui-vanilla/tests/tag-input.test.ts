@@ -91,18 +91,87 @@ describe('renderTagInput onWrite', () => {
     expect(status()).toContain('offline');
   });
 
-  it('rolls back only its own edit when another write landed in between', async () => {
+  it('rolls back only its own edit when the host wrote in between', async () => {
     const g = build();
-    const first = deferred();
-    const writes = [first.promise, Promise.resolve()];
-    renderTagInput(container, g, { onWrite: () => writes.shift()! }).show(nodeId('msg-1'));
+    const server = deferred();
+    renderTagInput(container, g, { onWrite: () => server.promise }).show(nodeId('msg-1'));
 
     type('urgent');
-    type('later');
-    first.reject(new Error('conflict'));
+    g.add('msg-1', 'other'); // a write that is not the input's
+    server.reject(new Error('conflict'));
     await flush();
-    expect([...g.parents('msg-1')].sort()).toEqual(['later', 'work']);
-    expect(chips().sort()).toEqual(['later', 'work']);
+    expect([...g.parents('msg-1')].sort()).toEqual(['other', 'work']);
+  });
+
+  it('sends one write at a time; a failure rolls back the queued edits built on it, unsent', async () => {
+    // Review of PR #16: add `x` then remove it, both pending, the add rejecting first, used to
+    // leave `x` on screen (the removal's inverse re-added it) while the server held neither.
+    const g = build();
+    const first = deferred();
+    const sent: EdgeDelta[] = [];
+    const errors: Array<{ discarded: readonly EdgeDelta[]; rolledBack: boolean }> = [];
+    const depth = g.undoDepth;
+    renderTagInput(container, g, {
+      onWrite: (d) => (sent.push(d), first.promise),
+      onError: (_e, ctx) => errors.push(ctx),
+    }).show(nodeId('msg-1'));
+
+    type('x');
+    [...container.querySelectorAll<HTMLElement>('.zg-chip-remove')].at(-1)!.click(); // remove `x`
+    expect(g.parents('msg-1')).toEqual(['work']);
+    expect(sent).toHaveLength(1); // the removal waits behind the add
+
+    first.reject(new Error('503'));
+    await flush();
+    expect(g.parents('msg-1')).toEqual(['work']);
+    expect(chips()).toEqual(['work']);
+    expect(sent).toHaveLength(1); // never sent
+    expect(errors).toEqual([expect.objectContaining({ rolledBack: true, discarded: [expect.objectContaining({ removed: expect.any(Array) })] })]);
+    expect(g.undoDepth).toBe(depth); // both undone by undo(): no stray history
+    expect(status()).toContain('“x”');
+  });
+
+  it('sends the next write once the previous one succeeded', async () => {
+    const g = build();
+    const replies = [deferred(), deferred()];
+    const sent: EdgeDelta[] = [];
+    renderTagInput(container, g, { onWrite: (d) => (sent.push(d), replies[sent.length - 1]!.promise) }).show(nodeId('msg-1'));
+    type('a');
+    type('b');
+    expect(sent).toHaveLength(1);
+    replies[0]!.resolve();
+    await flush();
+    expect(sent).toHaveLength(2);
+    replies[1]!.reject(new Error('no'));
+    await flush();
+    expect([...g.parents('msg-1')].sort()).toEqual(['a', 'work']); // only `b` rolled back
+  });
+
+  it('hands over its own delta even when a host listener writes from inside its callback', async () => {
+    const g = build();
+    g.subscribe((change) => {
+      if (change.delta.added?.some((e) => e.parent === 'urgent')) g.add('msg-2', 'seen');
+    });
+    const sent: EdgeDelta[] = [];
+    renderTagInput(container, g, { onWrite: (d) => (sent.push(d), Promise.reject(new Error('no'))) }).show(nodeId('msg-1'));
+    type('urgent');
+    expect(sent[0]!.added!.map((e) => e.parent)).toEqual(['urgent']);
+    await flush();
+    expect(g.parents('msg-1')).toEqual(['work']); // ours rolled back...
+    expect(g.parents('msg-2')).toEqual(['seen']); // ...the host's kept
+  });
+
+  it('does not undo someone else\'s edit after the host discarded history', async () => {
+    const g = build();
+    g.add('msg-9', 'keep');
+    const server = deferred();
+    renderTagInput(container, g, { onWrite: () => server.promise }).show(nodeId('msg-1'));
+    type('x');
+    g.discardUndo(); // drops the input's own entry; the top is now `msg-9 → keep`
+    server.reject(new Error('no'));
+    await flush();
+    expect(g.parents('msg-1')).toEqual(['work']);
+    expect(g.parents('msg-9')).toEqual(['keep']);
   });
 
   it('a refused edit never reaches onWrite', () => {
