@@ -127,9 +127,10 @@ export function renderTagInput<P>(
         const rolledBack = rollBack(failed);
         const reason = error instanceof Error ? error.message : String(error);
         status.textContent = `${rolledBack ? 'Not saved' : 'Not saved, and could not be undone'} (${describe(head)}): ${reason}`;
+        // Redraw first: a host callback that throws must not leave the screen stale.
+        if (!destroyed) render();
         options.onChange?.();
         options.onError?.(error, { delta: head.delta, discarded: failed.slice(1).map((p) => p.delta), rolledBack });
-        if (!destroyed) render();
       } finally {
         writing = false;
         if (!queue.length) root.removeAttribute('aria-busy');
@@ -229,7 +230,8 @@ export function renderTagInput<P>(
       input.setCustomValidity('');
       options.onChange?.();
       render();
-      input.focus();
+      // `render` replaced the input: focus the new one, so typing the next tag just works.
+      body.querySelector<HTMLInputElement>('.zg-tag-input')?.focus();
     });
 
     body.replaceChildren(...chips, input);

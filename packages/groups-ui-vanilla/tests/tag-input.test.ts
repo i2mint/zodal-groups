@@ -174,6 +174,13 @@ describe('renderTagInput onWrite', () => {
     expect(g.parents('msg-9')).toEqual(['keep']);
   });
 
+  it('keeps focus in the input after adding a tag', () => {
+    const g = build();
+    renderTagInput(container, g).show(nodeId('msg-1'));
+    type('urgent');
+    expect(document.activeElement).toBe(container.querySelector('.zg-tag-input'));
+  });
+
   it('a refused edit never reaches onWrite', () => {
     const g = defineGroups({ profile: 'filesystem' });
     g.add('file', 'a');
