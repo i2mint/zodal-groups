@@ -139,31 +139,58 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
   } = options;
   const items = [...(options.items ?? allItems(space))];
 
+  // A set: two edges of different kinds from `under` to one child must not make two rows.
   const candidates = under
-    ? edgesOf(space, under)
-        .filter((e) => space.profile.edgeKinds[e.kind]?.transitive)
-        .map((e) => e.child)
-        .filter((id) => isGroup(space, id))
+    ? [
+        ...new Set(
+          edgesOf(space, under)
+            .filter((e) => space.profile.edgeKinds[e.kind]?.transitive)
+            .map((e) => e.child)
+            .filter((id) => isGroup(space, id)),
+        ),
+      ]
     : [...space.nodes.keys()].filter((id) => isGroup(space, id) && !edgesInto(space, id).length);
 
   // The pool this facet is counted against: everything matching the *other* selections.
-  const others = new Set([...selected].filter((g) => !candidates.includes(g)));
-  const pool = others.size ? [...matchingItems(space, others, items)] : items;
+  const offered = new Set(candidates);
+  const others = new Set([...selected].filter((g) => !offered.has(g)));
+  // A set: the per-item stamp below de-duplicates an item only against itself, not a repeat of it.
+  const pool = others.size ? matchingItems(space, others, items) : new Set(items);
+
+  // One pass over the pool, not one per candidate (that was O(values × items): ~600 ms for four
+  // panels over 650 items). Invert each candidate's scope once — "which candidates does a direct
+  // group count towards?" — so each item costs O(its direct groups). The scope is still each
+  // candidate's own closure, walked *down* with its edge-kind composition, so the counts are the
+  // same sets as before.
+  const countsTowards = new Map<NodeId, NodeId[]>();
+  for (const group of candidates) {
+    const scope = expand === 'closure' ? closureIds(space, group) : [group];
+    for (const g of scope) {
+      // Only a node with outgoing edges can be an item's direct group: skip the items in the closure.
+      if (!space.forward.get(g)?.size) continue;
+      const list = countsTowards.get(g);
+      if (list) list.push(group);
+      else countsTowards.set(g, [group]);
+    }
+  }
+
+  // A de-duplicated set per candidate, not a running total: an item reaching a candidate through
+  // two subgroups is stamped once. This is the whole point.
+  const counts = new Map<NodeId, number>();
+  const lastCounted = new Map<NodeId, NodeId>();
+  for (const item of pool) {
+    for (const g of groupsOfItem(space, item, 'direct')) {
+      for (const group of countsTowards.get(g) ?? []) {
+        if (lastCounted.get(group) === item) continue;
+        lastCounted.set(group, item);
+        counts.set(group, (counts.get(group) ?? 0) + 1);
+      }
+    }
+  }
 
   const out: FacetValue[] = [];
   for (const group of candidates) {
-    const scope = expand === 'closure' ? new Set(closureIds(space, group)) : new Set([group]);
-    // A de-duplicated set, not a running total. This is the whole point.
-    const matched = new Set<NodeId>();
-    for (const item of pool) {
-      for (const g of groupsOfItem(space, item, 'direct')) {
-        if (scope.has(g)) {
-          matched.add(item);
-          break;
-        }
-      }
-    }
-    const count = matched.size;
+    const count = counts.get(group) ?? 0;
     if (hideEmpty && count === 0 && !selected.has(group)) continue;
 
     out.push({
@@ -171,7 +198,10 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
       label: space.nodes.get(group)?.label ?? group,
       count,
       selected: selected.has(group),
-      hasChildren: descendants(space, group).size > 0,
+      // `descendants(group)` is non-empty exactly when some edge out of it is of a transitive kind.
+      hasChildren: edgesOf(space, group).some(
+        (e) => e.child !== group && space.profile.edgeKinds[e.kind]?.transitive,
+      ),
       depth: 0,
     });
   }

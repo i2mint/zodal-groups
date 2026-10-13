@@ -19,6 +19,23 @@ g.tree();                       // → PathNode[] — hand to any renderer
 g.scope('work');                // → a filter: everything in `work` OR any subgroup
 ```
 
+**Loading data you already have?** Seed it in one go, not with `add()` in a loop: each `add` copies the immutable space, so 2,600 edges took ~6 s that way and ~80 ms as a seed.
+
+```ts
+import { defineGroups, makeEdge, nodeId } from '@zodal/groups-core';
+
+const edges = rows.map((r) => makeEdge(nodeId(r.tag), nodeId(r.item)));
+const g = defineGroups({ profile: 'flatTags', edges });   // or createGroupSpace({ profile, nodes, edges })
+```
+
+**A faceted sidebar** is one `facets()` call per family; each counts in one pass over the items, with that family's own selection left out (so unpicked values never read zero):
+
+```ts
+const panels = families.map((fam) => g.facets({ under: fam, selected, items: searchHits }));
+```
+
+**Saving edits to a server**: `renderTagInput(el, g, { onWrite: (delta) => api.patch(delta) })` applies an edit at once and rolls it back if the promise rejects.
+
 ## The idea
 
 Every app eventually needs to organize things, and you pick one of these early and get stuck:
