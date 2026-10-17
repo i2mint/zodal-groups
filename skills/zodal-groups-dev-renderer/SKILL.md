@@ -1,6 +1,6 @@
 ---
 name: zodal-groups-dev-renderer
-description: Use when building or changing a zodal-groups UI RENDERER package (@zodal/groups-ui-vanilla, -shadcn, -ark, or a new one) — tree, Miller columns, breadcrumbs, facet panel, tag input, the selection tagging menu (tri-state none/some/all, staged "Apply to N items"), tree-select, icicle — or the violation messages renderers show. Triggers on "add a renderer", "render the group tree", "drag and drop a folder", "add-vs-move", "drop target", "label menu", "bulk tag a selection", "tri-state checkbox", "aria-checked mixed", "violation message", "why was it refused", "which tree library should we use", "virtualize the tree", "tree accessibility", "renderer registry", "PRIORITY bands". Read BEFORE adding a renderer or a UI dependency — the add-vs-move default and the DOM-keying rule are safety issues, and several popular tree/DnD libraries are dead, paid, or silently single-parent.
+description: Use when building or changing a zodal-groups UI RENDERER package (@zodal/groups-ui-vanilla, -shadcn, -ark, or a new one) — tree, Miller columns, breadcrumbs, facet panel, group chips (phone drill-down), tag input, the selection tagging menu (tri-state none/some/all, staged "Apply to N items"), tree-select, icicle — or the violation messages renderers show. Triggers on "add a renderer", "render the group tree", "drag and drop a folder", "add-vs-move", "drop target", "label menu", "bulk tag a selection", "tri-state checkbox", "aria-checked mixed", "violation message", "why was it refused", "which tree library should we use", "virtualize the tree", "tree accessibility", "touch targets", "44px", "iOS zoom", "font is too small", "hover sticks on touch", "phone layout", "drill-down chips", "renderer registry", "PRIORITY bands". Read BEFORE adding a renderer or a UI dependency — the add-vs-move default and the DOM-keying rule are safety issues, and several popular tree/DnD libraries are dead, paid, or silently single-parent.
 metadata:
   audience: developers
 ---
@@ -113,6 +113,23 @@ reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must 
   without `onClose` it clears the field (APG). A mouse click must not steal focus (`mousedown` →
   `preventDefault`), and the pointer moves the same highlight the keys do.
 
+## Touch, typography and hover: a widget lives inside someone else's page
+
+The vanilla styles shipped desktop defaults once (13px type forced by a `font` shorthand, 26px rows, 13px inputs that make iOS zoom, sticky `:hover` on touch). A host had to override all of it. The rules, now enforced by `packages/groups-ui-vanilla/tests/styles.test.ts`:
+
+- **Inherit the host's typography.** No root (`.zg-tree`, `.zg-columns`, `.zg-tags`, …) sets `font`, `font-family` or `line-height`; its size is `var(--zg-font-size, inherit)`. Controls (`input`, `button`) take `font: inherit`, because browsers do not inherit fonts into them.
+- **Thumb-sized on a coarse pointer.** Under `@media (pointer: coarse)` every row, option, chip and button is `min-height: var(--zg-row-min, var(--zg-tap-min, 44px))`, rows are visibly separated, and the tree's twisty is the full row height and `--zg-tap-min` wide. Desktop keeps its density.
+- **Every text input is >= 16px on a coarse pointer** (`font-size: max(16px, 1em)`): iOS Safari zooms the page when a smaller input takes focus, and leaves it zoomed.
+- **Every `:hover` inside `@media (hover: hover)`**, and JS hover effects (the twin cross-highlight) check `(hover: hover)` too: on touch a tap fires `mouseenter` and the highlight sticks.
+- **Drag only under `(pointer: fine)`** (`mediaMatches(FINE_POINTER)` from `src/media.ts`, read at render time). On touch a long-press drag fights scrolling; touch users file through a menu (`renderTagMenu`).
+- **Tapping a group's name opens it** (`groupActivate: 'toggle'`, the tree's default): the twisty is too small to be the only way in. `'select'` is for sidebars whose groups are destinations.
+- **A label seam**, not a flat string: `subtitle(row)` for a muted second line, `renderLabel(row, el)` for anything else, so a host can match its own list rows.
+- **Keyboard**: roving `tabindex` (one tab stop, the first row when nothing is selected) and the APG tree keys. A tree with every row at `tabIndex = -1` cannot be reached at all.
+- **Typing never creates by accident.** A free-text "add to group" field picks an existing group on Enter (case-insensitive exact, or a unique prefix) and offers creation only as a visible "Create '…'" option. Build the field once and never re-render it.
+- **On a phone, prefer drill-down chips to a tree**: `renderGroupChips` over `toGroupChips` (All · groups with closure counts · Ungrouped; one path of state, like Miller columns, and the host puts it in its URL).
+
+Measure in a real browser at phone width (390x844): the `getBoundingClientRect()` height of every `button, [role=treeitem], [role=option], input` and the computed `font-size` of every input. The CSS test checks the rules as written; only a browser checks the cascade on a real page.
+
 ## Violation messages: never write the copy in a renderer
 
 Every refusal a renderer shows — a drop target (`drop.reason` + `drop.fix`), a tag row, an apply
@@ -191,6 +208,12 @@ that judgement as a score, not as a hard-coded component choice.
       (state in the name); Apply `aria-disabled` and explains itself; one polite live region;
       refused rows reachable with their reason; search field never re-rendered; no close mid-write
 - [ ] every refusal worded by `explainViolation` / `row.reason` + `row.fix`, never hand-written
+- [ ] no `font` / `font-family` / `line-height` on a root; size from `--zg-font-size` (default inherit)
+- [ ] under `(pointer: coarse)`: rows, options, chips, buttons >= 44px (`--zg-tap-min`); twisty full row height and >= 44px wide; text inputs >= 16px; rows separated
+- [ ] every `:hover` (CSS and JS) only where `(hover: hover)`; drag only where `(pointer: fine)`
+- [ ] roving tabindex + APG keys; activating a group's label opens it (or a documented option says otherwise)
+- [ ] a label seam (`subtitle` / `renderLabel`), not one flat string
+- [ ] free-text group entry never creates on Enter; "Create '…'" is an explicit option
 - [ ] a registry factory, `create<Lib>Registry()`
 - [ ] tests in a real DOM (`environment: 'jsdom'`) asserting the *polyhierarchy* behaviours, not just
       that it rendered — see `packages/groups-ui-vanilla/tests/render.test.ts`

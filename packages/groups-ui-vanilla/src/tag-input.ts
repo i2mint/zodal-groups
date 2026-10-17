@@ -14,9 +14,26 @@
  * time, in order**: a later edit may be built on an earlier one (add a tag, then remove it), so when
  * a write rejects, that edit *and every queued edit after it* are rolled back, newest first, and
  * the queued ones are never sent. The reason is announced in the input's live status.
+ *
+ * **Typing never creates a group by accident.** The field is a combobox: as you type it lists the
+ * matching groups, and, when no group has that exact name, an explicit **Create “…”** option. Enter
+ * picks the group the text names (case-insensitively), or the only group it is a prefix of; with no
+ * match it says so and creates nothing. Creating is choosing that option (arrow to it, or tap it),
+ * so a typo ("Campf") picks "Campfire" or asks, and never quietly becomes a new group. The field is
+ * built once and never re-rendered: what you are typing, and focus, survive every redraw.
  */
 
-import { invert, nodeId, type EdgeDelta, type Groups, type GroupSpace, type NodeId, type Result } from '@zodal/groups-core';
+import {
+  edgesInto,
+  invert,
+  isGroup,
+  nodeId,
+  type EdgeDelta,
+  type Groups,
+  type GroupSpace,
+  type NodeId,
+  type Result,
+} from '@zodal/groups-core';
 import { toTagTokens } from '@zodal/groups-ui';
 
 export interface TagInputRenderer {
@@ -25,7 +42,31 @@ export interface TagInputRenderer {
   readonly element: HTMLElement;
 }
 
+/** The words the tag input uses. Override any of them (translation, house style). */
+export interface TagInputLabels {
+  readonly placeholder: string;
+  readonly inputLabel: string;
+  readonly suggestions: string;
+  readonly create: (text: string) => string;
+  readonly noMatch: (text: string) => string;
+  readonly ambiguous: (text: string, count: number) => string;
+  readonly alreadyIn: (group: string) => string;
+}
+
+export const TAG_INPUT_LABELS: TagInputLabels = {
+  placeholder: 'Add to group…',
+  inputLabel: 'Add to group',
+  suggestions: 'Groups',
+  create: (text) => `Create “${text}”`,
+  noMatch: (text) => `No group is called “${text}”. Choose “Create “${text}”” to make one.`,
+  ambiguous: (text, count) => `${count} groups start with “${text}”: choose one.`,
+  alreadyIn: (group) => `Already in “${group}”.`,
+};
+
 export interface TagInputOptions {
+  /** How many matching groups to list. Default 8. */
+  readonly maxSuggestions?: number;
+  readonly labels?: Partial<TagInputLabels>;
   /** Called after every change to the model: an edit, and a rollback of one. */
   readonly onChange?: () => void;
   /**
@@ -56,11 +97,15 @@ interface Pending<P> {
   readonly depthBefore: number;
 }
 
+let instances = 0;
+
 export function renderTagInput<P>(
   container: HTMLElement,
   groups: Groups<P>,
   options: TagInputOptions = {},
 ): TagInputRenderer {
+  const { maxSuggestions = 8 } = options;
+  const labels = { ...TAG_INPUT_LABELS, ...options.labels };
   let item: NodeId | null = null;
   let destroyed = false;
   /** Oldest first; `queue[0]` is the one being written while `writing` is true. */
@@ -107,7 +152,27 @@ export function renderTagInput<P>(
         continue;
       }
       clean = false;
-      if (!groups.apply(invert(entry.before, entry.delta)).ok) ok = false;
+      // Only what is not already undone (#17): the host may have undone this edit itself, and
+      // re-adding an edge that exists would be refused and reported as a failed rollback.
+      const inverse = invert(entry.before, entry.delta);
+      const space = groups.space;
+      const added = (inverse.added ?? []).filter(
+        (e) => !space.edges.has(e.id) && !edgesInto(space, e.child).some((x) => x.parent === e.parent && x.kind === e.kind),
+      );
+      const removed = (inverse.removed ?? []).filter((id) => space.edges.has(id));
+      if (!added.length && !removed.length) continue;
+      const remaining: EdgeDelta = {
+        ...inverse,
+        added,
+        removed,
+        ...(inverse.removedNodes ? { removedNodes: inverse.removedNodes.filter((n) => space.nodes.has(n.id)) } : {}),
+        ...(inverse.addedNodes ? { addedNodes: inverse.addedNodes.filter((n) => !space.nodes.has(n.id)) } : {}),
+      };
+      const depth = groups.undoDepth;
+      if (!groups.apply(remaining).ok) ok = false;
+      // A rollback is not an edit (#19): left on the history, the next Undo would re-apply the very
+      // edit `onWrite` rejected, and `onWrite` would never hear of it.
+      else if (groups.undoDepth > depth) groups.discardUndo();
     }
     return ok;
   };
@@ -172,11 +237,203 @@ export function renderTagInput<P>(
     return result;
   };
 
-  const render = (): void => {
-    if (!item) {
-      body.replaceChildren();
+  // ── the field: built once, never re-rendered (#19: typed text and focus survive redraws) ──
+  const uid = `zg-tags-${++instances}`;
+  const field = document.createElement('span');
+  field.className = 'zg-tag-field';
+  const input = document.createElement('input');
+  input.className = 'zg-tag-input';
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.placeholder = labels.placeholder;
+  input.setAttribute('aria-label', labels.inputLabel);
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false');
+  input.setAttribute('aria-controls', `${uid}-list`);
+  const list = document.createElement('ul');
+  list.className = 'zg-tag-suggestions';
+  list.id = `${uid}-list`;
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', labels.suggestions);
+  list.hidden = true;
+  field.append(input, list);
+  root.insertBefore(field, status);
+
+  /** What an option does when chosen. */
+  type Option = { readonly kind: 'group'; readonly id: NodeId; readonly label: string; readonly path?: string } | { readonly kind: 'create'; readonly text: string };
+  let choices: Option[] = [];
+  let active = -1;
+  /** Bumped on every list render, so an option id never points at a different node (aria-activedescendant). */
+  let generation = 0;
+
+  const norm = (text: string): string => text.trim().toLocaleLowerCase();
+
+  /** The groups the typed text could mean, best first, and which one Enter would pick. */
+  const match = (text: string, current: NodeId) => {
+    const q = norm(text);
+    const space = groups.space;
+    const member = new Set(groups.parents(current));
+    const all = [...space.nodes.keys()]
+      .filter((id) => id !== current && isGroup(space, id))
+      .map((id) => ({ id, label: nameOf(id) }));
+    const exact = all.find((g) => norm(g.label) === q || norm(g.id) === q);
+    const prefixed = all.filter((g) => norm(g.label).startsWith(q)).sort((a, b) => a.label.localeCompare(b.label));
+    const containing = all
+      .filter((g) => !norm(g.label).startsWith(q) && norm(g.label).includes(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const offered = [...new Set([...(exact ? [exact] : []), ...prefixed, ...containing])]
+      .filter((g) => !member.has(g.id))
+      .slice(0, maxSuggestions);
+    // Enter picks the group the text names, or the only one it is a prefix of. Never a guess.
+    const pick = exact ?? (prefixed.length === 1 ? prefixed[0] : undefined);
+    return { offered, exact, prefixed, pick, member };
+  };
+
+  const pathOf = (id: NodeId): string | undefined => {
+    const path = groups.path(id);
+    return path && path.labels.length > 1 ? path.labels.join('/') : undefined;
+  };
+
+  const setActive = (index: number): void => {
+    active = index;
+    const items = list.children;
+    for (let i = 0; i < items.length; i++) {
+      const on = i === active;
+      items[i]!.classList.toggle('is-active', on);
+      items[i]!.setAttribute('aria-selected', String(on));
+    }
+    if (active >= 0 && items[active]) input.setAttribute('aria-activedescendant', items[active]!.id);
+    else input.removeAttribute('aria-activedescendant');
+  };
+
+  const closeList = (): void => {
+    choices = [];
+    list.hidden = true;
+    list.replaceChildren();
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  };
+
+  const refreshList = (): void => {
+    const text = input.value.trim();
+    if (!item || !text) return closeList();
+    const { offered, exact, pick } = match(text, item);
+    choices = [
+      ...offered.map((g): Option => {
+        const path = pathOf(g.id);
+        return { kind: 'group', id: g.id, label: g.label, ...(path ? { path } : {}) };
+      }),
+      ...(exact ? [] : [{ kind: 'create', text } as const]),
+    ];
+    generation += 1;
+    list.replaceChildren(
+      ...choices.map((option, i) => {
+        const li = document.createElement('li');
+        li.id = `${uid}-${generation}-${i}`; // positional, never from the group id
+        li.setAttribute('role', 'option');
+        li.className = option.kind === 'create' ? 'zg-tag-option zg-tag-create' : 'zg-tag-option';
+        li.textContent = option.kind === 'create' ? labels.create(option.text) : option.label;
+        if (option.kind === 'group' && option.path) {
+          const path = document.createElement('span');
+          path.className = 'zg-tag-option-path';
+          path.textContent = option.path;
+          li.appendChild(path);
+        }
+        li.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus in the field
+        li.addEventListener('click', () => choose(option));
+        return li;
+      }),
+    );
+    list.hidden = !choices.length;
+    input.setAttribute('aria-expanded', String(!list.hidden));
+    // The default highlight is the group Enter would pick; the Create option is never preselected.
+    setActive(pick ? choices.findIndex((o) => o.kind === 'group' && o.id === pick.id) : -1);
+  };
+
+  const choose = (option: Option): void => {
+    if (!item) return;
+    const current = item;
+    const tag = option.kind === 'group' ? option.id : nodeId(option.text);
+    const result = write(
+      () => groups.add(current, tag),
+      (d) => (d.added ?? []).some((e) => e.child === current && e.parent === tag),
+    );
+    if (!result.ok) {
+      input.setCustomValidity(result.violations[0]!.message);
+      input.reportValidity();
       return;
     }
+    input.value = '';
+    input.setCustomValidity('');
+    closeList();
+    options.onChange?.();
+    render();
+    input.focus();
+  };
+
+  /** Enter with nothing highlighted: say why nothing happened, create nothing. */
+  const explain = (text: string, current: NodeId): void => {
+    const { pick, prefixed, member } = match(text, current);
+    if (pick && member.has(pick.id)) {
+      status.textContent = labels.alreadyIn(pick.label);
+      input.value = '';
+      closeList();
+    } else if (prefixed.length > 1) {
+      status.textContent = labels.ambiguous(text, prefixed.length);
+    } else {
+      status.textContent = labels.noMatch(text);
+    }
+  };
+
+  input.addEventListener('input', () => {
+    input.setCustomValidity('');
+    refreshList();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (!item) return;
+    const n = choices.length;
+    switch (e.key) {
+      case 'ArrowDown':
+        if (list.hidden) refreshList();
+        else if (n) setActive((active + 1) % n);
+        break;
+      case 'ArrowUp':
+        if (n) setActive(active <= 0 ? n - 1 : active - 1);
+        break;
+      case 'Enter': {
+        const text = input.value.trim();
+        if (!text) return;
+        if (list.hidden) refreshList(); // the text was set without an `input` event
+        const option = choices[active];
+        if (option) choose(option);
+        else explain(text, item);
+        break;
+      }
+      case 'Escape':
+        // APG: the first Escape closes the list, the second clears the field.
+        if (!list.hidden) closeList();
+        else if (input.value) input.value = '';
+        else return;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  });
+
+  input.addEventListener('blur', () => closeList());
+
+  const render = (): void => {
+    const hadFocus = body.contains(document.activeElement);
+    if (!item) {
+      body.replaceChildren();
+      field.hidden = true;
+      return;
+    }
+    field.hidden = false;
     const current = item;
     const tokens = toTagTokens(groups, current);
 
@@ -210,35 +467,17 @@ export function renderTagInput<P>(
       return chip;
     });
 
-    const input = document.createElement('input');
-    input.className = 'zg-tag-input';
-    input.placeholder = 'Add to group…';
-    input.setAttribute('aria-label', 'Add to group');
-    input.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' || !input.value.trim()) return;
-      const tag = nodeId(input.value.trim());
-      const result = write(
-        () => groups.add(current, tag),
-        (d) => (d.added ?? []).some((e) => e.child === current && e.parent === tag),
-      );
-      if (!result.ok) {
-        input.setCustomValidity(result.violations[0]!.message);
-        input.reportValidity();
-        return;
-      }
-      input.value = '';
-      input.setCustomValidity('');
-      options.onChange?.();
-      render();
-      // `render` replaced the input: focus the new one, so typing the next tag just works.
-      body.querySelector<HTMLInputElement>('.zg-tag-input')?.focus();
-    });
-
-    body.replaceChildren(...chips, input);
+    body.replaceChildren(...chips);
+    // A chip button that had focus is gone: the field is the next place to be.
+    if (hadFocus) input.focus();
   };
 
   return {
     show(next) {
+      if (next !== item) {
+        input.value = '';
+        closeList();
+      }
       item = next;
       render();
     },

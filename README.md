@@ -86,14 +86,17 @@ The core is headless: it emits `PathNode[]`, a flat array that serves tree views
 virtualization, ARIA, and icicle charts alike.
 
 ```ts
-import { renderColumns, renderTree, renderTagInput, renderTagMenu } from '@zodal/groups-ui-vanilla';
+import { renderColumns, renderGroupChips, renderTree, renderTagInput, renderTagMenu } from '@zodal/groups-ui-vanilla';
 import '@zodal/groups-ui-vanilla/styles.css';
 
 renderColumns(el, g);   // Miller columns — the best view for a polyhierarchy
 renderTree(el, g);      // tree — correct ARIA, twins cross-highlighted
 renderTagInput(el, g);  // tag chips — the same edges, projected flat
 renderTagMenu(el, g, { selection: ['a', 'b', 'c'] });  // Gmail's label menu over a selection
+renderGroupChips(el, g, { onNavigate: (sel) => setUrl(sel) });  // on a phone: drill-down chips with counts
 ```
+
+The widgets inherit the page's typography and become thumb-sized on a touch screen (44px targets, 16px inputs, no sticky hover, no drag); custom properties such as `--zg-font-size` and `--zg-row-min` tune them. Options and properties: [`packages/groups-ui-vanilla/README.md`](packages/groups-ui-vanilla/README.md).
 
 **Drag-and-drop defaults to ADD, not MOVE.** Moving destroys an edge the user often can't see, and is
 undefined when dragging out of a search result. Hold ⌥ to move. (Gmail's `Label` vs `Move to`.)

@@ -32,10 +32,12 @@ function deferred() {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-const type = (value: string) => {
+/** Type a new group's name and choose the explicit "Create" option (Enter alone never creates). */
+const create = (value: string) => {
   const input = container.querySelector<HTMLInputElement>('.zg-tag-input')!;
   input.value = value;
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+  input.dispatchEvent(new Event('input'));
+  container.querySelector<HTMLElement>('.zg-tag-create')!.click();
 };
 const chips = () => [...container.querySelectorAll('.zg-chip')].map((c) => c.firstChild!.textContent);
 const status = () => container.querySelector('[role="status"]')!.textContent;
@@ -47,7 +49,7 @@ describe('renderTagInput onWrite', () => {
     const server = deferred();
     renderTagInput(container, g, { onWrite: (d) => (seen.push(d), server.promise) }).show(nodeId('msg-1'));
 
-    type('urgent');
+    create('urgent');
     expect(chips()).toEqual(['work', 'urgent']); // optimistic
     expect(seen).toHaveLength(1);
     expect(seen[0]!.added!.map((e) => [e.child, e.parent])).toEqual([['msg-1', 'urgent']]);
@@ -68,7 +70,7 @@ describe('renderTagInput onWrite', () => {
       onError: (_e, ctx) => errors.push(ctx),
     }).show(nodeId('msg-1'));
 
-    type('urgent');
+    create('urgent');
     await flush();
     expect(chips()).toEqual(['work']);
     expect(g.parents('msg-1')).toEqual(['work']);
@@ -96,7 +98,7 @@ describe('renderTagInput onWrite', () => {
     const server = deferred();
     renderTagInput(container, g, { onWrite: () => server.promise }).show(nodeId('msg-1'));
 
-    type('urgent');
+    create('urgent');
     g.add('msg-1', 'other'); // a write that is not the input's
     server.reject(new Error('conflict'));
     await flush();
@@ -116,7 +118,7 @@ describe('renderTagInput onWrite', () => {
       onError: (_e, ctx) => errors.push(ctx),
     }).show(nodeId('msg-1'));
 
-    type('x');
+    create('x');
     [...container.querySelectorAll<HTMLElement>('.zg-chip-remove')].at(-1)!.click(); // remove `x`
     expect(g.parents('msg-1')).toEqual(['work']);
     expect(sent).toHaveLength(1); // the removal waits behind the add
@@ -136,8 +138,8 @@ describe('renderTagInput onWrite', () => {
     const replies = [deferred(), deferred()];
     const sent: EdgeDelta[] = [];
     renderTagInput(container, g, { onWrite: (d) => (sent.push(d), replies[sent.length - 1]!.promise) }).show(nodeId('msg-1'));
-    type('a');
-    type('b');
+    create('a');
+    create('b');
     expect(sent).toHaveLength(1);
     replies[0]!.resolve();
     await flush();
@@ -154,7 +156,7 @@ describe('renderTagInput onWrite', () => {
     });
     const sent: EdgeDelta[] = [];
     renderTagInput(container, g, { onWrite: (d) => (sent.push(d), Promise.reject(new Error('no'))) }).show(nodeId('msg-1'));
-    type('urgent');
+    create('urgent');
     expect(sent[0]!.added!.map((e) => e.parent)).toEqual(['urgent']);
     await flush();
     expect(g.parents('msg-1')).toEqual(['work']); // ours rolled back...
@@ -166,7 +168,7 @@ describe('renderTagInput onWrite', () => {
     g.add('msg-9', 'keep');
     const server = deferred();
     renderTagInput(container, g, { onWrite: () => server.promise }).show(nodeId('msg-1'));
-    type('x');
+    create('x');
     g.discardUndo(); // drops the input's own entry; the top is now `msg-9 → keep`
     server.reject(new Error('no'));
     await flush();
@@ -177,7 +179,7 @@ describe('renderTagInput onWrite', () => {
   it('keeps focus in the input after adding a tag', () => {
     const g = build();
     renderTagInput(container, g).show(nodeId('msg-1'));
-    type('urgent');
+    create('urgent');
     expect(document.activeElement).toBe(container.querySelector('.zg-tag-input'));
   });
 
@@ -186,7 +188,7 @@ describe('renderTagInput onWrite', () => {
     g.add('file', 'a');
     let calls = 0;
     renderTagInput(container, g, { onWrite: () => void (calls += 1) }).show(nodeId('file'));
-    type('b'); // filesystem: one parent only
+    create('b'); // filesystem: one parent only
     expect(calls).toBe(0);
   });
 
@@ -195,7 +197,7 @@ describe('renderTagInput onWrite', () => {
     const server = deferred();
     const r = renderTagInput(container, g, { onWrite: () => server.promise });
     r.show(nodeId('msg-1'));
-    type('urgent');
+    create('urgent');
     r.destroy();
     server.reject(new Error('gone'));
     await flush();

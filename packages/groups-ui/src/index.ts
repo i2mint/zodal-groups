@@ -4,13 +4,15 @@
  * Produces configuration objects, never DOM, and never writes to a store. Concrete renderers
  * (`@zodal/groups-ui-vanilla`, `-shadcn`, `-ark`) consume these descriptors; so can yours.
  *
- * Five things live here, and each is a place where getting it wrong ships a bug that survives code
+ * Six things live here, and each is a place where getting it wrong ships a bug that survives code
  * review:
  *
  * - **`views`** — `toTreeRows` and friends. Rows are keyed by `pathKey` for the DOM and by `nodeId`
  *   for selection, and they carry the ARIA that multi-parenthood requires.
  * - **`drag`** — the add-vs-move intent model. ADD is the default; MOVE needs a modifier, because
  *   MOVE destroys an edge the user often cannot see.
+ * - **`chips`** — `toGroupChips`, the drill-down chip rows (All · groups with counts · Ungrouped)
+ *   for browsing nested groups on a phone. The whole view state is one path, like Miller columns.
  * - **`tagging`** — the selection-level tagging menu (Gmail's label menu): a none/some/all state per
  *   group, staged changes, refusals explained before the click, and a plan the caller writes.
  * - **`messages`** — every `Violation` as a sentence plus a suggested fix, and the menu's copy; one
@@ -33,6 +35,22 @@ export {
   type TagToken,
   type OtherLocationRow,
 } from './views.js';
+
+export {
+  toGroupChips,
+  groupChipItems,
+  normalizeChipSelection,
+  sameChipSelection,
+  ALL_GROUPS,
+  GROUP_CHIPS_LABELS,
+  type GroupChip,
+  type GroupChipKind,
+  type GroupChipRow,
+  type GroupChipsLabels,
+  type GroupChipsOptions,
+  type GroupChipsSelection,
+  type GroupChipsView,
+} from './chips.js';
 
 export {
   resolveDrop,
