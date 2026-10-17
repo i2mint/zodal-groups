@@ -14,6 +14,9 @@
  * const groups = defineGroups({ profile: 'polyhierarchy' });
  * renderColumns(document.querySelector('#browser')!, groups);
  *
+ * // On a phone: drill-down chips (All · groups with counts · Ungrouped), the path in your URL.
+ * renderGroupChips(document.querySelector('#browse')!, groups, { onNavigate: (s) => setUrl(s) });
+ *
  * // Tag a selection: tri-state per group, staged until "Apply to N items".
  * renderTagMenu(document.querySelector('#labels')!, groups, { selection: ['a', 'b', 'c'] });
  * ```
@@ -23,6 +26,13 @@ export { renderTree, type TreeRenderer, type TreeRendererOptions } from './tree.
 export { renderColumns, type ColumnsRenderer, type ColumnsRendererOptions } from './columns.js';
 export { renderBreadcrumbs, type BreadcrumbsRenderer } from './breadcrumbs.js';
 export { renderFacets, type FacetsRenderer } from './facets.js';
-export { renderTagInput, type TagInputRenderer } from './tag-input.js';
+export {
+  renderTagInput,
+  TAG_INPUT_LABELS,
+  type TagInputLabels,
+  type TagInputOptions,
+  type TagInputRenderer,
+} from './tag-input.js';
+export { renderGroupChips, type GroupChipsRenderer, type GroupChipsRendererOptions } from './group-chips.js';
 export { renderTagMenu, type TagMenuOptions, type TagMenuRenderer } from './tag-menu.js';
 export { createVanillaRegistry } from './registry.js';

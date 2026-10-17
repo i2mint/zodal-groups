@@ -25,6 +25,8 @@ export type Surface =
   | 'tagInput'
   /** The selection-level tagging menu: tri-state per group, staged until "Apply to N items". */
   | 'tagMenu'
+  /** Drill-down chip rows over nested groups (All · groups with counts · Ungrouped): the phone browser. */
+  | 'groupChips'
   | 'treeSelect'
   | 'otherLocations'
   | 'icicle';

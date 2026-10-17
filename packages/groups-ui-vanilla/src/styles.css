@@ -1,13 +1,39 @@
-/* zodal-groups — vanilla renderer styles. Minimal, themeable via custom properties. */
-.zg-tree { list-style: none; margin: 0; padding: 0; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
-.zg-row { display: flex; align-items: center; gap: .35rem; padding: .15rem .4rem;
-  padding-left: calc(.4rem + var(--zg-depth, 0) * 1.1rem); cursor: default; border-radius: 4px; }
-.zg-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+/* zodal-groups — vanilla renderer styles. Minimal, themeable via custom properties.
+
+   Typography is the HOST's: no root sets `font`, `font-family` or `line-height`; each root's size is
+   `var(--zg-font-size, inherit)`. Density is desktop's on a fine pointer and thumb-sized on a coarse
+   one (rows, options, chips and buttons >= 44px, text inputs >= 16px so iOS does not zoom on focus).
+   Every `:hover` style sits inside `@media (hover: hover)`: on touch a hover sticks to the last tap.
+
+   Custom properties (set them on any ancestor):
+     --zg-font-size     root font size                      default: inherit
+     --zg-row-min       min height of rows, options, chips  default: auto; on a coarse pointer never below --zg-tap-min
+     --zg-tap-min       the coarse-pointer target floor     default: 44px
+     --zg-twisty-width  the tree's expander width           default: 1.25em (fine) / --zg-tap-min (coarse)
+     --zg-indent        tree indent per level               default: 1.1rem
+     --zg-separator     the line between rows on touch      default: 1px solid (text colour at 12%)
+     --zg-chips-wrap    group chip rows: wrap or scroll     default: nowrap (one scrolling row)
+     --zg-surface, --zg-surface-text   the tag suggestions popup   default: Canvas / CanvasText
+     --zg-danger        the warning hue (tag menu)          default: #e03131 */
+
+/* ── the tree ─────────────────────────────────────────────────────────────── */
+.zg-tree { list-style: none; margin: 0; padding: 0; font-size: var(--zg-font-size, inherit); }
+.zg-row { display: flex; align-items: stretch; gap: .35rem; padding: 0 .4rem;
+  padding-left: calc(.4rem + var(--zg-depth, 0) * var(--zg-indent, 1.1rem));
+  min-height: var(--zg-row-min, auto); cursor: default; border-radius: 4px; }
+.zg-row > * { align-self: center; }
+.zg-row:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: -2px; }
 .zg-row.is-selected { background: color-mix(in srgb, currentColor 12%, transparent); }
+.zg-row.has-children { cursor: pointer; }
 /* the twin cross-highlight: "this is the same thing, over there" */
 .zg-row.is-twin { outline: 1px dashed color-mix(in srgb, currentColor 40%, transparent); }
 .zg-row.is-recursive { opacity: .6; font-style: italic; }
-.zg-twisty { width: 1rem; text-align: center; cursor: pointer; opacity: .7; }
+/* the expander's hit area is the full row height */
+.zg-row > .zg-twisty { align-self: stretch; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: var(--zg-twisty-width, 1.25em); cursor: pointer; opacity: .7; }
+.zg-label { flex: 1; min-width: 0; padding-block: .15rem; }
+.zg-label-title, .zg-label-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zg-label-subtitle { font-size: .85em; color: color-mix(in srgb, currentColor 70%, transparent); }
 .zg-badge { font-size: .75em; padding: 0 .3em; border-radius: 999px; opacity: .75;
   background: color-mix(in srgb, currentColor 12%, transparent); }
 .zg-recursive { font-size: .75em; opacity: .6; }
@@ -15,13 +41,12 @@
 .zg-row.is-drop-move { outline: 2px solid #e8590c; }   /* destructive — visually distinct */
 .zg-row.is-drop-invalid { outline: 2px solid #e03131; cursor: not-allowed; }
 
-.zg-columns { display: flex; overflow-x: auto; align-items: stretch;
-  font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
+/* ── Miller columns ───────────────────────────────────────────────────────── */
+.zg-columns { display: flex; overflow-x: auto; align-items: stretch; font-size: var(--zg-font-size, inherit); }
 .zg-column { list-style: none; margin: 0; padding: .25rem; min-width: 190px; overflow-y: auto;
   border-right: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
 .zg-column-row { display: flex; align-items: center; gap: .35rem; padding: .2rem .4rem;
-  border-radius: 4px; cursor: default; }
-.zg-column-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+  min-height: var(--zg-row-min, auto); border-radius: 4px; cursor: default; }
 .zg-column-row.is-selected { background: color-mix(in srgb, currentColor 14%, transparent); }
 .zg-column-row .zg-label { flex: 1; }
 .zg-chevron { opacity: .5; }
@@ -29,40 +54,71 @@
 .zg-column-row.is-drop-move { outline: 2px solid #e8590c; }
 .zg-column-row.is-drop-invalid { outline: 2px solid #e03131; }
 
-.zg-breadcrumbs { display: flex; align-items: center; gap: .4rem; font: 13px ui-sans-serif, system-ui, sans-serif; }
-.zg-breadcrumbs ol { display: flex; gap: .3rem; list-style: none; margin: 0; padding: 0; }
+/* ── breadcrumbs ──────────────────────────────────────────────────────────── */
+.zg-breadcrumbs { display: flex; align-items: center; gap: .4rem; font-size: var(--zg-font-size, inherit); }
+.zg-breadcrumbs ol { display: flex; flex-wrap: wrap; gap: .3rem; list-style: none; margin: 0; padding: 0; }
 .zg-breadcrumbs li + li::before { content: '/'; opacity: .4; margin-right: .3rem; }
-.zg-crumb { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-decoration: underline; }
-.zg-other-paths { font-size: .75em; border: 0; border-radius: 999px; cursor: pointer; padding: .1em .5em;
+.zg-crumb { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; text-decoration: underline; }
+.zg-other-paths { font: inherit; font-size: .75em; border: 0; border-radius: 999px; cursor: pointer; padding: .1em .5em;
   background: color-mix(in srgb, currentColor 12%, transparent); color: inherit; }
 
-.zg-facets { display: flex; flex-direction: column; gap: .1rem; font: 13px ui-sans-serif, system-ui, sans-serif; }
-.zg-facet { display: flex; align-items: center; gap: .4rem; padding: .15rem .3rem; border-radius: 4px; cursor: pointer; }
-.zg-facet:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+/* ── facets ───────────────────────────────────────────────────────────────── */
+.zg-facets { display: flex; flex-direction: column; gap: .1rem; font-size: var(--zg-font-size, inherit); }
+.zg-facet { display: flex; align-items: center; gap: .4rem; padding: .15rem .3rem; min-height: var(--zg-row-min, auto);
+  border-radius: 4px; cursor: pointer; }
 .zg-facet-label { flex: 1; }
 .zg-facet-count { opacity: .6; font-variant-numeric: tabular-nums; }
 .zg-facet.has-children .zg-facet-label { font-weight: 600; }
 
-.zg-tags { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; font: 13px ui-sans-serif, system-ui, sans-serif; }
+/* ── group chips: the drill-down row (All · groups · Ungrouped) ───────────── */
+.zg-group-chips { display: flex; flex-direction: column; gap: .35rem; font-size: var(--zg-font-size, inherit); }
+.zg-group-chips-row { display: flex; flex-wrap: var(--zg-chips-wrap, nowrap); gap: .35rem; overflow-x: auto;
+  scrollbar-width: thin; padding: 2px; }
+.zg-group-chip { flex: none; font: inherit; color: inherit; display: inline-flex; align-items: center; gap: .4em;
+  min-height: var(--zg-row-min, auto); padding: .25em .8em; border-radius: 999px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent); background: transparent; }
+/* pressed: a fill AND a heavier border and weight, never colour alone */
+.zg-group-chip[aria-pressed="true"] { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600;
+  border-color: color-mix(in srgb, currentColor 75%, transparent); }
+.zg-group-chip:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: 1px; }
+.zg-group-chip.is-on-path { border-color: color-mix(in srgb, currentColor 75%, transparent); border-style: dashed; }
+.zg-group-chip-count { font-weight: 400; font-variant-numeric: tabular-nums; color: color-mix(in srgb, currentColor 72%, transparent); }
+.zg-group-chip-more { opacity: .6; }
+
+/* ── tag input: chips + a combobox with an explicit "Create" option ───────── */
+.zg-tags { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; font-size: var(--zg-font-size, inherit); }
 .zg-tags-body { display: contents; }
-.zg-tag-status:empty { display: none; }
-.zg-tag-status { flex-basis: 100%; font-size: .9em; opacity: .8; }
 .zg-chip { display: inline-flex; align-items: center; gap: .25rem; padding: .1em .2em .1em .5em;
   border-radius: 999px; background: color-mix(in srgb, currentColor 12%, transparent); }
-.zg-chip-remove { background: none; border: 0; cursor: pointer; opacity: .6; color: inherit; font-size: 1.1em; line-height: 1; }
-.zg-chip-remove:hover { opacity: 1; }
-.zg-tag-input { border: 0; outline: 0; background: none; color: inherit; font: inherit; min-width: 8rem; padding: .2rem; }
+.zg-chip-remove { font: inherit; background: none; border: 0; cursor: pointer; opacity: .6; color: inherit; font-size: 1.1em; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; }
+.zg-tag-field { position: relative; display: inline-flex; flex: 1 1 8rem; min-width: 8rem; }
+.zg-tag-field[hidden] { display: none; }
+.zg-tag-input { border: 0; outline: 0; background: none; color: inherit; font: inherit; width: 100%; padding: .2rem;
+  min-height: var(--zg-row-min, auto); }
+.zg-tag-suggestions { position: absolute; top: 100%; left: 0; z-index: 10; min-width: 100%; max-width: min(24rem, 90vw);
+  max-height: 16rem; overflow-y: auto; list-style: none; margin: .2rem 0 0; padding: .2rem; border-radius: 6px;
+  background: var(--zg-surface, Canvas); color: var(--zg-surface-text, CanvasText);
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent); box-shadow: 0 4px 16px rgb(0 0 0 / .15); }
+.zg-tag-option { display: flex; flex-direction: column; justify-content: center; padding: .25rem .5rem;
+  min-height: var(--zg-row-min, auto); border-radius: 4px; cursor: default; }
+.zg-tag-option.is-active { background: color-mix(in srgb, currentColor 12%, transparent);
+  outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: -2px; }
+.zg-tag-option-path { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
+.zg-tag-create { font-style: italic; }
+.zg-tag-status:empty { display: none; }
+.zg-tag-status { flex-basis: 100%; font-size: .85em; }
 
-/* the selection tagging menu: tri-state per group, staged until Apply.
+/* ── the selection tagging menu: tri-state per group, staged until Apply ──────
    Contrast: text cues mix at least 65% of the text colour (>= 4.5:1 on light and dark themes), the
    active outline 70% (>= 3:1 non-text, WCAG 1.4.11); override --zg-danger to theme the warning hue. */
 .zg-tagmenu { --zg-danger: #e03131; display: flex; flex-direction: column; gap: .35rem; min-width: 16rem; max-width: 100%;
-  font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
-.zg-tagmenu-search { font: inherit; color: inherit; padding: .35rem .5rem; border-radius: 4px;
+  font-size: var(--zg-font-size, inherit); }
+.zg-tagmenu-search { font: inherit; color: inherit; padding: .35rem .5rem; border-radius: 4px; min-height: var(--zg-row-min, auto);
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: transparent; }
 .zg-tagmenu-list { list-style: none; margin: 0; padding: 0; max-height: 18rem; overflow-y: auto; }
 .zg-tagmenu-option { display: grid; grid-template-columns: 1.1rem 1fr auto; align-items: center; column-gap: .45rem;
-  padding: .2rem .4rem; border-radius: 4px; cursor: default; }
+  padding: .2rem .4rem; min-height: var(--zg-row-min, auto); border-radius: 4px; cursor: default; }
 /* one highlight: the pointer moves the same active option the keys do (no separate :hover style) */
 .zg-tagmenu-option.is-active { background: color-mix(in srgb, currentColor 12%, transparent);
   outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: -2px; }
@@ -87,13 +143,41 @@
 .zg-tagmenu-footer { display: flex; flex-direction: column; gap: .3rem; border-top: 1px solid color-mix(in srgb, currentColor 30%, transparent); padding-top: .35rem; }
 .zg-tagmenu-summary { list-style: none; margin: 0; padding: 0; font-size: .85em; }
 .zg-tagmenu-actions { display: flex; justify-content: flex-end; gap: .4rem; }
-.zg-tagmenu-actions button { font: inherit; padding: .25rem .7rem; border-radius: 4px; cursor: pointer;
+.zg-tagmenu-actions button { font: inherit; padding: .25rem .7rem; border-radius: 4px; cursor: pointer; min-height: var(--zg-row-min, auto);
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: transparent; color: inherit; }
 .zg-tagmenu-apply[aria-disabled="false"] { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600; }
 /* aria-disabled, not disabled: it stays focusable so it can say why; dim the border, keep the text legible */
 .zg-tagmenu-apply[aria-disabled="true"] { cursor: not-allowed; border-style: dashed; }
 .zg-tagmenu-live { font-size: .85em; min-height: 1.2em; }
+
+/* ── hover: only where there is one ───────────────────────────────────────── */
+@media (hover: hover) {
+  .zg-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+  .zg-row.is-selected:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+  .zg-column-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+  .zg-facet:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+  .zg-group-chip:hover { border-color: color-mix(in srgb, currentColor 60%, transparent); }
+  .zg-chip-remove:hover { opacity: 1; }
+}
+
+/* ── touch: thumb-sized targets, 16px inputs, rows visibly separated ──────── */
+@media (pointer: coarse) {
+  .zg-row, .zg-column-row, .zg-facet, .zg-tag-option, .zg-tagmenu-option, .zg-group-chip,
+  .zg-crumb, .zg-other-paths, .zg-tagmenu-actions button {
+    min-height: max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px));
+  }
+  .zg-crumb, .zg-other-paths { display: inline-flex; align-items: center; }
+  .zg-row > .zg-twisty { width: var(--zg-twisty-width, var(--zg-tap-min, 44px)); }
+  .zg-chip-remove { min-width: var(--zg-tap-min, 44px); min-height: var(--zg-tap-min, 44px); }
+  .zg-row, .zg-column-row, .zg-facet, .zg-tagmenu-option {
+    border-bottom: var(--zg-separator, 1px solid color-mix(in srgb, currentColor 12%, transparent)); border-radius: 0;
+  }
+  .zg-tag-input, .zg-tagmenu-search { font-size: max(16px, 1em); min-height: max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px)); }
+  .zg-group-chips-row { gap: .5rem; }
+}
+
 @media (forced-colors: active) {
-  .zg-tagmenu-option.is-active { outline: 2px solid Highlight; }
+  .zg-tagmenu-option.is-active, .zg-tag-option.is-active { outline: 2px solid Highlight; }
   .zg-tagmenu-box { border-color: CanvasText; }
+  .zg-group-chip[aria-pressed="true"] { outline: 2px solid Highlight; }
 }

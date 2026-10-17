@@ -14,10 +14,12 @@
  */
 
 import type { Groups, NodeId, PathNode } from '@zodal/groups-core';
+import { FINE_POINTER, mediaMatches } from './media.js';
 
 export interface ColumnsRendererOptions {
   readonly onSelect?: (nodeId: NodeId, trail: readonly NodeId[]) => void;
   readonly onChange?: () => void;
+  /** Enable drag-and-drop. Default `true`: where the pointer is fine (`(pointer: fine)`), never on touch. */
   readonly draggable?: boolean;
 }
 
@@ -92,7 +94,7 @@ export function renderColumns<P>(
             render();
           });
 
-          if (draggable) attachDrag(li, row, column.parent);
+          if (draggable && mediaMatches(FINE_POINTER)) attachDrag(li, row, column.parent);
           ul.appendChild(li);
         }
 
