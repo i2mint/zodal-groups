@@ -62,6 +62,7 @@ describe('renderGroupChips', () => {
     chip(1, 'slow').click();
     expect(seen.at(-1)).toEqual({ path: ['campfire', 'slow'], ungrouped: false });
     expect(pressed()).toEqual(['slow']);
+    expect(chip(0, 'campfire').classList.contains('is-on-path')).toBe(true); // what opened this row
 
     chip(1, 'All of campfire').click();
     expect(seen.at(-1)).toEqual({ path: ['campfire'], ungrouped: false });

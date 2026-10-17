@@ -231,4 +231,61 @@ describe('redraws and rollbacks (#19, #17)', () => {
     expect(errors).toEqual([expect.objectContaining({ rolledBack: true })]);
     expect(status()).not.toContain('could not be undone');
   });
+
+  it('a host listener writing during the rollback keeps its own undo entry on top', async () => {
+    const g = build();
+    const server = deferred();
+    mount(g, { onWrite: () => server.promise });
+    typeText('Campfire');
+    press('Enter');
+    g.add('song-1', 'Camping'); // forces the fallback rollback
+    let logged = false;
+    g.subscribe((change) => {
+      if (!logged && change.delta.removed?.length) {
+        logged = true;
+        g.add('song-7', 'log'); // writes inside the rollback's notification
+      }
+    });
+    server.reject(new Error('conflict'));
+    await flush();
+    expect(g.parents('song-1')).not.toContain('Campfire');
+    expect(g.parents('song-7')).toEqual(['log']);
+    g.undo(); // the top entry is still the host's
+    expect(g.parents('song-7')).toEqual([]);
+  });
+
+  it('rolling back a Create that another item has joined since keeps the group, drops only ours', async () => {
+    const g = build();
+    const server = deferred();
+    const errors: Array<{ rolledBack: boolean }> = [];
+    mount(g, { onWrite: () => server.promise, onError: (_e: unknown, ctx: { rolledBack: boolean }) => errors.push(ctx) });
+    typeText('Urgent');
+    container.querySelector<HTMLElement>('.zg-tag-create')!.click();
+    g.add('song-8', 'Urgent'); // someone else joins the new group
+    server.reject(new Error('503'));
+    await flush();
+    expect(g.parents('song-1')).not.toContain('Urgent');
+    expect(g.parents('song-8')).toContain('Urgent');
+    expect(errors).toEqual([expect.objectContaining({ rolledBack: true })]);
+  });
 });
+
+describe('picking details', () => {
+  it('Enter during IME composition picks nothing', () => {
+    const g = build();
+    mount(g);
+    typeText('Campf');
+    input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true }));
+    expect(g.parents('song-1')).toEqual(['To learn']);
+  });
+
+  it('a prefix is unique among the groups it can still join', () => {
+    const g = build();
+    g.add('song-1', 'Campfire');
+    mount(g);
+    typeText('Cam'); // Campfire (already in) and Camping: only Camping can be picked
+    press('Enter');
+    expect(g.parents('song-1')).toContain('Camping');
+  });
+});
+

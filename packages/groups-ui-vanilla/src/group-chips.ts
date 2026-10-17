@@ -112,6 +112,7 @@ export function renderGroupChips<P>(
     button.type = 'button';
     button.className = `zg-group-chip is-${chip.kind}`;
     if (chip.hasChildren) button.classList.add('has-children');
+    if (chip.onPath) button.classList.add('is-on-path');
     button.dataset.key = chip.key;
     button.dataset.depth = String(depth);
     if (chip.nodeId) button.dataset.nodeId = chip.nodeId;

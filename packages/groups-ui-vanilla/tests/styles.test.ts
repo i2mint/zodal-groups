@@ -94,12 +94,14 @@ describe('styles.css', () => {
     '.zg-row', '.zg-column-row', '.zg-facet', '.zg-tag-option', '.zg-tagmenu-option', '.zg-group-chip',
     '.zg-crumb', '.zg-other-paths', '.zg-tagmenu-actions button', '.zg-tag-input', '.zg-tagmenu-search',
   ])('on a coarse pointer, %s is at least 44px tall', (selector) => {
-    expect(coarseDecl(selector, 'min-height')).toBe('var(--zg-row-min, var(--zg-tap-min, 44px))');
+    expect(coarseDecl(selector, 'min-height')).toBe('max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px))');
   });
 
   it('on a coarse pointer, the twisty and the chip remove button are 44px wide', () => {
     expect(coarseDecl('.zg-row > .zg-twisty', 'width')).toBe('var(--zg-twisty-width, var(--zg-tap-min, 44px))');
     expect(coarseDecl('.zg-chip-remove', 'min-width')).toBe('var(--zg-tap-min, 44px)');
+    expect(coarseDecl('.zg-chip-remove', 'min-height')).toBe('var(--zg-tap-min, 44px)');
+    expect(coarse.some((r) => r.selectors.includes('.zg-chip-remove') && r.decls.has('margin-block'))).toBe(false);
   });
 
   it('the twisty is the full row height', () => {
@@ -109,6 +111,20 @@ describe('styles.css', () => {
 
   it.each(['.zg-tag-input', '.zg-tagmenu-search'])('on a coarse pointer, %s is at least 16px (no iOS focus zoom)', (selector) => {
     expect(coarseDecl(selector, 'font-size')).toBe('max(16px, 1em)');
+  });
+
+  it('the 16px floor covers every text input the renderers create', () => {
+    // The classes the sources give their <input> elements (checkbox inputs are not text inputs).
+    const sources = ['tag-input.ts', 'tag-menu.ts'].map((f) =>
+      readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), 'utf8'),
+    );
+    const classes = sources.flatMap((src) => [...src.matchAll(/(\w+)\.className = '(zg-[\w-]*(?:input|search)[\w-]*)'/g)].map((m) => m[2]!));
+    expect(classes.length).toBeGreaterThan(0);
+    for (const c of classes) expect(coarseDecl(`.${c}`, 'font-size')).toBe('max(16px, 1em)');
+  });
+
+  it('a host --zg-row-min cannot drop a touch target under the floor', () => {
+    expect(coarseDecl('.zg-row', 'min-height')).toMatch(/^max\(var\(--zg-row-min, 0px\), var\(--zg-tap-min, 44px\)\)$/);
   });
 
   it('touch rows are visibly separated', () => {

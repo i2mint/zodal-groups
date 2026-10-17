@@ -34,9 +34,14 @@ import { toggleExpanded } from '@zodal/groups-core';
 import { resolveDrop, applyDrop, toTreeRows, type TreeRow } from '@zodal/groups-ui';
 import { FINE_POINTER, mediaMatches } from './media.js';
 
+/** Elements whose clicks and keys belong to themselves, not to the row around them. */
+const INTERACTIVE = 'button, a[href], input, select, textarea, label, [contenteditable=""], [contenteditable="true"]';
+
 export interface TreeRendererOptions {
   /** A row was selected (a leaf, or a group when `groupActivate` is `'select'`). */
   readonly onSelect?: (nodeId: NodeId, row: TreeRow) => void;
+  /** A group row was expanded or collapsed (by a tap, the twisty or a key). */
+  readonly onToggle?: (nodeId: NodeId, expanded: boolean, row: TreeRow) => void;
   /** The model changed (a drop). */
   readonly onChange?: () => void;
   /** Show the "also in N groups" badge. Default `true`. */
@@ -125,13 +130,14 @@ export function renderTree<P>(
     }
     const canDrag = draggable && mediaMatches(FINE_POINTER);
     root.replaceChildren(...rows.map((row) => renderRow(row, canDrag)));
-    if (hadFocus && focusKey) rowElements.get(focusKey)?.focus();
+    if (hadFocus && focusKey) rowElements.get(focusKey)?.focus({ preventScroll: true });
   };
 
   const toggle = (row: TreeRow): void => {
     focusKey = row.key;
     expanded = toggleExpanded(expanded, row.key); // keyed by PATH — see D13
     render();
+    options.onToggle?.(row.nodeId, expanded.has(row.key), row);
   };
 
   const select = (row: TreeRow): void => {
@@ -154,9 +160,12 @@ export function renderTree<P>(
   };
 
   // APG tree keys, on the tree (one listener; the row comes from the focused element).
+  // Only keys aimed at the row itself: a control a host drew inside the label (`renderLabel`) keeps
+  // its own Space and Enter.
   root.addEventListener('keydown', (e) => {
-    const el = (e.target as HTMLElement).closest<HTMLLIElement>('li.zg-row');
-    const index = el ? rows.findIndex((r) => r.key === el.dataset.key) : -1;
+    const el = e.target as HTMLElement;
+    if (!el.classList?.contains('zg-row')) return;
+    const index = rows.findIndex((r) => r.key === el.dataset.key);
     const row = rows[index];
     if (!row) return;
     switch (e.key) {
@@ -275,7 +284,12 @@ export function renderTree<P>(
       li.appendChild(mark);
     }
 
-    li.addEventListener('click', () => activate(row));
+    li.addEventListener('click', (e) => {
+      // A click on a host control inside the label is the control's, not the row's.
+      const target = e.target as HTMLElement;
+      if (target !== li && target.closest?.(INTERACTIVE)?.closest('li.zg-row') === li) return;
+      activate(row);
+    });
 
     // Cross-highlight the twins: the cheapest way to teach "same thing, two places". Only where
     // there is a hover: on touch, a tap fires `mouseenter` and the highlight would stick.

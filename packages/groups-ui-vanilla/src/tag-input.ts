@@ -25,6 +25,7 @@
 
 import {
   edgesInto,
+  edgesOf,
   invert,
   isGroup,
   nodeId,
@@ -58,7 +59,7 @@ export const TAG_INPUT_LABELS: TagInputLabels = {
   inputLabel: 'Add to group',
   suggestions: 'Groups',
   create: (text) => `Create “${text}”`,
-  noMatch: (text) => `No group is called “${text}”. Choose “Create “${text}”” to make one.`,
+  noMatch: (text) => `No group is called “${text}”. Choose Create to make one.`,
   ambiguous: (text, count) => `${count} groups start with “${text}”: choose one.`,
   alreadyIn: (group) => `Already in “${group}”.`,
 };
@@ -148,7 +149,12 @@ export function renderTagInput<P>(
       if (clean && groups.undo()) {
         const below = entries[i - 1];
         // The entry below is next on the history only if this one was committed right on top of it.
-        clean = !!below && entry.before.revision === below.revision && entry.depthBefore === below.depth;
+        // And only if nobody wrote while the undo notified (a host listener): then the top is theirs.
+        clean =
+          !!below &&
+          entry.before.revision === below.revision &&
+          entry.depthBefore === below.depth &&
+          groups.undoDepth === entry.depthBefore;
         continue;
       }
       clean = false;
@@ -161,18 +167,25 @@ export function renderTagInput<P>(
       );
       const removed = (inverse.removed ?? []).filter((id) => space.edges.has(id));
       if (!added.length && !removed.length) continue;
+      // A node the edit created goes again only if nothing else uses it now: another item may have
+      // joined a group this edit created, and a tombstone for a node with edges is refused.
+      const going = new Set(removed);
+      const unused = (id: NodeId): boolean =>
+        space.nodes.has(id) && ![...edgesOf(space, id), ...edgesInto(space, id)].some((e) => !going.has(e.id));
       const remaining: EdgeDelta = {
         ...inverse,
         added,
         removed,
-        ...(inverse.removedNodes ? { removedNodes: inverse.removedNodes.filter((n) => space.nodes.has(n.id)) } : {}),
+        ...(inverse.removedNodes ? { removedNodes: inverse.removedNodes.filter((n) => unused(n.id)) } : {}),
         ...(inverse.addedNodes ? { addedNodes: inverse.addedNodes.filter((n) => !space.nodes.has(n.id)) } : {}),
       };
       const depth = groups.undoDepth;
       if (!groups.apply(remaining).ok) ok = false;
       // A rollback is not an edit (#19): left on the history, the next Undo would re-apply the very
-      // edit `onWrite` rejected, and `onWrite` would never hear of it.
-      else if (groups.undoDepth > depth) groups.discardUndo();
+      // edit `onWrite` rejected, and `onWrite` would never hear of it. Drop it only when it is the
+      // top entry: a host listener that wrote during the apply's notification owns the top then,
+      // and dropping theirs would be worse than keeping ours.
+      else if (groups.undoDepth === depth + 1) groups.discardUndo();
     }
     return ok;
   };
@@ -277,8 +290,11 @@ export function renderTagInput<P>(
     const all = [...space.nodes.keys()]
       .filter((id) => id !== current && isGroup(space, id))
       .map((id) => ({ id, label: nameOf(id) }));
-    const exact = all.find((g) => norm(g.label) === q || norm(g.id) === q);
-    const prefixed = all.filter((g) => norm(g.label).startsWith(q)).sort((a, b) => a.label.localeCompare(b.label));
+    const exact = all.find((g) => norm(g.label) === q) ?? all.find((g) => norm(g.id) === q);
+    // Prefixes count among the groups it could join: one it is already in cannot be picked.
+    const prefixed = all
+      .filter((g) => !member.has(g.id) && norm(g.label).startsWith(q))
+      .sort((a, b) => a.label.localeCompare(b.label));
     const containing = all
       .filter((g) => !norm(g.label).startsWith(q) && norm(g.label).includes(q))
       .sort((a, b) => a.label.localeCompare(b.label));
@@ -287,6 +303,7 @@ export function renderTagInput<P>(
       .slice(0, maxSuggestions);
     // Enter picks the group the text names, or the only one it is a prefix of. Never a guess.
     const pick = exact ?? (prefixed.length === 1 ? prefixed[0] : undefined);
+    // (`exact` may be a group it is already in: Enter then says so instead of picking.)
     return { offered, exact, prefixed, pick, member };
   };
 
@@ -404,6 +421,7 @@ export function renderTagInput<P>(
         if (n) setActive(active <= 0 ? n - 1 : active - 1);
         break;
       case 'Enter': {
+        if (e.isComposing || e.keyCode === 229) return; // an IME is composing: Enter is theirs
         const text = input.value.trim();
         if (!text) return;
         if (list.hidden) refreshList(); // the text was set without an `input` event

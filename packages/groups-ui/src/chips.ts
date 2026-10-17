@@ -9,8 +9,10 @@
  * the path in its URL.
  *
  * Counts come from `facetPanel` (a de-duplicated union over the closure, never a sum of children),
- * counted over the host's item pool. "Ungrouped" counts the items with no membership parent:
- * Zotero's "Unfiled Items", and the chip that replaces a separate "not in a group" section.
+ * counted over the host's item pool. "Ungrouped" is everything the root chips do not reach (All
+ * minus the union of every root's closure, by the same membership rules the counts use), so All is
+ * always the groups plus Ungrouped: Zotero's "Unfiled Items", and the chip that replaces a separate
+ * "not in a group" section.
  *
  * Pure: a function of `(groups, options)`. The host (or a renderer) memoizes on `groups.revision`.
  */
@@ -21,7 +23,6 @@ import {
   edgesOf,
   isGroup,
   matchingItems,
-  membershipParentCount,
   type GroupSpace,
   type Groups,
   type NodeId,
@@ -51,6 +52,8 @@ export interface GroupChip {
   /** Items in this chip's scope (closure, de-duplicated), counted over the pool. */
   readonly count: number;
   readonly pressed: boolean;
+  /** On the chosen path above the pressed chip (the chip that opened the next row). */
+  readonly onPath: boolean;
   /** A group with subgroups: choosing it opens another row. */
   readonly hasChildren: boolean;
   /** What choosing this chip navigates to. */
@@ -157,6 +160,12 @@ export function normalizeChipSelection<P>(
   return path.length ? { path, ungrouped: false } : ALL_GROUPS;
 }
 
+/** The pool items no root group reaches: All minus the union of the roots' closures. */
+const ungroupedItems = <P>(groups: Groups<P>, pool: readonly NodeId[]): NodeId[] => {
+  const grouped = matchingItems(groups.space, candidates(groups), pool);
+  return pool.filter((id) => !grouped.has(id));
+};
+
 /** Same selection? (Paths compared by value.) */
 export function sameChipSelection(a: GroupChipsSelection, b: GroupChipsSelection): boolean {
   return a.ungrouped === b.ungrouped && a.path.length === b.path.length && a.path.every((id, i) => b.path[i] === id);
@@ -193,6 +202,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
     const counts = new Map(facets.map((f) => [f.group, f.count]));
     const chips = facets.map((f): GroupChip => {
       const pressed = f.group === chosen && path.length === depth + 1;
+      const onPath = f.group === chosen && !pressed;
       return {
         key: `group:${f.group}`,
         kind: 'group',
@@ -200,6 +210,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
         label: f.label,
         count: f.count,
         pressed,
+        onPath,
         // Not `f.hasChildren`, which is true for any group with members: a chip opens a row only
         // when there are subgroups to show in it.
         hasChildren: subgroupsOf(groups.space, f.group).length > 0,
@@ -222,6 +233,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
       label: labels.all,
       count: pool.length,
       pressed: allPressed,
+      onPath: false,
       hasChildren: false,
       target: ALL_GROUPS,
       aria: { label: name(labels.all, pool.length), pressed: allPressed },
@@ -229,7 +241,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
     ...root.chips,
   ];
   if (offerUngrouped) {
-    const count = pool.filter((id) => membershipParentCount(groups.space, id) === 0).length;
+    const count = ungroupedItems(groups, pool).length;
     if (count || !hideEmpty || selection.ungrouped) {
       first.push({
         key: 'ungrouped',
@@ -237,6 +249,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
         label: labels.ungrouped,
         count,
         pressed: selection.ungrouped,
+        onPath: false,
         hasChildren: false,
         target: { path: [], ungrouped: true },
         aria: { label: name(labels.ungrouped, count), pressed: selection.ungrouped },
@@ -266,6 +279,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
           label: labels.allOf(parentLabel),
           count: parentCount,
           pressed,
+          onPath: false,
           hasChildren: false,
           target: { path: path.slice(0, depth), ungrouped: false },
           aria: { label: name(labels.allOf(parentLabel), parentCount), pressed },
@@ -289,7 +303,7 @@ export function groupChipItems<P>(
   items: Iterable<NodeId> = allItems(groups.space),
 ): NodeId[] {
   const pool = [...items];
-  if (selection.ungrouped) return pool.filter((id) => membershipParentCount(groups.space, id) === 0);
+  if (selection.ungrouped) return ungroupedItems(groups, pool);
   const group = selection.path[selection.path.length - 1];
   if (!group) return pool;
   return [...matchingItems(groups.space, [group], pool)];

@@ -22,7 +22,7 @@ Tune them with CSS custom properties, set on any ancestor:
 | property | what | default |
 |---|---|---|
 | `--zg-font-size` | the widgets' font size | `inherit` |
-| `--zg-row-min` | min height of rows, options, chips, buttons | `auto` (fine pointer), `--zg-tap-min` (coarse) |
+| `--zg-row-min` | min height of rows, options, chips, buttons | `auto`; on a coarse pointer never below `--zg-tap-min` |
 | `--zg-tap-min` | the coarse-pointer target floor | `44px` |
 | `--zg-twisty-width` | the tree expander's width | `1.25em` (fine), `--zg-tap-min` (coarse) |
 | `--zg-indent` | tree indent per level | `1.1rem` |
@@ -42,16 +42,16 @@ renderTree(el, groups, {
 });
 ```
 
-- `groupActivate`: what a click, tap, Enter or Space on a group row does. `'toggle'` (default) expands or collapses it and selects nothing; `'select'` selects it (the twisty still expands). Rows without children are always selected.
+- `groupActivate`: what a click, tap, Enter or Space on a group row does. `'toggle'` (default) expands or collapses it and selects nothing (`onToggle(nodeId, expanded, row)` reports it); `'select'` selects it (the twisty still expands). Rows without children are always selected. This changes the old behaviour, where a click on a group selected it: pass `'select'` to keep that.
 - `subtitle(row)`: a second, muted line (`.zg-label-title` + `.zg-label-subtitle`), added to the row's accessible name. Return `undefined` for none.
-- `renderLabel(row, el)`: fill the empty `.zg-label` span yourself. Wins over `subtitle`. The accessible name stays `row.aria.label` (which says "also in N other groups") unless you pass `ariaLabel(row)`.
+- `renderLabel(row, el)`: fill the empty `.zg-label` span yourself. Wins over `subtitle`. Buttons, links and inputs you put there keep their own clicks and keys. The accessible name stays `row.aria.label` (which says "also in N other groups") unless you pass `ariaLabel(row)`.
 - `draggable` (default `true`): drag-and-drop where the pointer is fine; never on touch. `false` turns it off.
 - `label`: the tree's accessible name.
 - Keyboard (WAI-ARIA tree pattern): one tab stop (the focused row, else the selected one, else the first), Up/Down move, Right expands or goes to the first child, Left collapses or goes to the parent, Home/End, Enter/Space activate.
 
 ## renderGroupChips
 
-The phone way to browse nested groups. The first row is `All · <root groups, with counts> · Ungrouped`; choosing a group that has subgroups adds a row `All of <group> · <its subgroups>`. Counts are de-duplicated over the closure (an item in two subgroups counts once). The state is one selection, `{ path, ungrouped }`, which you can keep in the URL.
+The phone way to browse nested groups. The first row is `All · <root groups, with counts> · Ungrouped` (Ungrouped is everything no group reaches, so All is always the groups plus Ungrouped); choosing a group that has subgroups adds a row `All of <group> · <its subgroups>`. Counts are de-duplicated over the closure (an item in two subgroups counts once). The state is one selection, `{ path, ungrouped }`, which you can keep in the URL.
 
 ```ts
 const chips = renderGroupChips(el, groups, {

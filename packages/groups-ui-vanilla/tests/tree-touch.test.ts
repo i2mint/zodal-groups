@@ -204,3 +204,43 @@ describe('drag only under a fine pointer', () => {
     expect(container.querySelectorAll('.is-twin').length).toBe(0);
   });
 });
+
+describe('host controls inside a label, and onToggle', () => {
+  const withButton = () =>
+    renderTree(container, build(), {
+      renderLabel: (r, el) => {
+        el.textContent = r.label;
+        if (r.nodeId === 'leisure') {
+          const b = document.createElement('button');
+          b.textContent = 'edit';
+          const i = document.createElement('input');
+          el.append(b, i);
+        }
+      },
+    });
+
+  it('a click on a button in the label is the button\'s, not the row\'s', () => {
+    withButton();
+    row('leisure').querySelector('button')!.click();
+    expect(row('leisure').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('Space typed in an input in the label is not taken by the tree', () => {
+    withButton();
+    const field = row('leisure').querySelector('input')!;
+    field.focus();
+    const e = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    field.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(false);
+    expect(row('leisure').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('onToggle reports what opened and closed', () => {
+    const seen: Array<[string, boolean]> = [];
+    renderTree(container, build(), { onToggle: (id, open) => seen.push([id, open]) });
+    row('leisure').click();
+    row('leisure').querySelector<HTMLElement>('.zg-twisty')!.click();
+    expect(seen).toEqual([['leisure', true], ['leisure', false]]);
+  });
+});
+

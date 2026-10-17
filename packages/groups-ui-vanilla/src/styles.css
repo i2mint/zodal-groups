@@ -7,7 +7,7 @@
 
    Custom properties (set them on any ancestor):
      --zg-font-size     root font size                      default: inherit
-     --zg-row-min       min height of rows, options, chips  default: auto (fine) / --zg-tap-min (coarse)
+     --zg-row-min       min height of rows, options, chips  default: auto; on a coarse pointer never below --zg-tap-min
      --zg-tap-min       the coarse-pointer target floor     default: 44px
      --zg-twisty-width  the tree's expander width           default: 1.25em (fine) / --zg-tap-min (coarse)
      --zg-indent        tree indent per level               default: 1.1rem
@@ -81,6 +81,7 @@
 .zg-group-chip[aria-pressed="true"] { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600;
   border-color: color-mix(in srgb, currentColor 75%, transparent); }
 .zg-group-chip:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: 1px; }
+.zg-group-chip.is-on-path { border-color: color-mix(in srgb, currentColor 75%, transparent); border-style: dashed; }
 .zg-group-chip-count { font-weight: 400; font-variant-numeric: tabular-nums; color: color-mix(in srgb, currentColor 72%, transparent); }
 .zg-group-chip-more { opacity: .6; }
 
@@ -163,15 +164,15 @@
 @media (pointer: coarse) {
   .zg-row, .zg-column-row, .zg-facet, .zg-tag-option, .zg-tagmenu-option, .zg-group-chip,
   .zg-crumb, .zg-other-paths, .zg-tagmenu-actions button {
-    min-height: var(--zg-row-min, var(--zg-tap-min, 44px));
+    min-height: max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px));
   }
   .zg-crumb, .zg-other-paths { display: inline-flex; align-items: center; }
   .zg-row > .zg-twisty { width: var(--zg-twisty-width, var(--zg-tap-min, 44px)); }
-  .zg-chip-remove { min-width: var(--zg-tap-min, 44px); min-height: var(--zg-tap-min, 44px); margin-block: -.5rem; }
+  .zg-chip-remove { min-width: var(--zg-tap-min, 44px); min-height: var(--zg-tap-min, 44px); }
   .zg-row, .zg-column-row, .zg-facet, .zg-tagmenu-option {
     border-bottom: var(--zg-separator, 1px solid color-mix(in srgb, currentColor 12%, transparent)); border-radius: 0;
   }
-  .zg-tag-input, .zg-tagmenu-search { font-size: max(16px, 1em); min-height: var(--zg-row-min, var(--zg-tap-min, 44px)); }
+  .zg-tag-input, .zg-tagmenu-search { font-size: max(16px, 1em); min-height: max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px)); }
   .zg-group-chips-row { gap: .5rem; }
 }
 
