@@ -126,7 +126,7 @@ The vanilla styles shipped desktop defaults once (13px type forced by a `font` s
 - **A label seam**, not a flat string: `subtitle(row)` for a muted second line, `renderLabel(row, el)` for anything else, so a host can match its own list rows.
 - **Keyboard**: roving `tabindex` (one tab stop, the first row when nothing is selected) and the APG tree keys. A tree with every row at `tabIndex = -1` cannot be reached at all.
 - **Typing never creates by accident.** A free-text "add to group" field picks an existing group on Enter (case-insensitive exact, or a unique prefix) and offers creation only as a visible "Create '…'" option. Build the field once and never re-render it.
-- **On a phone, prefer drill-down chips to a tree**: `renderGroupChips` over `toGroupChips` (All · groups with closure counts · Ungrouped; one path of state, like Miller columns, and the host puts it in its URL).
+- **On a phone, prefer drill-down chips to a tree**: `renderGroupChips` over `toGroupChips` (All · groups with closure counts · Ungrouped; one path of state, like Miller columns, and the host puts it in its URL). When the home view is not "everything" (recently viewed, starred), pass `allChipItems` and relabel All with `labels.all`; group counts still cover the whole pool.
 
 Measure in a real browser at phone width (390x844): the `getBoundingClientRect()` height of every `button, [role=treeitem], [role=option], input` and the computed `font-size` of every input. The CSS test checks the rules as written; only a browser checks the cascade on a real page.
 

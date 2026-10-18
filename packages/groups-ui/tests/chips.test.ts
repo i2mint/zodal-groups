@@ -138,3 +138,34 @@ describe('groupChipItems', () => {
     expect(groupChipItems(g, { path: [], ungrouped: true }, pool)).toEqual(['song-5']);
   });
 });
+
+describe('allChipItems: an All chip that stands for another set (a "recently viewed" home)', () => {
+  const viewed = ['song-4', 'song-1', 'song-4'].map(id); // most recent first; a repeat counts once
+
+  it('counts the set on the All chip; groups and Ungrouped still count over the whole pool', () => {
+    const view = toGroupChips(build(), { items: pool, allChipItems: viewed, labels: { all: 'Viewed' } });
+    expect(chipText(view.rows[0]!)).toEqual(['Viewed 2', 'campfire 3', 'learn 1', 'Ungrouped 1']);
+    expect(view.rows[0]!.chips[0]!.aria.label).toBe('Viewed, 2 items');
+  });
+
+  it('All gives the set in its own order; a group still gives its closure from the pool', () => {
+    const g = build();
+    expect(groupChipItems(g, ALL_GROUPS, pool, { allChipItems: viewed })).toEqual(['song-4', 'song-1']);
+    expect(groupChipItems(g, { path: [id('campfire')], ungrouped: false }, pool, { allChipItems: viewed })).toEqual([
+      'song-1',
+      'song-2',
+      'song-3',
+    ]);
+  });
+
+  it('ids outside the pool are ignored: a deleted item, a group id', () => {
+    const odd = ['gone-9', 'campfire', 'song-1'].map(id);
+    expect(chipText(toGroupChips(build(), { items: pool, allChipItems: odd }).rows[0]!)[0]).toBe('All 1');
+    expect(groupChipItems(build(), ALL_GROUPS, pool, { allChipItems: odd })).toEqual(['song-1']);
+  });
+
+  it('an empty set is an All chip with nothing in it, not the pool', () => {
+    expect(chipText(toGroupChips(build(), { items: pool, allChipItems: [] }).rows[0]!)[0]).toBe('All 0');
+    expect(groupChipItems(build(), ALL_GROUPS, pool, { allChipItems: [] })).toEqual([]);
+  });
+});

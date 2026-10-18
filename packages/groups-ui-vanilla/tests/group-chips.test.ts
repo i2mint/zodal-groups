@@ -144,6 +144,23 @@ describe('renderGroupChips', () => {
     expect(container.querySelector('.zg-group-chips')).toBeNull();
   });
 
+  it('allChipItems: a relabelled All chip counts and filters its own set, read on every render', () => {
+    let viewed = ['song-4', 'song-1'].map(nodeId);
+    const chips = renderGroupChips(container, build(), {
+      items: songs,
+      allChipItems: () => viewed,
+      labels: { all: 'Viewed' },
+    });
+    expect(rowTexts()[0]).toEqual(['Viewed 2', 'campfire 3', 'learn 1', 'Ungrouped 1']);
+    expect(chips.items()).toEqual(['song-4', 'song-1']);
+    viewed = [nodeId('song-5')];
+    chips.render();
+    expect(rowTexts()[0]![0]).toBe('Viewed 1');
+    expect(chips.items()).toEqual(['song-5']);
+    chip(0, 'campfire').click();
+    expect(chips.items()).toEqual(['song-1', 'song-2', 'song-3']);
+  });
+
   it('is the registry\'s groupChips surface', () => {
     const registry = createVanillaRegistry();
     expect(registry.resolve({ surface: 'groupChips', profile: build().profile })).toBe(renderGroupChips);
