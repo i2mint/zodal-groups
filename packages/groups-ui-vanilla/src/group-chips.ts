@@ -32,7 +32,7 @@ import {
   type GroupChipsSelection,
 } from '@zodal/groups-ui';
 
-export interface GroupChipsRendererOptions extends Omit<GroupChipsOptions, 'items' | 'selection'> {
+export interface GroupChipsRendererOptions extends Omit<GroupChipsOptions, 'items' | 'selection' | 'allChipItems'> {
   /** The starting selection, e.g. from the URL. Default: All. */
   readonly selection?: Partial<GroupChipsSelection>;
   /**
@@ -40,6 +40,11 @@ export interface GroupChipsRendererOptions extends Omit<GroupChipsOptions, 'item
    * item list changes need not re-mount). Default: every non-group node in the space.
    */
   readonly items?: Iterable<NodeId> | (() => Iterable<NodeId>);
+  /**
+   * What the All chip stands for, when not the whole pool (a "recently viewed" home, say): a list,
+   * or a function read on every render. Relabel the chip with `labels.all`. Default: the pool.
+   */
+  readonly allChipItems?: Iterable<NodeId> | (() => Iterable<NodeId>);
   /**
    * The selection changed: the user chose a chip, or a model change removed the chosen group.
    * Never called for `setSelection`.
@@ -66,9 +71,21 @@ export function renderGroupChips<P>(
   groups: Groups<P>,
   options: GroupChipsRendererOptions = {},
 ): GroupChipsRenderer {
-  const { onNavigate, selection: initial, items: itemsOption, label = 'Browse groups', ...viewOptions } = options;
-  const pool = (): NodeId[] | undefined =>
-    itemsOption === undefined ? undefined : [...(typeof itemsOption === 'function' ? itemsOption() : itemsOption)];
+  const {
+    onNavigate,
+    selection: initial,
+    items: itemsOption,
+    allChipItems: allOption,
+    label = 'Browse groups',
+    ...viewOptions
+  } = options;
+  const read = (option: Iterable<NodeId> | (() => Iterable<NodeId>) | undefined): NodeId[] | undefined =>
+    option === undefined ? undefined : [...(typeof option === 'function' ? option() : option)];
+  const pool = (): NodeId[] | undefined => read(itemsOption);
+  const allScope = (): { allChipItems?: NodeId[] } => {
+    const all = read(allOption);
+    return all ? { allChipItems: all } : {};
+  };
 
   let selection = normalizeChipSelection(groups, initial);
 
@@ -84,7 +101,7 @@ export function renderGroupChips<P>(
     const focusAt = root.contains(focused) ? { depth: focused?.dataset.depth, key: focused?.dataset.key } : null;
 
     const items = pool();
-    const view = toGroupChips(groups, { ...viewOptions, selection, ...(items ? { items } : {}) });
+    const view = toGroupChips(groups, { ...viewOptions, selection, ...(items ? { items } : {}), ...allScope() });
     selection = view.selection;
 
     root.replaceChildren(
@@ -165,7 +182,7 @@ export function renderGroupChips<P>(
       render();
       return selection;
     },
-    items: () => groupChipItems(groups, selection, pool()),
+    items: () => groupChipItems(groups, selection, pool(), allScope()),
     render,
     element: root,
     destroy: () => {

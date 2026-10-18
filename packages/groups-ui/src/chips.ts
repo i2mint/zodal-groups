@@ -105,6 +105,14 @@ export interface GroupChipsOptions {
    * the space count as ungrouped. Default: every non-group node in the space.
    */
   readonly items?: Iterable<NodeId>;
+  /**
+   * What the first row's All chip stands for, when that is not the whole pool: a host whose home
+   * view is "recently viewed" or "starred" passes those ids, and relabels the chip
+   * (`labels.all`). The chip's count follows them, and so does `groupChipItems` for All. The group
+   * chips and Ungrouped still count over `items`, so a group shows every member it has, not only
+   * the ones in this set. Default: the pool (All is the groups plus Ungrouped).
+   */
+  readonly allChipItems?: Iterable<NodeId>;
   /** Offer the "Ungrouped" chip. Default `true`. */
   readonly ungrouped?: boolean;
   /** Hide chips that would lead to zero items (the chosen one always stays). Default `true`. */
@@ -184,6 +192,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
   const labels = { ...GROUP_CHIPS_LABELS, ...options.labels };
   const selection = normalizeChipSelection(groups, options.selection);
   const pool = [...(options.items ?? allItems(groups.space))];
+  const allCount = options.allChipItems ? new Set(options.allChipItems).size : pool.length;
   const { path } = selection;
 
   const name = (label: string, count: number) => `${label}, ${labels.count(count)}`;
@@ -231,12 +240,12 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
       key: 'all',
       kind: 'all',
       label: labels.all,
-      count: pool.length,
+      count: allCount,
       pressed: allPressed,
       onPath: false,
       hasChildren: false,
       target: ALL_GROUPS,
-      aria: { label: name(labels.all, pool.length), pressed: allPressed },
+      aria: { label: name(labels.all, allCount), pressed: allPressed },
     },
     ...root.chips,
   ];
@@ -294,17 +303,19 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
 }
 
 /**
- * The items a selection matches, in pool order: everything for All, the items in no group for
- * Ungrouped, otherwise the items in the chosen group *or any subgroup* (the closure).
+ * The items a selection matches, in pool order: everything for All (or `allChipItems`, in their
+ * own order, when the All chip stands for another set), the items in no group for Ungrouped,
+ * otherwise the items in the chosen group *or any subgroup* (the closure).
  */
 export function groupChipItems<P>(
   groups: Groups<P>,
   selection: GroupChipsSelection,
   items: Iterable<NodeId> = allItems(groups.space),
+  options: { readonly allChipItems?: Iterable<NodeId> } = {},
 ): NodeId[] {
   const pool = [...items];
   if (selection.ungrouped) return ungroupedItems(groups, pool);
   const group = selection.path[selection.path.length - 1];
-  if (!group) return pool;
+  if (!group) return options.allChipItems ? [...new Set(options.allChipItems)] : pool;
   return [...matchingItems(groups.space, [group], pool)];
 }

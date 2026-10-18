@@ -65,7 +65,7 @@ const chips = renderGroupChips(el, groups, {
 window.addEventListener('popstate', () => chips.setSelection({ path: fromUrl() }));  // no echo
 ```
 
-- Options: `selection`, `items` (a list or a function read on each render), `onNavigate(selection)`, `ungrouped` (offer the chip, default `true`), `hideEmpty` (default `true`; the chosen chip always stays), `sort` (`'label'`, default, or `'count'`), `labels` (`all`, `allOf`, `ungrouped`, `rootRow`, `subRow`, `count`), `label` (the widget's accessible name).
+- Options: `selection`, `items` (a list or a function read on each render), `onNavigate(selection)`, `ungrouped` (offer the chip, default `true`), `hideEmpty` (default `true`; the chosen chip always stays), `sort` (`'label'`, default, or `'count'`), `labels` (`all`, `allOf`, `ungrouped`, `rootRow`, `subRow`, `count`), `label` (the widget's accessible name). `allChipItems` (a list or a function) makes the All chip stand for another set, such as a "recently viewed" home: relabel it with `labels.all`; its count and `items()` follow that set, in its order, while the group chips and Ungrouped still count the whole pool.
 - Returns `{ selection, setSelection(sel) → normalized, items(), render(), destroy(), element }`. `setSelection` drops an invalid tail and never calls `onNavigate`.
 - Each chip is a `<button aria-pressed>` whose accessible name carries the count; each row is a labelled `role="group"`.
 - The rows come from `toGroupChips` in `@zodal/groups-ui`, so other renderers draw the same thing. It is the phone counterpart of the facet sidebar planned in [#15](https://github.com/i2mint/zodal-groups/issues/15).
