@@ -158,6 +158,12 @@ describe('allChipItems: an All chip that stands for another set (a "recently vie
     ]);
   });
 
+  it('ids outside the pool are ignored: a deleted item, a group id', () => {
+    const odd = ['gone-9', 'campfire', 'song-1'].map(id);
+    expect(chipText(toGroupChips(build(), { items: pool, allChipItems: odd }).rows[0]!)[0]).toBe('All 1');
+    expect(groupChipItems(build(), ALL_GROUPS, pool, { allChipItems: odd })).toEqual(['song-1']);
+  });
+
   it('an empty set is an All chip with nothing in it, not the pool', () => {
     expect(chipText(toGroupChips(build(), { items: pool, allChipItems: [] }).rows[0]!)[0]).toBe('All 0');
     expect(groupChipItems(build(), ALL_GROUPS, pool, { allChipItems: [] })).toEqual([]);

@@ -110,7 +110,8 @@ export interface GroupChipsOptions {
    * view is "recently viewed" or "starred" passes those ids, and relabels the chip
    * (`labels.all`). The chip's count follows them, and so does `groupChipItems` for All. The group
    * chips and Ungrouped still count over `items`, so a group shows every member it has, not only
-   * the ones in this set. Default: the pool (All is the groups plus Ungrouped).
+   * the ones in this set. Ids that are not in the pool are ignored (a deleted item, a group id),
+   * as everywhere else. Default: the pool (All is the groups plus Ungrouped).
    */
   readonly allChipItems?: Iterable<NodeId>;
   /** Offer the "Ungrouped" chip. Default `true`. */
@@ -192,7 +193,7 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
   const labels = { ...GROUP_CHIPS_LABELS, ...options.labels };
   const selection = normalizeChipSelection(groups, options.selection);
   const pool = [...(options.items ?? allItems(groups.space))];
-  const allCount = options.allChipItems ? new Set(options.allChipItems).size : pool.length;
+  const allCount = options.allChipItems ? allChipScope(options.allChipItems, pool).length : pool.length;
   const { path } = selection;
 
   const name = (label: string, count: number) => `${label}, ${labels.count(count)}`;
@@ -302,6 +303,12 @@ export function toGroupChips<P>(groups: Groups<P>, options: GroupChipsOptions = 
   return { selection, rows };
 }
 
+/** The All chip's own set: its ids that are in the pool, each once, in the set's order. */
+const allChipScope = (ids: Iterable<NodeId>, pool: readonly NodeId[]): NodeId[] => {
+  const inPool = new Set(pool);
+  return [...new Set(ids)].filter((id) => inPool.has(id));
+};
+
 /**
  * The items a selection matches, in pool order: everything for All (or `allChipItems`, in their
  * own order, when the All chip stands for another set), the items in no group for Ungrouped,
@@ -316,6 +323,6 @@ export function groupChipItems<P>(
   const pool = [...items];
   if (selection.ungrouped) return ungroupedItems(groups, pool);
   const group = selection.path[selection.path.length - 1];
-  if (!group) return options.allChipItems ? [...new Set(options.allChipItems)] : pool;
+  if (!group) return options.allChipItems ? allChipScope(options.allChipItems, pool) : pool;
   return [...matchingItems(groups.space, [group], pool)];
 }

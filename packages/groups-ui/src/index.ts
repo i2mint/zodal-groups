@@ -13,6 +13,7 @@
  *   MOVE destroys an edge the user often cannot see.
  * - **`chips`** — `toGroupChips`, the drill-down chip rows (All · groups with counts · Ungrouped)
  *   for browsing nested groups on a phone. The whole view state is one path, like Miller columns.
+ *   `allChipItems` lets the All chip stand for another set (a "recently viewed" home).
  * - **`tagging`** — the selection-level tagging menu (Gmail's label menu): a none/some/all state per
  *   group, staged changes, refusals explained before the click, and a plan the caller writes.
  * - **`messages`** — every `Violation` as a sentence plus a suggested fix, and the menu's copy; one
