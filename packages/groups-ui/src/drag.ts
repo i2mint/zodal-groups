@@ -30,6 +30,8 @@
 
 import {
   canAddTo,
+  moveTo,
+  type GroupProfile,
   type Groups,
   type NodeId,
   type PathNode,
@@ -53,6 +55,17 @@ export interface DragGesture {
 export interface ResolveDropOptions {
   readonly labelOf?: LabelOf;
   readonly messages?: Partial<ViolationMessages>;
+  /**
+   * A plain (no-⌥) drop of a node that may have only one parent (`filesystem`, or any profile
+   * whose cap for that node is 1) onto another group, when the node already has its one parent:
+   *
+   * - `'refuse'` (default): D16 — a plain drop never destroys an edge. The drop is refused and the
+   *   reason says to move it instead; ⌥ makes it a move.
+   * - `'move'`: the Finder convention — the drop resolves to a move out of the parent the row is
+   *   shown under (flagged `destructive`). Under a single-parent profile that edge is the row's
+   *   only one, so it is the one on screen.
+   */
+  readonly singleParentDrop?: 'refuse' | 'move';
 }
 
 export type DropOperation =
@@ -137,31 +150,26 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
     };
   }
 
-  const violations = canAddTo(groups.space, child, parent);
-  if (violations.length) {
-    const explained = explainViolation(violations[0]!, { space: groups.space, ...options });
-    return {
-      operation: null,
-      valid: false,
-      reason: explained.message,
-      ...(explained.fix ? { fix: explained.fix } : {}),
-      violations,
-      indicator: 'forbidden',
-      destructive: false,
-    };
+  // ⌥ = MOVE. Only meaningful when we know which parent to remove from, and it is checked as the
+  // move it is (remove, then add): under a single-parent profile the add alone is never possible.
+  const canMove = Boolean(sourceParent) && sourceParent !== parent;
+  if (modifiers?.alt && canMove) {
+    const moved = moveTo(groups.space, child, sourceParent!, parent);
+    if (!moved.ok) return refuse(groups, moved.violations, options);
+    return moveTarget(child, sourceParent!, parent);
   }
 
-  // ⌥ = MOVE. Only meaningful when we know which parent to remove from.
-  const wantsMove = Boolean(modifiers?.alt) && Boolean(sourceParent);
-
-  if (wantsMove && sourceParent) {
-    return {
-      operation: { type: 'move', child, from: sourceParent, to: parent },
-      valid: true,
-      violations: [],
-      indicator: 'highlight',
-      destructive: true,
-    };
+  const violations = canAddTo(groups.space, child, parent);
+  if (violations.length) {
+    if (
+      options.singleParentDrop === 'move' &&
+      canMove &&
+      violations.every((v) => isSingleParentCap(groups.space.profile, v)) &&
+      moveTo(groups.space, child, sourceParent!, parent).ok
+    ) {
+      return moveTarget(child, sourceParent!, parent);
+    }
+    return refuse(groups, violations, options);
   }
 
   return {
@@ -171,6 +179,43 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
     indicator: 'highlight',
     destructive: false,
   };
+}
+
+function moveTarget(child: NodeId, from: NodeId, to: NodeId): DropTarget {
+  return {
+    operation: { type: 'move', child, from, to },
+    valid: true,
+    violations: [],
+    indicator: 'highlight',
+    destructive: true,
+  };
+}
+
+function refuse<P>(groups: Groups<P>, violations: readonly Violation[], options: ResolveDropOptions): DropTarget {
+  const explained = explainViolation(violations[0]!, { space: groups.space, ...options });
+  return {
+    operation: null,
+    valid: false,
+    reason: explained.message,
+    ...(explained.fix ? { fix: explained.fix } : {}),
+    violations,
+    indicator: 'forbidden',
+    destructive: false,
+  };
+}
+
+/** A violation that says only "this node may have one parent, and it has it". */
+function isSingleParentCap(profile: GroupProfile, v: Violation): boolean {
+  switch (v.code) {
+    case 'maxParentsPerItem':
+      return profile.maxParentsPerItem === 1;
+    case 'maxParentsPerGroup':
+      return profile.maxParentsPerGroup === 1;
+    case 'maxGroupsPerItem':
+      return profile.maxGroupsPerItem === 1;
+    default:
+      return false;
+  }
 }
 
 /** Commit a resolved drop. A no-op for an invalid target. */

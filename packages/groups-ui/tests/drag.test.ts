@@ -113,3 +113,88 @@ describe('an invalid drop explains itself', () => {
     expect(applyDrop(g, drop)).toBe(false);
   });
 });
+
+describe('a move under a single-parent profile (issue #18)', () => {
+  /** `report` in `documents`; `archive` holds `x`; `projects` holds `plans`, which holds `q3`. */
+  const fs = () => {
+    const g = defineGroups({ profile: 'filesystem' });
+    g.add('report', 'documents');
+    g.add('x', 'archive');
+    g.add('q3', 'plans');
+    g.add('plans', 'projects');
+    return g;
+  };
+  const row = (g: ReturnType<typeof fs>, id: string) =>
+    toTreeRows(g, { expandAll: true }).find((r) => r.nodeId === id)!.source;
+
+  it('⌥ drop is checked as a move, not an add: valid, destructive, and applied', () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'report'), target: row(g, 'archive'), modifiers: { alt: true } });
+
+    expect(drop.valid).toBe(true);
+    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive' });
+    expect(drop.destructive).toBe(true);
+    expect(applyDrop(g, drop)).toBe(true);
+    expect(g.parents('report')).toEqual(['archive']);
+  });
+
+  it('⌥ drop of a group (maxParentsPerGroup: 1) moves the group', () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'plans'), target: row(g, 'archive'), modifiers: { alt: true } });
+    expect(drop.operation?.type).toBe('move');
+    applyDrop(g, drop);
+    expect(g.parents('plans')).toEqual(['archive']);
+  });
+
+  it('⌥ drop that would close a loop is still refused, with the route', () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'plans'), target: row(g, 'q3'), modifiers: { alt: true } });
+    expect(drop.valid).toBe(false);
+    expect(drop.operation).toBeNull();
+    expect(drop.violations[0]!.code).toBe('cycle');
+    expect(drop.reason).toContain('→');
+  });
+
+  it('a plain drop is refused by default (D16), and the fix says to move it', () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'report'), target: row(g, 'archive') });
+    expect(drop.valid).toBe(false);
+    expect(drop.violations[0]!.code).toBe('maxParentsPerItem');
+    expect(drop.fix).toMatch(/Move it/);
+  });
+
+  it("singleParentDrop: 'move' resolves a plain drop to a move (Finder convention)", () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'report'), target: row(g, 'archive') }, { singleParentDrop: 'move' });
+    expect(drop.valid).toBe(true);
+    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive' });
+    expect(drop.destructive).toBe(true);
+    applyDrop(g, drop);
+    expect(g.parents('report')).toEqual(['archive']);
+  });
+
+  it("singleParentDrop: 'move' never moves when the cap is above one", () => {
+    const g = defineGroups({ profile: 'polyhierarchy', overrides: { maxParentsPerItem: 2 } });
+    g.add('n', 'a');
+    g.add('n', 'b');
+    g.add('y', 'c');
+    const rows = toTreeRows(g, { expandAll: true });
+    const drop = resolveDrop(
+      g,
+      {
+        source: rows.find((r) => r.nodeId === 'n' && r.source.path.includes(nodeId('a')))!.source,
+        target: rows.find((r) => r.nodeId === 'c')!.source,
+      },
+      { singleParentDrop: 'move' },
+    );
+    expect(drop.valid).toBe(false);
+    expect(drop.violations[0]!.code).toBe('maxParentsPerItem');
+  });
+
+  it('a drop from a root row (nothing to move out of) stays an add', () => {
+    const g = fs();
+    const drop = resolveDrop(g, { source: row(g, 'projects'), target: row(g, 'archive') }, { singleParentDrop: 'move' });
+    // `projects` is a root: nothing to move out of, so it is an add, and adding is allowed.
+    expect(drop.operation?.type).toBe('add');
+  });
+});

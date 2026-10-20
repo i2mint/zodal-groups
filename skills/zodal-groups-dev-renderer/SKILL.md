@@ -61,6 +61,12 @@ li.title = drop.reason ?? '…';
 if (drop.valid) e.preventDefault();
 ```
 
+⌥ is validated as the move it is (remove from the row's parent, then add), so under a single-parent
+profile (`filesystem`) an Alt drop works even though the add alone is refused. A plain drop there is
+refused by default (its `fix` says to move it); a Finder-style host passes
+`resolveDrop(groups, gesture, { singleParentDrop: 'move' })` to make a plain drop a move — only when
+the node's cap is 1, so the destroyed edge is the row's only one, the one on screen.
+
 ### 3. An invalid drop must say **why**
 
 In a tree, illegal drop targets are visibly inside the thing you're dragging. **In a DAG, a cycle can
