@@ -28,6 +28,8 @@ import {
   addTo,
   applyDelta,
   canAddTo,
+  canApply,
+  canMoveTo,
   childrenOf,
   createGroupSpace,
   deleteNodeDelta,
@@ -108,6 +110,8 @@ export interface Groups<P = unknown> {
   // ── guards ────────────────────────────────────────────────────────────────
   /** Why can't this be dropped here? Empty array means it can. */
   canAdd(child: NodeId | string, parent: NodeId | string, kind?: EdgeKind): Violation[];
+  /** Why `move` would be refused (empty when it would pass), without copying the space. */
+  canMove(child: NodeId | string, from: NodeId | string, to: NodeId | string, init?: MoveInit): Violation[];
 
   // ── reads ─────────────────────────────────────────────────────────────────
   children(group: NodeId | string): NodeId[];
@@ -246,8 +250,7 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     undoViolations() {
       const delta = history[history.length - 1];
       if (!delta) return [];
-      const result = applyDelta(space, delta);
-      return result.ok ? [] : [...result.violations];
+      return canApply(space, delta);
     },
 
     discardUndo() {
@@ -256,6 +259,10 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
 
     canAdd(child, parent, kind) {
       return canAddTo(space, id(child), id(parent), kind);
+    },
+
+    canMove(child, from, to, init) {
+      return canMoveTo(space, id(child), id(from), id(to), init);
     },
 
     children: (group) => childrenOf(space, id(group)),

@@ -30,7 +30,7 @@
 
 import {
   canAddTo,
-  moveTo,
+  canMoveTo,
   type EdgeKind,
   type GroupProfile,
   type Groups,
@@ -122,9 +122,9 @@ export interface DropTarget {
  * Resolve a gesture into a validated drop target.
  *
  * Call this on every drag-over; it is the single place the add-vs-move decision is made. A plain
- * drop costs one edge check (a dry run of the add only when a family rule applies). A move — an ⌥
- * drop, or a plain drop refused for a single-parent cap — is checked by a dry run of the whole
- * move (`moveTo`), which copies the space's indexes: linear in the size of the space.
+ * drop costs one edge check (a staged check of the add only when a family rule applies). A move —
+ * an ⌥ drop, or a plain drop refused for a single-parent cap — is checked as the whole move
+ * (`canMoveTo`), staged without copying the space: O(the move), not O(the space).
  */
 export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options: ResolveDropOptions = {}): DropTarget {
   const { source, target, modifiers, position = 'inside' } = gesture;
@@ -176,8 +176,8 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
   const kind = source.edge?.parent === sourceParent ? source.edge?.kind : undefined;
   const moveInit = kind !== undefined ? { fromKind: kind } : {};
   if (modifiers?.alt && canMove) {
-    const moved = moveTo(groups.space, child, sourceParent!, parent, moveInit);
-    if (!moved.ok) return refuse(groups, moved.violations, options);
+    const refused = canMoveTo(groups.space, child, sourceParent!, parent, moveInit);
+    if (refused.length) return refuse(groups, refused, options);
     return moveTarget(child, sourceParent!, parent, kind);
   }
 
@@ -186,7 +186,7 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
     const movable =
       canMove &&
       violations.every((v) => isSingleParentCap(groups.space.profile, v)) &&
-      moveTo(groups.space, child, sourceParent!, parent, moveInit).ok;
+      !canMoveTo(groups.space, child, sourceParent!, parent, moveInit).length;
     if (movable && options.singleParentDrop === 'move') return moveTarget(child, sourceParent!, parent, kind);
     const hint = options.moveHint ?? DROP_MOVE_HINT;
     return refuse(groups, violations, options, movable && hint ? hint : undefined);

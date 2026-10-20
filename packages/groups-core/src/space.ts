@@ -71,31 +71,190 @@ export function createGroupSpace<P = unknown>(options: CreateSpaceOptions<P> = {
 
 // ── index helpers ───────────────────────────────────────────────────────────
 
-function addToIndex(
-  index: Map<NodeId, Set<EdgeId>>,
-  key: NodeId,
-  id: EdgeId,
-): void {
-  const existing = index.get(key);
-  if (existing) existing.add(id);
-  else index.set(key, new Set([id]));
+/** Where `stageDelta` writes: eager copies (`applyDelta`, which returns them) or copy-on-write views. */
+interface StagingMap<K, V> extends ReadonlyMap<K, V> {
+  set(key: K, value: V): unknown;
+  delete(key: K): unknown;
+  toMap(): ReadonlyMap<K, V>;
+}
+interface StagingIndex extends ReadonlyMap<NodeId, ReadonlySet<EdgeId>> {
+  add(key: NodeId, id: EdgeId): void;
+  remove(key: NodeId, id: EdgeId): void;
+  toMap(): ReadonlyMap<NodeId, ReadonlySet<EdgeId>>;
 }
 
-function removeFromIndex(
-  index: Map<NodeId, Set<EdgeId>>,
-  key: NodeId,
-  id: EdgeId,
-): void {
-  const existing = index.get(key);
-  if (!existing) return;
-  existing.delete(id);
-  if (existing.size === 0) index.delete(key);
+/** A full copy, written in place: what `applyDelta` stages into, since it returns the copy anyway. */
+class EagerMap<K, V> extends Map<K, V> implements StagingMap<K, V> {
+  toMap(): Map<K, V> {
+    return this;
+  }
 }
 
-function cloneIndex(src: ReadonlyMap<NodeId, ReadonlySet<EdgeId>>): Map<NodeId, Set<EdgeId>> {
-  const out = new Map<NodeId, Set<EdgeId>>();
-  for (const [k, v] of src) out.set(k, new Set(v));
-  return out;
+class EagerIndex extends Map<NodeId, Set<EdgeId>> implements StagingIndex {
+  constructor(src: ReadonlyMap<NodeId, ReadonlySet<EdgeId>>) {
+    super();
+    for (const [k, v] of src) super.set(k, new Set(v));
+  }
+  add(key: NodeId, id: EdgeId): void {
+    const existing = this.get(key);
+    if (existing) existing.add(id);
+    else this.set(key, new Set([id]));
+  }
+  remove(key: NodeId, id: EdgeId): void {
+    const existing = this.get(key);
+    if (!existing) return;
+    existing.delete(id);
+    if (existing.size === 0) this.delete(key);
+  }
+  toMap(): Map<NodeId, Set<EdgeId>> {
+    return this;
+  }
+}
+
+const GONE: unique symbol = Symbol('gone');
+
+/**
+ * A copy-on-write view of a map: writes land in an overlay and the base is never touched, so
+ * staging a delta costs O(the delta), not O(the space). `toMap()` materializes the result.
+ */
+class CowMap<K, V> implements StagingMap<K, V> {
+  protected readonly changed = new Map<K, V | typeof GONE>();
+  constructor(protected readonly base: ReadonlyMap<K, V>) {}
+
+  get(key: K): V | undefined {
+    if (!this.changed.has(key)) return this.base.get(key);
+    const v = this.changed.get(key)!;
+    return v === GONE ? undefined : v;
+  }
+  has(key: K): boolean {
+    return this.changed.has(key) ? this.changed.get(key) !== GONE : this.base.has(key);
+  }
+  set(key: K, value: V): void {
+    this.changed.set(key, value);
+  }
+  delete(key: K): void {
+    if (this.base.has(key)) this.changed.set(key, GONE);
+    else this.changed.delete(key);
+  }
+  get size(): number {
+    let size = this.base.size;
+    for (const [k, v] of this.changed) {
+      const inBase = this.base.has(k);
+      if (v === GONE) size -= 1;
+      else if (!inBase) size += 1;
+    }
+    return size;
+  }
+  *entries(): MapIterator<[K, V]> {
+    for (const [k, v] of this.base) {
+      if (!this.changed.has(k)) yield [k, v];
+      else {
+        const c = this.changed.get(k)!;
+        if (c !== GONE) yield [k, c];
+      }
+    }
+    for (const [k, c] of this.changed) if (c !== GONE && !this.base.has(k)) yield [k, c];
+  }
+  *keys(): MapIterator<K> {
+    for (const [k] of this.entries()) yield k;
+  }
+  *values(): MapIterator<V> {
+    for (const [, v] of this.entries()) yield v;
+  }
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+  forEach(fn: (value: V, key: K, map: ReadonlyMap<K, V>) => void): void {
+    for (const [k, v] of this.entries()) fn(v, k, this);
+  }
+  toMap(): Map<K, V> {
+    const out = new Map(this.base);
+    for (const [k, v] of this.changed) {
+      if (v === GONE) out.delete(k);
+      else out.set(k, v);
+    }
+    return out;
+  }
+}
+
+/**
+ * A set seen through the edits made to it: nothing is copied until `toSet()`. It has the read
+ * surface the space's code uses (`has`, `size`, iteration, `forEach`), not the ES2025 set algebra
+ * (`union`, …), so it does not claim `ReadonlySet`: `CowIndex` casts it at the one place it enters.
+ */
+class SetOverlay<T> implements Iterable<T> {
+  private readonly added = new Set<T>();
+  private readonly removed = new Set<T>();
+  constructor(private readonly base: ReadonlySet<T> = new Set()) {}
+
+  add(value: T): void {
+    if (this.removed.delete(value) || this.base.has(value)) return;
+    this.added.add(value);
+  }
+  delete(value: T): void {
+    if (this.added.delete(value)) return;
+    if (this.base.has(value)) this.removed.add(value);
+  }
+  has(value: T): boolean {
+    return this.added.has(value) || (this.base.has(value) && !this.removed.has(value));
+  }
+  get size(): number {
+    return this.base.size - this.removed.size + this.added.size;
+  }
+  *values(): SetIterator<T> {
+    for (const v of this.base) if (!this.removed.has(v)) yield v;
+    yield* this.added;
+  }
+  keys(): SetIterator<T> {
+    return this.values();
+  }
+  *entries(): SetIterator<[T, T]> {
+    for (const v of this.values()) yield [v, v];
+  }
+  [Symbol.iterator](): SetIterator<T> {
+    return this.values();
+  }
+  forEach(fn: (value: T, value2: T, set: SetOverlay<T>) => void): void {
+    for (const v of this.values()) fn(v, v, this);
+  }
+  /** The edited set; the base itself when nothing changed, so an untouched key shares its set. */
+  toSet(): ReadonlySet<T> {
+    if (!this.added.size && !this.removed.size) return this.base;
+    if (!this.base.size) return this.added;
+    const out = new Set(this.base);
+    for (const v of this.removed) out.delete(v);
+    for (const v of this.added) out.add(v);
+    return out;
+  }
+}
+
+/**
+ * A copy-on-write index (`forward` / `inverse`). A written key's set is an overlay of its edits,
+ * so removing one member from a 20k-member group copies nothing until the space is materialized.
+ * Sets the base holds are never mutated: a materialized index shares the untouched ones.
+ */
+class CowIndex extends CowMap<NodeId, ReadonlySet<EdgeId>> implements StagingIndex {
+  private writable(key: NodeId): SetOverlay<EdgeId> {
+    const current: unknown = this.get(key);
+    if (current instanceof SetOverlay) return current as SetOverlay<EdgeId>;
+    const overlay = new SetOverlay(current as ReadonlySet<EdgeId> | undefined);
+    this.set(key, overlay as unknown as ReadonlySet<EdgeId>);
+    return overlay;
+  }
+  add(key: NodeId, id: EdgeId): void {
+    this.writable(key).add(id);
+  }
+  remove(key: NodeId, id: EdgeId): void {
+    if (!this.get(key)?.has(id)) return;
+    const ids = this.writable(key);
+    ids.delete(id);
+    if (ids.size === 0) this.delete(key);
+  }
+  override toMap(): Map<NodeId, ReadonlySet<EdgeId>> {
+    const out = super.toMap();
+    for (const [k, v] of this.changed) if ((v as unknown) instanceof SetOverlay) out.set(k, (v as unknown as SetOverlay<EdgeId>).toSet());
+    return out;
+  }
 }
 
 // ── reads over the indexes (the two live views) ─────────────────────────────
@@ -313,15 +472,64 @@ function mergeNode<P>(existing: Node<P> | undefined, patch: Node<unknown>): Node
  *
  * **Cost.** Checking one added edge costs O(the child's parents) plus a closure walk where the
  * profile needs one — never O(the group's members), so tagging 20k items in one delta is linear.
- * But every call copies the space's four maps (it returns a new immutable space): O(N) per call.
- * So apply a bulk change as ONE delta; N single-edge calls cost O(N²). A store that holds a large
- * membership relation should not route it through an in-memory `GroupSpace` at all (D10).
+ * But every accepted call copies the space's four maps (it returns a new immutable space): O(N)
+ * per call. So apply a bulk change as ONE delta; N single-edge calls cost O(N²). A store that holds
+ * a large membership relation should not route it through an in-memory `GroupSpace` at all (D10).
+ * To only ask whether a delta would pass, call `canApply`: it runs the same checks without the copy.
  */
 export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<GroupSpace<P>> {
-  const nodes = new Map(space.nodes);
-  const edges = new Map(space.edges);
-  const forward = cloneIndex(space.forward);
-  const inverse = cloneIndex(space.inverse);
+  const { violations, staged } = stageDelta(space, delta, eagerStaging(space));
+  if (violations.length) return { ok: false, violations };
+  return {
+    ok: true,
+    value: {
+      ...space,
+      revision: space.revision + 1,
+      nodes: staged.nodes.toMap(),
+      edges: staged.edges.toMap(),
+      forward: staged.forward.toMap(),
+      inverse: staged.inverse.toMap(),
+    },
+  };
+}
+
+/**
+ * The violations `applyDelta(space, delta)` would report — empty when it would succeed — without
+ * building the new space: O(the delta) plus the checks, never O(the space). A drag target, a
+ * preflight or a "would this pass?" probe calls this rather than applying and discarding.
+ */
+export function canApply<P>(space: GroupSpace<P>, delta: EdgeDelta): Violation[] {
+  const staging: Staged<P> = {
+    nodes: new CowMap(space.nodes),
+    edges: new CowMap(space.edges),
+    forward: new CowIndex(space.forward),
+    inverse: new CowIndex(space.inverse),
+  };
+  return stageDelta(space, delta, staging).violations;
+}
+
+interface Staged<P> {
+  readonly nodes: StagingMap<NodeId, Node<P>>;
+  readonly edges: StagingMap<EdgeId, Edge>;
+  readonly forward: StagingIndex;
+  readonly inverse: StagingIndex;
+}
+
+function eagerStaging<P>(space: GroupSpace<P>): Staged<P> {
+  return {
+    nodes: new EagerMap(space.nodes),
+    edges: new EagerMap(space.edges),
+    forward: new EagerIndex(space.forward),
+    inverse: new EagerIndex(space.inverse),
+  };
+}
+
+/**
+ * `applyDelta`'s checks, written into `staging`: the one validation path. `applyDelta` stages into
+ * eager copies (the space it returns); `canApply` into copy-on-write views, so it copies nothing.
+ */
+function stageDelta<P>(space: GroupSpace<P>, delta: EdgeDelta, staging: Staged<P>): { violations: Violation[]; staged: Staged<P> } {
+  const { nodes, edges, forward, inverse } = staging;
 
   // Structure first: anything accepted here must load back from a snapshot (see `structure.ts`).
   const violations: Violation[] = [];
@@ -367,8 +575,8 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
     const edge = edges.get(id);
     if (!edge) return;
     edges.delete(id);
-    removeFromIndex(forward, edge.parent, id);
-    removeFromIndex(inverse, edge.child, id);
+    forward.remove(edge.parent, id);
+    inverse.remove(edge.child, id);
   };
   for (const id of delta.removed ?? []) unlink(id);
 
@@ -404,8 +612,8 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
     if (!nodes.has(edge.child)) nodes.set(edge.child, { id: edge.child } as Node<P>);
 
     edges.set(edge.id, edge);
-    addToIndex(forward, edge.parent, edge.id);
-    addToIndex(inverse, edge.child, edge.id);
+    forward.add(edge.parent, edge.id);
+    inverse.add(edge.child, edge.id);
   }
 
   // Tombstones: a node may only go once nothing points at it — the delta must say what happens to
@@ -453,12 +661,7 @@ export function applyDelta<P>(space: GroupSpace<P>, delta: EdgeDelta): Result<Gr
   // is checked once the structure is known to be sound.
   if (!violations.length) violations.push(...familyViolations(staged, delta, becameItems));
 
-  if (violations.length) return { ok: false, violations };
-
-  return {
-    ok: true,
-    value: { ...space, revision: space.revision + 1, nodes, edges, forward, inverse },
-  };
+  return { violations, staged: staging };
 }
 
 /**
@@ -833,6 +1036,17 @@ export function moveTo<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to:
   return applyDelta(space, moveDelta(space, child, from, to, init));
 }
 
+/**
+ * Can this node be moved from one group to another? The violations `moveTo` would report, without
+ * copying the space (`canApply` over `moveDelta`): the move-shaped twin of `canAddTo`, for a drag
+ * target that checks a ⌥ move on every dragover.
+ */
+export function canMoveTo<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to: NodeId, init: MoveInit = {}): Violation[] {
+  const refused = moveViolation(space, child, from, to, init);
+  if (refused) return [refused];
+  return canApply(space, moveDelta(space, child, from, to, init));
+}
+
 /** Why `moveDelta` would throw, as a violation: `init.id` with several edges to move. */
 export function moveViolation<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to: NodeId, init: MoveInit = {}): Violation | undefined {
   if (init.id === undefined || from === to) return undefined;
@@ -989,6 +1203,5 @@ export function canAddTo<P>(space: GroupSpace<P>, child: NodeId, parent: NodeId,
   // Per-family cardinality depends on the state after the drop; only pay for it when a family
   // rule could apply.
   if (!hasFamilyAtOrAbove(space, parent)) return [];
-  const result = applyDelta(space, { added: [edge] });
-  return result.ok ? [] : [...result.violations];
+  return canApply(space, { added: [edge] });
 }

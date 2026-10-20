@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { EXCLUSIVE, applyDelta, createGroupSpace, edgeId, makeEdge, nodeId, type Edge } from '../src/index.js';
+import { EXCLUSIVE, applyDelta, canMoveTo, createGroupSpace, edgeId, makeEdge, nodeId, type Edge } from '../src/index.js';
 
 const BUDGET_MS = 2_000; // generous: linear work here is ~100 ms on a laptop
 
@@ -53,6 +53,19 @@ describe('family rules stay linear', () => {
     const r = applyDelta(seed.value, { added });
     const ms = performance.now() - start;
     expect(r.ok).toBe(true);
+    expect(ms, `${ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
+  });
+
+  it('a move check on every dragover does not copy a 20,000-member space (#37)', () => {
+    const added: Edge[] = [];
+    for (let i = 0; i < 20_000; i++) added.push(makeEdge(nodeId('g'), nodeId(`item-${i}`), { id: edgeId(`g>item-${i}`) }));
+    const seeded = applyDelta(createGroupSpace({ profile: 'filesystem' }), { added });
+    if (!seeded.ok) throw new Error('seed');
+    const start = performance.now();
+    for (let i = 0; i < 1_000; i++) {
+      expect(canMoveTo(seeded.value, nodeId(`item-${i}`), nodeId('g'), nodeId('h'))).toEqual([]);
+    }
+    const ms = performance.now() - start;
     expect(ms, `${ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
   });
 });
