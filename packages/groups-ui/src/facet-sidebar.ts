@@ -138,8 +138,9 @@ export interface FacetSidebarView {
   readonly selected: ReadonlySet<NodeId>;
   /**
    * The requested ids that were not applied, once each, in request order: a grandchild, an unknown
-   * id, a value of no listed family, or a URL selection restored before the model loaded. Empty
-   * when everything requested applies. A host that mirrors the selection in its URL rewrites it.
+   * id, a value of no listed family, or a URL selection restored before the model loaded (not
+   * retried when it loads). Empty when everything requested applies. A host that mirrors the
+   * selection in its URL rewrites it.
    */
   readonly dropped: readonly NodeId[];
   readonly open: NodeId | null;

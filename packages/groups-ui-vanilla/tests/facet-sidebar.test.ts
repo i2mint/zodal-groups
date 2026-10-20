@@ -184,8 +184,13 @@ describe('renderFacetSidebar', () => {
 });
 
 describe('dropped ids (issue #30)', () => {
-  it('view().dropped lists what a restored selection could not apply', () => {
+  it('dropped lists what a restored selection could not apply, and survives a redraw', () => {
     const s = renderFacetSidebar(container, build(), { families: ['genre'], selected: ['rock', 'ghost'] });
     expect(s.view().dropped).toEqual(['ghost']);
+    s.setOpen('genre');
+    expect(s.dropped).toEqual(['ghost']); // view() was recomputed from the normalized selection
+    expect(s.view().dropped).toEqual([]);
+    s.setSelected(['jazz', 'nope']);
+    expect(s.dropped).toEqual(['nope']);
   });
 });
