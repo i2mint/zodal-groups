@@ -59,14 +59,27 @@ export interface ResolveDropOptions {
    * A plain (no-⌥) drop of a node that may have only one parent (`filesystem`, or any profile
    * whose cap for that node is 1) onto another group, when the node already has its one parent:
    *
-   * - `'refuse'` (default): D16 — a plain drop never destroys an edge. The drop is refused and the
-   *   reason says to move it instead; ⌥ makes it a move.
+   * - `'refuse'` (default): D16 — a plain drop never destroys an edge. The drop is refused and its
+   *   `fix` says to move it, with `moveHint` (⌥ makes it a move).
    * - `'move'`: the Finder convention — the drop resolves to a move out of the parent the row is
    *   shown under (flagged `destructive`). Under a single-parent profile that edge is the row's
    *   only one, so it is the one on screen.
+   *
+   * "Cap" means the profile's `maxParentsPerItem` / `maxParentsPerGroup` / `maxGroupsPerItem`; a
+   * family rule (`maxPerItem: 1`) is not a single-parent cap and never turns a drop into a move.
+   * No effect on ⌥ drops (always a move) or on reorders.
    */
   readonly singleParentDrop?: 'refuse' | 'move';
+  /**
+   * Appended to the `fix` of a plain drop refused only because the node may have one parent, when
+   * the move would succeed — the modifier is otherwise undiscoverable. `false` leaves the fix as is.
+   * Default `'Hold ⌥ (Alt) while dropping to move it.'`
+   */
+  readonly moveHint?: string | false;
 }
+
+/** The default `ResolveDropOptions.moveHint`. */
+export const DROP_MOVE_HINT = 'Hold ⌥ (Alt) while dropping to move it.';
 
 export type DropOperation =
   /** Add a parent. The node ends up in both places. The safe default. */
@@ -104,8 +117,10 @@ export interface DropTarget {
 /**
  * Resolve a gesture into a validated drop target.
  *
- * Call this on every drag-over. It is cheap (one cycle check) and it is the single place the
- * add-vs-move decision is made.
+ * Call this on every drag-over; it is the single place the add-vs-move decision is made. A plain
+ * drop costs one edge check (a dry run of the add only when a family rule applies). A move — an ⌥
+ * drop, or a plain drop refused for a single-parent cap — is checked by a dry run of the whole
+ * move (`moveTo`), which copies the space's indexes: linear in the size of the space.
  */
 export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options: ResolveDropOptions = {}): DropTarget {
   const { source, target, modifiers, position = 'inside' } = gesture;
@@ -161,15 +176,13 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
 
   const violations = canAddTo(groups.space, child, parent);
   if (violations.length) {
-    if (
-      options.singleParentDrop === 'move' &&
+    const movable =
       canMove &&
       violations.every((v) => isSingleParentCap(groups.space.profile, v)) &&
-      moveTo(groups.space, child, sourceParent!, parent).ok
-    ) {
-      return moveTarget(child, sourceParent!, parent);
-    }
-    return refuse(groups, violations, options);
+      moveTo(groups.space, child, sourceParent!, parent).ok;
+    if (movable && options.singleParentDrop === 'move') return moveTarget(child, sourceParent!, parent);
+    const hint = options.moveHint ?? DROP_MOVE_HINT;
+    return refuse(groups, violations, options, movable && hint ? hint : undefined);
   }
 
   return {
@@ -191,20 +204,29 @@ function moveTarget(child: NodeId, from: NodeId, to: NodeId): DropTarget {
   };
 }
 
-function refuse<P>(groups: Groups<P>, violations: readonly Violation[], options: ResolveDropOptions): DropTarget {
+function refuse<P>(
+  groups: Groups<P>,
+  violations: readonly Violation[],
+  options: ResolveDropOptions,
+  hint?: string,
+): DropTarget {
   const explained = explainViolation(violations[0]!, { space: groups.space, ...options });
+  const fix = [explained.fix, hint].filter(Boolean).join(' ');
   return {
     operation: null,
     valid: false,
     reason: explained.message,
-    ...(explained.fix ? { fix: explained.fix } : {}),
+    ...(fix ? { fix } : {}),
     violations,
     indicator: 'forbidden',
     destructive: false,
   };
 }
 
-/** A violation that says only "this node may have one parent, and it has it". */
+/**
+ * A violation that says only "this node may have one parent, and it has it". `maxGroupsPerItem`
+ * counts an item's memberships rather than its parents, but at 1 it is the same rule for items.
+ */
 function isSingleParentCap(profile: GroupProfile, v: Violation): boolean {
   switch (v.code) {
     case 'maxParentsPerItem':

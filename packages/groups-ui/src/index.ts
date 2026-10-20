@@ -56,6 +56,7 @@ export {
 export {
   resolveDrop,
   applyDrop,
+  DROP_MOVE_HINT,
   MEMBERSHIP_ACTIONS,
   type DragGesture,
   type DropOperation,
