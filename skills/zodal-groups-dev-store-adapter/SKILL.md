@@ -18,6 +18,7 @@ The contract lives in `packages/groups-core/src/store.ts` (decision D28), export
 interface GroupStore<P = unknown> {
   readonly profile: GroupProfile;                          // code, not data: validates writes, never persisted
   load(): Promise<GroupSpace<P>>;                          // NOT validated against the profile (D8)
+  loadVersioned?(): Promise<{ space: GroupSpace<P>; epoch: string | undefined }>;  // ONE read: the (epoch, revision) a write expects
   apply(delta: EdgeDelta, options?: { expectedRevision?: number; expectedEpoch?: string })
     : Promise<Result<{ revision: number; epoch: string; inverse: EdgeDelta; space?: GroupSpace<P> }>>;
     // a violation is { ok: false } (stale revision or another epoch → 'conflict'); only I/O rejects.

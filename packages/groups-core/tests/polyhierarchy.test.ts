@@ -125,6 +125,33 @@ describe('closure semantics are per edge KIND — the wheel/car/vehicle problem'
     expect(ancestors).not.toContain('vehicle');
   });
 
+  it('reads a chain the same way in both directions (issue #6)', () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    g.add('wheel', 'car', { kind: 'part_of' });
+    g.add('car', 'vehicle', { kind: 'is_a' });
+    // Walking down from `vehicle` used to compose in walk order and find `wheel`.
+    expect(g.descendants('vehicle')).not.toContain('wheel');
+
+    // is_a ∘ part_of → part_of: a petal is_a organ part, an organ part is part_of a flower.
+    const h = defineGroups({ profile: 'thesaurus' });
+    h.add('petal', 'organ-part', { kind: 'is_a' });
+    h.add('organ-part', 'flower', { kind: 'part_of' });
+    expect(h.ancestors('petal').sort()).toEqual(['flower', 'organ-part']);
+    expect(h.descendants('flower').sort()).toEqual(['organ-part', 'petal']);
+  });
+
+  it('a node reached by two chain kinds is walked for both (no BFS-order dependence)', () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    // `y` is reached first as part_of (one hop), then as is_a (via `z`). Only the is_a chain
+    // continues through `y is_a top`, so a walk that skips `y` the second time misses `top`.
+    g.add('leaf', 'y', { kind: 'part_of' });
+    g.add('leaf', 'z', { kind: 'is_a' });
+    g.add('z', 'y', { kind: 'is_a' });
+    g.add('y', 'top', { kind: 'is_a' });
+    expect(g.ancestors('leaf')).toContain('top');
+    expect(g.descendants('top')).toContain('leaf');
+  });
+
   it('DOES conclude that a poodle is an animal', () => {
     const g = defineGroups({ profile: 'thesaurus' });
     g.add('poodle', 'dog', { kind: 'is_a' });

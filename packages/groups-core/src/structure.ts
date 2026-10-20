@@ -32,9 +32,17 @@ const nonEmpty = (v: unknown): boolean => typeof v === 'string' && v !== '';
  * What stops `value` from being plain JSON data — the only thing a store can persist and read back
  * unchanged — as `"path: problem"`, or `undefined`. Refused: BigInt (JSON.stringify throws, so a
  * file store failed on write), functions, symbols, NaN/±Infinity (become `null`), class instances
- * such as Date or Map (become a string or `{}`), and cycles. A key set to `undefined` is absent.
+ * such as Date or Map (become a string or `{}`), cycles, and nesting deeper than
+ * `MAX_JSON_DEPTH` (a malformed answer, not a stack overflow). A key set to `undefined` is absent.
  */
 export function jsonProblem(value: unknown, path = 'value', seen: Set<object> = new Set()): string | undefined {
+  return problemAt(value, path, seen, 0);
+}
+
+/** How deep `jsonProblem` follows nested objects and arrays before calling the value malformed. */
+export const MAX_JSON_DEPTH = 1000;
+
+function problemAt(value: unknown, path: string, seen: Set<object>, depth: number): string | undefined {
   switch (typeof value) {
     case 'string':
     case 'boolean':
@@ -51,6 +59,7 @@ export function jsonProblem(value: unknown, path = 'value', seen: Set<object> = 
   if (value === null) return undefined;
   const object = value as object;
   if (seen.has(object)) return `${path}: a cycle — JSON cannot hold it`;
+  if (depth >= MAX_JSON_DEPTH) return `${path}: nested deeper than ${MAX_JSON_DEPTH} levels`;
   const proto = Object.getPrototypeOf(object);
   if (!Array.isArray(object) && proto !== Object.prototype && proto !== null) {
     return `${path}: a ${proto?.constructor?.name ?? 'class'} instance is not plain JSON data (convert it first)`;
@@ -61,7 +70,7 @@ export function jsonProblem(value: unknown, path = 'value', seen: Set<object> = 
     : Object.entries(object).map(([k, v]) => [`.${k}`, v]);
   for (const [key, child] of entries) {
     if (Array.isArray(object) && child === undefined) return `${path}${key}: undefined in an array becomes null`;
-    const problem = jsonProblem(child, `${path}${key}`, seen);
+    const problem = problemAt(child, `${path}${key}`, seen, depth + 1);
     if (problem) return problem;
   }
   seen.delete(object);

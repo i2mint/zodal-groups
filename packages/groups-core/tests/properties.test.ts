@@ -7,6 +7,7 @@
  * - invert ∘ invert = the original effect (redo restores the exact result)
  * - every state reloads                 (JSON → parseSnapshot → fromSnapshot gives the same space)
  * - every state is valid, in any order  (validateProfile is empty, and empty with edges reversed)
+ * - closure agrees with itself           (y ∈ descendants(x) ⟺ x ∈ ancestors(y), on mixed kinds)
  *
  * A refused delta changes nothing. And at the end the whole history undoes, LIFO, to empty — a
  * single writer's undo is never refused. The order-dependent cycle and disjointness checks
@@ -15,8 +16,10 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  ancestors,
   applyDelta,
   DEFAULT_EDGE_KINDS,
+  descendants,
   defineGroups,
   deleteNodeDelta,
   edgeId,
@@ -68,7 +71,7 @@ const NODES = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
 const KINDS = Object.keys(DEFAULT_EDGE_KINDS);
 const PROFILES: ProfileName[] = ['polyhierarchy', 'labels', 'nestedTags', 'flatTags', 'filesystem', 'thesaurus', 'folksonomy'];
 const STEPS = 300;
-const SEEDS = [1, 2, 3];
+const SEEDS = [1, 2, 3, 4, 5];
 
 function randomDelta(space: GroupSpace, random: () => number, step: number): EdgeDelta {
   const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]!;
@@ -130,6 +133,17 @@ describe('properties over random deltas', () => {
           expect(validateProfile(after), `${where}\nstate invalid`).toEqual([]);
           const reversed = fromSnapshot({ nodes: [...after.nodes.values()].reverse(), edges: [...after.edges.values()].reverse() }, { profile: after.profile });
           expect(validateProfile(reversed), `${where}\nstate invalid in reverse edge order`).toEqual([]);
+
+          const ids = [...after.nodes.keys()];
+          const down = new Map(ids.map((x) => [x, descendants(after, x)]));
+          for (const y of ids) {
+            const up = ancestors(after, y);
+            for (const x of ids) {
+              if (down.get(x)!.has(y) !== up.has(x)) {
+                expect.fail(`${where}\nEDGES ${JSON.stringify([...after.edges.values()].map((e) => `${e.parent}>${e.kind}>${e.child}`))}\nclosure disagrees: ${y} ${down.get(x)!.has(y) ? 'in' : 'not in'} descendants(${x}), ${up.has(x) ? 'in' : 'not in'} ancestors`);
+              }
+            }
+          }
         }
 
         expect(accepted).toBeGreaterThan(STEPS / 5); // the generator is not just producing refusals
