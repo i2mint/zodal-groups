@@ -472,6 +472,8 @@ export function validateEdge<P>(space: GroupSpace<P>, edge: Edge): Violation[] {
   return checkEdge(space, edge, (id) => isGroup(space, id));
 }
 
+// A new rule here must also be reflected in `mayRefusePlainItems` and `mayRefuseEmptying` (their
+// property tests in `tests/plain-items.test.ts` catch a rule they miss only if random spaces hit it).
 function checkEdge<P>(
   space: GroupSpace<P>,
   edge: Edge,
@@ -930,6 +932,49 @@ export function mergeDelta<P>(space: GroupSpace<P>, from: NodeId, into: NodeId, 
 /** Delete a node entirely, and every edge touching it. This *is* destructive — but invertible. */
 export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpace<P>> {
   return applyDelta(space, deleteNodeDelta(space, id));
+}
+
+/**
+ * Could `validateEdge` refuse a PLAIN ITEM put in `group` by an edge of `kind`? `false` is a
+ * guarantee: for every node with no children, other than `group`, that has no edge of `kind` from
+ * `group` yet, `validateEdge(space, makeEdge(group, item, { kind }))` is empty. A caller adding many
+ * items (the tagging menu, a bulk tag) can then skip the per-item check. `true` means "check each".
+ *
+ * The guarantee holds when: `kind` is a declared membership kind; the profile admits items in
+ * groups and caps no item's parents; `group` already has children (so it is not *becoming* a
+ * group, which brings its own rules); and `group` has no outgoing edge of a kind disjoint with
+ * `kind` (`related` vs `contains`: a plain item has nothing below it, so that is the only place a
+ * disjoint edge between the two can be). Cycles and depth cannot fire: an item has nothing below
+ * it, and putting one in a group adds no nesting. Family rules (`maxPerItem`) are not structural:
+ * check `hasFamilyAtOrAbove` too. Cost: one pass over `group`'s outgoing edges when the profile
+ * declares a kind disjoint with `kind`, else constant.
+ */
+export function mayRefusePlainItems<P>(space: GroupSpace<P>, group: NodeId, kind: string = CONTAINS): boolean {
+  const p = space.profile;
+  if (!p.edgeKinds[kind] || !isMembershipKind(p, kind)) return true;
+  if (!p.groupsMayContainItems || p.maxParentsPerItem !== null || p.maxGroupsPerItem !== null) return true;
+  if (!isGroup(space, group)) return true;
+  const disjoint = new Set(
+    Object.entries(p.edgeKinds)
+      .filter(([other, def]) => def.disjointWith?.includes(kind) || p.edgeKinds[kind]!.disjointWith?.includes(other))
+      .map(([other]) => other),
+  );
+  if (!disjoint.size) return false;
+  for (const id of space.forward.get(group) ?? []) if (disjoint.has(space.edges.get(id)?.kind ?? '')) return true;
+  return false;
+}
+
+/**
+ * Could removing EVERY member of `group` be refused? `false` is a guarantee that it passes. Emptying
+ * a group makes it an item (D29), and only its own memberships can then break an item rule
+ * (`groupsMayContainItems`, the item caps, a family above it). A group with no incoming edge at
+ * all, or a profile where none of those rules can apply, is safe.
+ */
+export function mayRefuseEmptying<P>(space: GroupSpace<P>, group: NodeId): boolean {
+  if (!(space.inverse.get(group)?.size ?? 0)) return false;
+  const p = space.profile;
+  if (!p.groupsMayContainItems || p.maxParentsPerItem !== null || p.maxGroupsPerItem !== null) return true;
+  return hasFamilyAtOrAbove(space, group);
 }
 
 /**
