@@ -49,6 +49,13 @@ describe('fluid groups', () => {
     expect(fluidExtent(s, n('smart'), [n('a'), n('b')])).toEqual(['a', 'b']);
   });
 
+  it('in an ordered space the pins come first, in rank order, then the unpinned matches (D37)', () => {
+    const ranked = (child: string, order: string) =>
+      makeEdge(n('smart'), n(child), { id: edgeId(`smart>${child}`), order });
+    const s = createGroupSpace({ profile: 'filesystem', edges: [ranked('b', 'b'), ranked('p', 'a'), e('smart', 'x', 'excludes')] });
+    expect(fluidExtent(s, n('smart'), [n('a'), n('b'), n('x'), n('c')])).toEqual(['p', 'b', 'a', 'c']);
+  });
+
   it('fluidExtent edits a predicate rule\'s extent; extentOf alone stays the predicate', () => {
     const base = createGroupSpace<{ year: number }>({
       profile: 'polyhierarchy',
