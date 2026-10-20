@@ -93,6 +93,8 @@ export {
   membershipParentCount,
   rootsOf,
   orphansOf,
+  isAliasName,
+  membershipChildCount,
   type CreateSpaceOptions,
   type MergeOptions,
   type MoveInit,

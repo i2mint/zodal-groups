@@ -19,7 +19,7 @@
 
 import {
   allItems,
-  edgesInto,
+  rootsOf,
   edgesOf,
   isGroup,
   matchingItems,
@@ -137,7 +137,7 @@ const subgroupsOf = <P>(space: GroupSpace<P>, group: NodeId): NodeId[] => [
 const candidates = <P>(groups: Groups<P>, under?: NodeId): NodeId[] =>
   under
     ? subgroupsOf(groups.space, under)
-    : [...groups.space.nodes.keys()].filter((id) => isGroup(groups.space, id) && !edgesInto(groups.space, id).length);
+    : rootsOf(groups.space).filter((id) => isGroup(groups.space, id));
 
 /**
  * Normalize a requested selection: keep the longest valid prefix of `path`, where each step is a

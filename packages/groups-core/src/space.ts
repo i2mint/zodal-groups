@@ -352,18 +352,35 @@ export function membershipParentCount(space: GroupSpace, id: NodeId): number {
   return count;
 }
 
-/** Nodes with no parents — the browse entry points. */
-export function rootsOf(space: GroupSpace): NodeId[] {
-  const roots: NodeId[] = [];
-  for (const id of space.nodes.keys()) {
-    if (!space.inverse.has(id)) roots.push(id);
-  }
-  return roots;
+/**
+ * Is `id` only another name for a node: the child of an `alias_of` (or `kind`) edge, in no group and
+ * with no members of its own, naming a canonical node that is no alias itself? Such a node is reached
+ * through its canonical node (`resolveAlias` maps it on read and write), so `rootsOf`, `orphansOf`
+ * and the browse projections leave it out (D35). An alias that has members or a parent (data
+ * written before its alias edge) stays visible, and so does every node of an alias cycle.
+ */
+export function isAliasName(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): boolean {
+  if (isGroup(space, id) || membershipParentCount(space, id) > 0) return false;
+  if (!edgesInto(space, id).some((e) => e.kind === kind)) return false;
+  const canonical = resolveAlias(space, id, kind);
+  return canonical !== id && !edgesInto(space, canonical).some((e) => e.kind === kind);
 }
 
-/** Nodes in no group at all — Zotero's "Unfiled Items". */
+/** How many members a node directly has — membership kinds only: what a projection's expander
+ *  opens to (D35; a `related` or `alias_of` edge opens to nothing). */
+export function membershipChildCount(space: GroupSpace, id: NodeId): number {
+  return edgesOf(space, id).filter((e) => isMembershipKind(space.profile, e.kind)).length;
+}
+
+/** Nodes in no group — no incoming membership edge (a `related` or `alias_of` link is no parent),
+ *  aliases left out (D35). Where the tree, the columns and the facet panel start. */
+export function rootsOf(space: GroupSpace): NodeId[] {
+  return [...space.nodes.keys()].filter((id) => membershipParentCount(space, id) === 0 && !isAliasName(space, id));
+}
+
+/** Items in no group at all — Zotero's "Unfiled Items". A group is never unfiled, nor an alias. */
 export const orphansOf = (space: GroupSpace): NodeId[] =>
-  [...space.nodes.keys()].filter((id) => !space.inverse.has(id) && !isGroup(space, id));
+  rootsOf(space).filter((id) => !isGroup(space, id));
 
 // ── cycle detection ─────────────────────────────────────────────────────────
 
