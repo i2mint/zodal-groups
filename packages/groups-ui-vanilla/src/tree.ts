@@ -31,13 +31,18 @@
 
 import type { Groups, NodeId } from '@zodal/groups-core';
 import { toggleExpanded } from '@zodal/groups-core';
-import { resolveDrop, applyDrop, toTreeRows, type TreeRow } from '@zodal/groups-ui';
+import { resolveDrop, applyDrop, toTreeRows, type ResolveDropOptions, type TreeRow } from '@zodal/groups-ui';
 import { FINE_POINTER, mediaMatches } from './media.js';
 
 /** Elements whose clicks and keys belong to themselves, not to the row around them. */
 const INTERACTIVE = 'button, a[href], input, select, textarea, label, [contenteditable=""], [contenteditable="true"]';
 
 export interface TreeRendererOptions {
+  /**
+   * How drops resolve and explain themselves: `labelOf`, `messages`, and `singleParentDrop`
+   * (`'move'` makes a plain drop a move under a single-parent profile, the Finder convention).
+   */
+  readonly dropOptions?: ResolveDropOptions;
   /** A row was selected (a leaf, or a group when `groupActivate` is `'select'`). */
   readonly onSelect?: (nodeId: NodeId, row: TreeRow) => void;
   /** A group row was expanded or collapsed (by a tap, the twisty or a key). */
@@ -316,18 +321,20 @@ export function renderTree<P>(
 
     li.addEventListener('dragover', (e) => {
       if (!dragging) return;
-      const drop = resolveDrop(groups, {
-        source: dragging.source,
-        target: row.source,
-        modifiers: { alt: e.altKey },
-      });
+      const drop = resolveDrop(
+        groups,
+        { source: dragging.source, target: row.source, modifiers: { alt: e.altKey } },
+        options.dropOptions,
+      );
 
       // Always show *something*, including a reason for refusal. A drop target that just says no is
       // indistinguishable from a bug, because the cycle may close through an off-screen branch.
       li.classList.toggle('is-drop-valid', drop.valid && !drop.destructive);
       li.classList.toggle('is-drop-move', drop.valid && drop.destructive);
       li.classList.toggle('is-drop-invalid', !drop.valid);
-      li.title = drop.reason ?? (drop.destructive ? 'Move here (removes it from its current group)' : 'Add to this group');
+      li.title = drop.reason
+        ? (drop.fix ? `${drop.reason} ${drop.fix}` : drop.reason)
+        : (drop.destructive ? 'Move here (removes it from its current group)' : 'Add to this group');
 
       if (drop.valid) e.preventDefault(); // permit the drop
     });
@@ -340,11 +347,11 @@ export function renderTree<P>(
     li.addEventListener('drop', (e) => {
       e.preventDefault();
       if (!dragging) return;
-      const drop = resolveDrop(groups, {
-        source: dragging.source,
-        target: row.source,
-        modifiers: { alt: e.altKey },
-      });
+      const drop = resolveDrop(
+        groups,
+        { source: dragging.source, target: row.source, modifiers: { alt: e.altKey } },
+        options.dropOptions,
+      );
       if (applyDrop(groups, drop)) {
         options.onChange?.();
         render();
