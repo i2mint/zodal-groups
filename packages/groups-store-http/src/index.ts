@@ -101,16 +101,17 @@ export interface HttpGroupStoreOptions {
   readonly overrides?: Partial<Omit<GroupProfile, 'name'>>;
   /** Defaults to the global `fetch`. Pass one that adds auth, or `memorySnapshotEndpoint()` in tests. */
   readonly fetch?: FetchLike;
-  /** Sent with every request (e.g. `Authorization`). A function is called per request. */
-  readonly headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  /** Sent with every request (e.g. `Authorization`); they win over the defaults, case-insensitively. A function is called per request. */
+  readonly headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
   /**
    * How many times an `apply` without `expectedRevision` replays itself on a newer document after a
    * 409 before it reports `conflict`. Default 3.
    */
   readonly maxReplays?: number;
   /**
-   * Send writes with `keepalive`, so a write started in `pagehide` still completes. Browsers cap a
-   * keepalive body at 64 KiB, so only for small spaces. Default `false`.
+   * Send writes with `keepalive`, so a PUT already in flight when the page is hidden still
+   * completes. It does not start new work: an `apply` reads the document first, and that needs the
+   * page alive. Browsers cap a keepalive body at 64 KiB (a larger one rejects). Default `false`.
    */
   readonly keepalive?: boolean;
   /** Where a throwing `subscribe` listener's error goes. Defaults to `console.error`. */
@@ -124,7 +125,12 @@ export interface HttpGroupStore<P = unknown> extends GroupStore<P> {
 }
 
 export function createHttpGroupStore<P = unknown>(options: HttpGroupStoreOptions): HttpGroupStore<P> {
-  const { url, maxReplays = 3, keepalive = false } = options;
+  const { url, keepalive = false } = options;
+  const maxReplays = options.maxReplays ?? 3;
+  if (!Number.isInteger(maxReplays) || maxReplays < 0) {
+    throw new TypeError(`createHttpGroupStore: maxReplays must be a non-negative integer, got ${String(maxReplays)}`);
+  }
+  const where = redactUrl(url); // what error messages name: no credentials, query or fragment
   const doFetch: FetchLike =
     options.fetch ??
     ((input, init) => {
@@ -141,9 +147,18 @@ export function createHttpGroupStore<P = unknown>(options: HttpGroupStoreOptions
   const profile = empty.profile;
   const listeners = createListenerSet<GroupStoreChange>(options.onListenerError);
 
-  const headers = async (extra: Record<string, string> = {}): Promise<Record<string, string>> => {
-    const base = typeof options.headers === 'function' ? await options.headers() : (options.headers ?? {});
-    return { accept: 'application/json', ...base, ...extra };
+  const headers = async (defaults: Record<string, string>): Promise<Headers> => {
+    const out = new Headers(defaults);
+    const host = typeof options.headers === 'function' ? await options.headers() : options.headers;
+    new Headers(host ?? {}).forEach((value, name) => out.set(name, value)); // the host's win, whatever their case
+    return out;
+  };
+  const json = async (response: Response, what: string): Promise<unknown> => {
+    try {
+      return await response.json();
+    } catch (error) {
+      throw new HttpStoreError(`${what}: ${response.status} with a body that is not JSON`, response.status, { cause: error });
+    }
   };
 
   const toLoaded = (doc: SnapshotDocument<P> | null): StoreLoaded<P> & { readonly revision: number } => {
@@ -153,31 +168,43 @@ export function createHttpGroupStore<P = unknown>(options: HttpGroupStoreOptions
   };
 
   const read = async (): Promise<StoreLoaded<P> & { readonly revision: number }> => {
-    const response = await doFetch(url, { method: 'GET', headers: await headers() });
+    // `no-store`: a write must never be computed from a copy the HTTP cache kept.
+    const response = await doFetch(url, { method: 'GET', headers: await headers({ accept: 'application/json' }), cache: 'no-store' });
     if (response.status === 404) return toLoaded(null);
-    if (!response.ok) throw new HttpStoreError(`GET ${url}: ${response.status} ${response.statusText}`, response.status);
-    return toLoaded(parseDocument<P>(await response.json(), `GET ${url}`));
+    if (!response.ok) throw new HttpStoreError(`GET ${where}: ${response.status} ${response.statusText}`, response.status);
+    return toLoaded(parseDocument<P>(await json(response, `GET ${where}`), `GET ${where}`));
   };
 
   type PutOutcome = { readonly ok: true; readonly revision: number; readonly epoch: string } | { readonly ok: false; readonly current: SnapshotDocument<P> | null };
   const write = async (body: SnapshotPut<P>): Promise<PutOutcome> => {
     const response = await doFetch(url, {
       method: 'PUT',
-      headers: await headers({ 'content-type': 'application/json' }),
+      headers: await headers({ accept: 'application/json', 'content-type': 'application/json' }),
       body: JSON.stringify(body),
+      cache: 'no-store',
       ...(keepalive ? { keepalive: true } : {}),
     });
     if (response.status === 409) {
-      const payload = (await response.json().catch(() => ({}))) as { current?: unknown };
-      return { ok: false, current: payload.current == null ? null : parseDocument<P>(payload.current, `PUT ${url} (409)`) };
+      // Only an explicit `current` is the protocol's answer (`null`: the document is gone). A 409
+      // from a proxy or a firewall is not, and replaying on an empty space would be wrong.
+      const payload = (await json(response, `PUT ${where}`)) as { current?: unknown } | null;
+      if (!payload || typeof payload !== 'object' || !('current' in payload)) {
+        throw new HttpStoreError(`PUT ${where}: 409 without { current }`, 409);
+      }
+      return { ok: false, current: payload.current === null ? null : parseDocument<P>(payload.current, `PUT ${where} (409)`) };
     }
-    if (!response.ok) throw new HttpStoreError(`PUT ${url}: ${response.status} ${response.statusText}`, response.status);
-    const payload = (await response.json().catch(() => ({}))) as { revision?: unknown; epoch?: unknown };
-    return {
-      ok: true,
-      revision: typeof payload.revision === 'number' ? payload.revision : body.revision,
-      epoch: typeof payload.epoch === 'string' && payload.epoch ? payload.epoch : body.epoch,
-    };
+    if (!response.ok) throw new HttpStoreError(`PUT ${where}: ${response.status} ${response.statusText}`, response.status);
+    // The server stores what was sent: it may echo it, but it may not change it.
+    const payload = (await response.json().catch(() => ({}))) as { revision?: unknown; epoch?: unknown } | null;
+    const revision = payload?.revision ?? body.revision;
+    const epoch = payload?.epoch ?? body.epoch;
+    if (revision !== body.revision || epoch !== body.epoch) {
+      throw new HttpStoreError(
+        `PUT ${where}: the server answered revision ${clip(revision)} / epoch ${clip(epoch)} for a write of ${body.revision} / ${body.epoch}`,
+        response.status,
+      );
+    }
+    return { ok: true, revision: body.revision, epoch: body.epoch };
   };
 
   // Applies are serialized: each reads the document, then writes it.
@@ -201,7 +228,7 @@ export function createHttpGroupStore<P = unknown>(options: HttpGroupStoreOptions
       const next = result.value.space;
       const put = await write({ baseRevision: base.revision, revision: next.revision, epoch, snapshot: snapshotOf(next) });
       if (put.ok) {
-        const space = readonlySpace(put.revision === next.revision ? next : fromSnapshot<P>({ ...toSnapshot(next), revision: put.revision }, profileOptions));
+        const space = readonlySpace(next);
         listeners.emit({ delta, inverse: result.value.inverse, revision: put.revision, epoch: put.epoch });
         return { ok: true, value: { revision: put.revision, inverse: result.value.inverse, epoch: put.epoch, space } };
       }
@@ -227,6 +254,23 @@ export function createHttpGroupStore<P = unknown>(options: HttpGroupStoreOptions
   };
 }
 
+/** A URL fit for an error message: no userinfo, query or fragment (they can hold credentials). */
+export function redactUrl(url: string): string {
+  try {
+    const u = new URL(url, 'http://relative.invalid');
+    const shown = `${u.protocol}//${u.host}${u.pathname}`;
+    return u.host === 'relative.invalid' ? u.pathname : shown;
+  } catch {
+    return url.split(/[?#]/)[0]!.replace(/\/\/[^/@]*@/, '//');
+  }
+}
+
+/** A server-controlled value, shortened for a message. */
+const clip = (value: unknown): string => {
+  const text = JSON.stringify(value) ?? String(value);
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+};
+
 function conflictViolation(actualRevision: number, expectedRevision?: number): Violation {
   return {
     code: 'conflict',
@@ -246,17 +290,18 @@ function snapshotOf<P>(space: GroupSpace<P>): GroupSnapshot<P> {
 export function parseDocument<P = unknown>(value: unknown, where = 'document'): SnapshotDocument<P> {
   if (!value || typeof value !== 'object') throw new HttpStoreError(`${where}: expected { revision, snapshot }, got ${typeof value}`);
   const record = value as { revision?: unknown; epoch?: unknown; snapshot?: unknown };
-  if (typeof record.revision !== 'number' || !Number.isInteger(record.revision) || record.revision < 0) {
-    throw new HttpStoreError(`${where}: "revision" must be a non-negative integer, got ${JSON.stringify(record.revision)}`);
+  // Safe integers only, below the max: `revision + 1` must be a different number.
+  if (typeof record.revision !== 'number' || !Number.isSafeInteger(record.revision) || record.revision < 0 || record.revision >= Number.MAX_SAFE_INTEGER) {
+    throw new HttpStoreError(`${where}: "revision" must be a non-negative safe integer, got ${clip(record.revision)}`);
   }
   if (record.epoch !== undefined && (typeof record.epoch !== 'string' || record.epoch === '')) {
-    throw new HttpStoreError(`${where}: "epoch" must be a non-empty string, got ${JSON.stringify(record.epoch)}`);
+    throw new HttpStoreError(`${where}: "epoch" must be a non-empty string, got ${clip(record.epoch)}`);
   }
   let snapshot: GroupSnapshot<P>;
   try {
     snapshot = parseSnapshot<P>(record.snapshot);
   } catch (error) {
-    throw new HttpStoreError(`${where}: malformed snapshot: ${(error as Error).message}`, undefined, { cause: error });
+    throw new HttpStoreError(`${where}: malformed snapshot: ${clip((error as Error).message)}`, undefined, { cause: error });
   }
   return { revision: record.revision, ...(record.epoch !== undefined ? { epoch: record.epoch as string } : {}), snapshot };
 }
@@ -331,14 +376,17 @@ export function memorySnapshotEndpoint(initial: SnapshotDocument | null = null):
     try {
       body = JSON.parse(String(init?.body)) as SnapshotPut;
       parseDocument({ revision: body.revision, epoch: body.epoch, snapshot: body.snapshot }, 'PUT body');
+      if (typeof body.epoch !== 'string' || !body.epoch) throw new Error('"epoch" is required');
+      if (!Number.isSafeInteger(body.baseRevision) || body.revision !== body.baseRevision + 1) {
+        throw new Error('"revision" must be "baseRevision" + 1');
+      }
     } catch (error) {
       return json(400, { error: (error as Error).message });
     }
+    // One compare-and-set: the revision AND the epoch, checked and written together.
     const currentRevision = document?.revision ?? 0;
     const epochOk = !document?.epoch || document.epoch === body.epoch;
-    if (body.baseRevision !== currentRevision || !epochOk || typeof body.epoch !== 'string' || !body.epoch) {
-      return json(409, { current: document });
-    }
+    if (body.baseRevision !== currentRevision || !epochOk) return json(409, { current: document });
     document = { revision: body.revision, epoch: body.epoch, snapshot: body.snapshot };
     return json(200, { revision: document.revision, epoch: document.epoch });
   }) as MemorySnapshotEndpoint;

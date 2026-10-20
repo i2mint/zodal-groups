@@ -5,7 +5,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { applyDelta, createGroupSpace, edgeId, makeEdge, nodeId, type EdgeDelta } from '@zodal/groups-core';
-import { createHttpGroupStore, HttpStoreError, memorySnapshotEndpoint, rebase, type FetchLike } from '../src/index.js';
+import { createHttpGroupStore, HttpStoreError, memorySnapshotEndpoint, rebase, redactUrl, type FetchLike } from '../src/index.js';
 
 const e = (parent: string, child: string) => makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`${parent}>${child}`) });
 const URL_ = 'https://example.test/groups';
@@ -31,7 +31,7 @@ describe('the wire', () => {
     const endpoint = memorySnapshotEndpoint();
     const seen: string[] = [];
     const fetch: FetchLike = (input, init) => {
-      seen.push(String((init?.headers as Record<string, string>).authorization));
+      seen.push(String(new Headers(init?.headers).get('authorization')));
       return endpoint(input, init);
     };
     let token = 't1';
@@ -128,7 +128,7 @@ describe('errors', () => {
 
   it('a malformed document rejects, naming the field', async () => {
     const fetch: FetchLike = async () => new Response(JSON.stringify({ revision: -1, snapshot: { nodes: [], edges: [] } }), { status: 200 });
-    await expect(createHttpGroupStore({ url: URL_, fetch }).load()).rejects.toThrow(/"revision" must be a non-negative integer/);
+    await expect(createHttpGroupStore({ url: URL_, fetch }).load()).rejects.toThrow(/"revision" must be a non-negative safe integer/);
     const bad: FetchLike = async () => new Response(JSON.stringify({ revision: 1, snapshot: { nodes: 'x' } }), { status: 200 });
     await expect(createHttpGroupStore({ url: URL_, fetch: bad }).load()).rejects.toBeInstanceOf(HttpStoreError);
   });
@@ -141,6 +141,91 @@ describe('errors', () => {
     const r = await store.apply({ added: [e('b', 'a')] }); // a cycle
     expect(r.ok).toBe(false);
     expect(spy.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+  });
+});
+
+describe('the review of #34', () => {
+  it('host headers win over the defaults whatever their case; no duplicate content-type', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const sent: Headers[] = [];
+    const fetch: FetchLike = (input, init) => (sent.push(new Headers(init?.headers)), endpoint(input, init));
+    await createHttpGroupStore({ url: URL_, fetch, headers: { 'Content-Type': 'application/json; charset=utf-8' } }).apply({ added: [e('g', 'a')] });
+    expect(sent[1]!.get('content-type')).toBe('application/json; charset=utf-8');
+  });
+
+  it('reads and writes bypass the HTTP cache', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const modes: (RequestCache | undefined)[] = [];
+    const fetch: FetchLike = (input, init) => (modes.push(init?.cache), endpoint(input, init));
+    await createHttpGroupStore({ url: URL_, fetch }).apply({ added: [e('g', 'a')] });
+    expect(modes).toEqual(['no-store', 'no-store']);
+  });
+
+  it('a 409 without { current } is an error, not "the document is gone"', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const fetch: FetchLike = async (input, init) =>
+      init?.method === 'PUT' ? new Response('<html>blocked</html>', { status: 409 }) : endpoint(input, init);
+    await expect(createHttpGroupStore({ url: URL_, fetch }).apply({ added: [e('g', 'a')] })).rejects.toMatchObject({ status: 409 });
+    const empty: FetchLike = async (input, init) =>
+      init?.method === 'PUT' ? new Response(JSON.stringify({}), { status: 409 }) : endpoint(input, init);
+    await expect(createHttpGroupStore({ url: URL_, fetch: empty }).apply({ added: [e('g', 'a')] })).rejects.toThrow(/without \{ current \}/);
+  });
+
+  it('a document deleted between GET and PUT: unpinned replays and recreates, pinned conflicts', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const seed = createHttpGroupStore({ url: URL_, fetch: endpoint });
+    const first = await seed.apply({ added: [e('g', 'x')] });
+    if (!first.ok) throw new Error('refused');
+    let drop = true;
+    const fetch: FetchLike = async (input, init) => {
+      if (init?.method === 'PUT' && drop) {
+        drop = false;
+        endpoint.set(null);
+      }
+      return endpoint(input, init);
+    };
+    const r = await createHttpGroupStore({ url: URL_, fetch }).apply({ added: [e('g', 'y')] });
+    expect(r.ok).toBe(true);
+    expect(endpoint.document!.revision).toBe(1);
+    drop = true;
+    const pinned = await createHttpGroupStore({ url: URL_, fetch }).apply({ added: [e('g', 'z')] }, { expectedRevision: 1 });
+    expect(pinned.ok).toBe(false);
+  });
+
+  it('a server that answers another revision or epoch than it was sent is an error', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const lying: FetchLike = async (input, init) => {
+      const response = await endpoint(input, init);
+      return init?.method === 'PUT' ? new Response(JSON.stringify({ revision: 7, epoch: 'other' }), { status: 200 }) : response;
+    };
+    await expect(createHttpGroupStore({ url: URL_, fetch: lying }).apply({ added: [e('g', 'a')] })).rejects.toBeInstanceOf(HttpStoreError);
+  });
+
+  it('a 200 that is not JSON is an HttpStoreError; unsafe revisions are refused', async () => {
+    const html: FetchLike = async () => new Response('<html>login</html>', { status: 200 });
+    await expect(createHttpGroupStore({ url: URL_, fetch: html }).load()).rejects.toBeInstanceOf(HttpStoreError);
+    const huge: FetchLike = async () => new Response(JSON.stringify({ revision: 2 ** 53, snapshot: { nodes: [], edges: [] } }), { status: 200 });
+    await expect(createHttpGroupStore({ url: URL_, fetch: huge }).load()).rejects.toThrow(/safe integer/);
+  });
+
+  it('the reference server refuses a malformed PUT with 400, and a revision other than base + 1', async () => {
+    const endpoint = memorySnapshotEndpoint();
+    const put = (body: unknown) => endpoint(URL_, { method: 'PUT', body: JSON.stringify(body) });
+    expect((await put({ baseRevision: 0, revision: 1, snapshot: { nodes: [], edges: [] } })).status).toBe(400);
+    expect((await put({ baseRevision: 0, revision: 5, epoch: 'e', snapshot: { nodes: [], edges: [] } })).status).toBe(400);
+    expect((await put({ baseRevision: 0, revision: 1, epoch: 'e', snapshot: { nodes: [], edges: [] } })).status).toBe(200);
+  });
+
+  it('maxReplays must be a non-negative integer', () => {
+    expect(() => createHttpGroupStore({ url: URL_, maxReplays: Number.NaN })).toThrow(TypeError);
+    expect(() => createHttpGroupStore({ url: URL_, maxReplays: -1 })).toThrow(TypeError);
+  });
+
+  it('error messages never carry credentials, a query or a fragment', async () => {
+    expect(redactUrl('https://user:pw@api.example.com/groups?apikey=s3cret#x')).toBe('https://api.example.com/groups');
+    expect(redactUrl('/api/groups?token=t')).toBe('/api/groups');
+    const fetch: FetchLike = async () => new Response('', { status: 500, statusText: 'Oops' });
+    await expect(createHttpGroupStore({ url: 'https://u:p@h.example/g?key=k', fetch }).load()).rejects.toThrow('GET https://h.example/g: 500 Oops');
   });
 });
 
