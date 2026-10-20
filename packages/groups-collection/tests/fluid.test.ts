@@ -162,7 +162,7 @@ describe('fluid groups', () => {
 describe('reading the rule\'s matches (#60)', () => {
   type Params = Parameters<ReturnType<typeof createInMemoryProvider<Track>>['getList']>[0];
   /** An in-memory provider that records each call, with chosen capabilities and an optional row cap. */
-  function spy(caps: { serverSort: boolean | string[] }, cap = Infinity) {
+  function spy(caps: { serverSort: boolean | string[]; serverPagination?: boolean }, cap = Infinity) {
     const inner = createInMemoryProvider(tracks());
     const calls: Params[] = [];
     const provider = {
@@ -198,6 +198,14 @@ describe('reading the rule\'s matches (#60)', () => {
     }
   });
 
+  it('pages, unsorted, when the provider paginates server-side but cannot sort on the id field (#67)', async () => {
+    const { tc, calls } = spy({ serverSort: false, serverPagination: true });
+    await tc.setRule('evening', jazzAndBlues);
+    expect(sorted(await tc.extent('evening'))).toEqual(['t1', 't2', 't3']);
+    expect(calls.length).toBe(2);
+    expect(calls.every((c) => c.pagination?.pageSize === 2 && !c.sort)).toBe(true);
+  });
+
   it('pages after all, de-duplicated, when the unpaged read comes back capped', async () => {
     const { tc, calls } = spy({ serverSort: false }, 2);
     await tc.setRule('evening', jazzAndBlues);
@@ -225,5 +233,23 @@ describe('a fluid group in an ordered space (D37)', () => {
     expect(await tc.extent('evening')).toEqual(['t3', 't5', 't1', 't2']);
     expect((await tc.moveInGroup('t3', 'evening', { after: 't5' })).ok).toBe(true);
     expect(await tc.extent('evening')).toEqual(['t5', 't3', 't1', 't2']);
+  });
+});
+
+describe('moveInGroup and exclusions (#66)', () => {
+  it('refuses an excluded item, and an excluded anchor, as not in the group; leaves the excludes edge alone', async () => {
+    const store = createMemoryGroupStore({ profile: 'polyhierarchy', overrides: { ordered: true } });
+    const tc = defineTaggedCollection<Track>({ provider: createInMemoryProvider(tracks()), spaces: { playlists: { edges: store } } });
+    await tc.setRule('evening', jazzAndBlues);
+    await tc.tag(['t3', 't5'], 'evening');
+    await tc.exclude(['t1'], 'evening');
+    const excludes = () => [...tc.space().edges.values()].filter((e) => e.kind === 'excludes');
+    const before = excludes();
+    expect(before).toHaveLength(1);
+
+    expect((await tc.moveInGroup('t1', 'evening', { before: 't3' })).failed).toMatchObject([{ id: 't1', code: 'notFound' }]);
+    expect((await tc.moveInGroup('t3', 'evening', { after: 't1' })).failed).toMatchObject([{ id: 't1', code: 'notFound' }]);
+    expect(excludes()).toEqual(before);
+    expect(await tc.extent('evening')).toEqual(['t3', 't5', 't2']);
   });
 });

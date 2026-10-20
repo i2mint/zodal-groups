@@ -326,7 +326,8 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
    * `fluidExtent`. A group without a rule yields its direct members, minus exclusions. In an ordered
    * space the pins come first, in rank order, then the unpinned matches (D37): to place a matched
    * item, `tag` it, then `moveInGroup`. The provider is read sorted by the id field when it can sort
-   * on it, unpaged otherwise (#60).
+   * on it, in pages of its natural order when it cannot but paginates server-side (`serverPagination`,
+   * #67), unpaged otherwise (#60).
    */
   extent(group: string, options?: SpaceOption): Promise<string[]>;
 
