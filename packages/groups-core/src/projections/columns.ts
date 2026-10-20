@@ -21,7 +21,7 @@
  */
 
 import type { GroupSpace, NodeId } from './../model.js';
-import { browseRootsOf, edgesOf, walkedChildCount, walkedParentCount } from './../space.js';
+import { edgesOf, isMembershipKind, membershipChildCount, membershipParentCount, rootsOf } from './../space.js';
 import { compareOrder } from './../order.js';
 import { pathKeyOf, type PathNode } from './tree.js';
 
@@ -58,7 +58,7 @@ export interface ColumnsOptions {
  */
 export function projectColumns<P>(space: GroupSpace<P>, options: ColumnsOptions = {}): Column[] {
   const { trail = [], includeItems = true } = options;
-  const roots = options.roots ?? browseRootsOf(space);
+  const roots = options.roots ?? rootsOf(space);
 
   const columns: Column[] = [];
 
@@ -74,7 +74,7 @@ export function projectColumns<P>(space: GroupSpace<P>, options: ColumnsOptions 
     const parent = trail[i]!;
     const path = trail.slice(0, i + 1);
     const children = edgesOf(space, parent)
-      .filter((e) => space.profile.edgeKinds[e.kind]?.transitive)
+      .filter((e) => isMembershipKind(space.profile, e.kind))
       .map((e) => e.child);
 
     if (!children.length) break; // a leaf — no further column
@@ -99,11 +99,11 @@ function rowsFor<P>(
 ): PathNode[] {
   const rows: PathNode[] = [];
   for (const id of ids) {
-    // Counted as the columns walk (D35): an alias or `related` edge opens no column.
-    const childCount = walkedChildCount(space, id);
+    // Membership edges only, as the columns walk them (D35): an alias or `related` edge opens no column.
+    const childCount = membershipChildCount(space, id);
     if (!includeItems && childCount === 0) continue;
     const path = [...parentPath, id];
-    const parentCount = walkedParentCount(space, id);
+    const parentCount = membershipParentCount(space, id);
     // The row's edge: a transitive one when there is one (that is what put the row in the column).
     const between = parentPath.length ? edgesOf(space, parentPath[parentPath.length - 1]!).filter((e) => e.child === id) : [];
     const edge = between.find((e) => space.profile.edgeKinds[e.kind]?.transitive) ?? between[0];

@@ -21,7 +21,7 @@ import {
   descendants,
   edgeId,
   edgesInto,
-  browseRootsOf,
+  rootsOf,
   edgesOf,
   facetPanel,
   groupsOfItem,
@@ -51,7 +51,7 @@ function referencePanel<P>(space: GroupSpace<P>, options: FacetOptions = {}): Fa
             .filter((id) => isGroup(space, id)),
         ),
       ]
-    : browseRootsOf(space).filter((id) => isGroup(space, id));
+    : rootsOf(space).filter((id) => isGroup(space, id));
   const others = new Set([...selected].filter((g) => !candidates.includes(g)));
   const within = (group: NodeId) => descendants(space, group);
   const othersClosures = [...others].map(within);

@@ -25,7 +25,7 @@
 
 import type { EdgeKind, GroupSpace, NodeId } from './../model.js';
 import { ancestors, closureScope, descendants } from './../closure.js';
-import { browseRootsOf, edgesInto, edgesOf, isGroup } from './../space.js';
+import { edgesInto, edgesOf, isGroup, rootsOf } from './../space.js';
 
 /** One row in a facet panel. */
 export interface FacetValue {
@@ -133,7 +133,7 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
             .filter((id) => isGroup(space, id)),
         ),
       ]
-    : browseRootsOf(space).filter((id) => isGroup(space, id));
+    : rootsOf(space).filter((id) => isGroup(space, id));
 
   // The pool this facet is counted against: everything matching the *other* selections.
   const offered = new Set(candidates);

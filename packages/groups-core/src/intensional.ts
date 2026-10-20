@@ -22,7 +22,7 @@
  */
 
 import type { GroupSpace, Node, NodeId } from './model.js';
-import { isGroup } from './space.js';
+import { isAliasName, isGroup, membershipParentCount } from './space.js';
 import { allItems } from './projections/facets.js';
 
 /** A predicate over an item, given the space it lives in. */
@@ -68,14 +68,15 @@ export function extentOf<P>(
 export const unfiled = <P>(id: NodeId, label = 'Unfiled'): IntensionalGroup<P> => ({
   id,
   label,
-  rule: (item, space) => !space.inverse.has(item.id) && !isGroup(space, item.id),
+  // The same reading as `orphansOf` (D35): a `related` or `alias_of` link files nothing.
+  rule: (item, space) => membershipParentCount(space, item.id) === 0 && !isGroup(space, item.id) && !isAliasName(space, item.id),
 });
 
 /** Items in more than one group — the polyhierarchy-specific "show me the shared things" view. */
 export const multiHomed = <P>(id: NodeId, label = 'In multiple groups'): IntensionalGroup<P> => ({
   id,
   label,
-  rule: (item, space) => (space.inverse.get(item.id)?.size ?? 0) > 1,
+  rule: (item, space) => membershipParentCount(space, item.id) > 1,
 });
 
 /** Build a smart group from a plain predicate over the payload. */

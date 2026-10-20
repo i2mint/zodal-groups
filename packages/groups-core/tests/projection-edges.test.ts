@@ -1,11 +1,11 @@
 /**
- * Projections judge structure by the edges they walk (#53, D35): an `alias_of` or `related` edge is
- * no parent and opens to nothing, and an alias that only names another node is left out.
+ * Projections judge structure by membership (#53, D35): an `alias_of` or `related` edge is no parent
+ * and opens to nothing, membership kinds are walked (transitive or not), and an alias that only names
+ * another node is left out.
  */
 
 import { describe, expect, it } from 'vitest';
 import {
-  browseRootsOf,
   createGroupSpace,
   edgeId,
   facetPanel,
@@ -16,6 +16,7 @@ import {
   projectColumns,
   projectTree,
   rootsOf,
+  unfiled,
   type Edge,
 } from '../src/index.js';
 
@@ -40,7 +41,6 @@ describe('projections and non-membership edges', () => {
     expect(isAliasName(s, n('to-do'))).toBe(true);
     expect(rootsOf(s)).toEqual(['work']);
     expect(orphansOf(s)).toEqual([]);
-    expect(browseRootsOf(s)).toEqual(['work']);
     expect(ids(projectColumns(s, { trail: [n('work')] })[1]!.rows)).toEqual(['todo']);
   });
 
@@ -58,5 +58,26 @@ describe('projections and non-membership edges', () => {
     expect(orphansOf(s).sort()).toEqual(['x', 'y']);
     const columns = projectColumns(s)[0]!.rows;
     expect(columns.find((r) => r.nodeId === 'x')).toMatchObject({ childCount: 0, otherParentCount: 0 });
+  });
+
+  it('walks every membership kind: an instance_of class is a group with its instances under it', () => {
+    const s = space(e('dog', 'fido', 'instance_of'), e('pets', 'fido', 'contains'));
+    expect(ids(projectTree(s, { includeItems: false }))).toEqual(['dog', 'pets']);
+    expect(ids(projectColumns(s, { trail: [n('dog')] })[1]!.rows)).toEqual(['fido']);
+    const [fido] = projectColumns(s, { trail: [n('dog')] })[1]!.rows;
+    expect(fido).toMatchObject({ otherParentCount: 1 });
+  });
+
+  it('keeps an alias visible when it has a parent', () => {
+    const filed = space(e('todo', 'to-do', 'alias_of'), e('work', 'to-do', 'contains'), e('work', 'x', 'contains'));
+    expect(isAliasName(filed, n('to-do'))).toBe(false);
+    expect(ids(projectColumns(filed, { trail: [n('work')] })[1]!.rows)).toEqual(['to-do', 'x']);
+  });
+
+  it('unfiled agrees with orphansOf', () => {
+    const s = space(e('x', 'y', 'related'), e('todo', 'to-do', 'alias_of'), e('g', 'a', 'contains'));
+    const rule = unfiled<unknown>(n('unfiled')).rule;
+    const flagged = [...s.nodes.keys()].filter((id) => rule({ id } as never, s));
+    expect(flagged.sort()).toEqual(orphansOf(s).sort());
   });
 });
