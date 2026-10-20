@@ -39,7 +39,7 @@ import {
   edgesInto,
   edgesOf,
   hasFamilyAtOrAbove,
-  aliasesOf,
+  aliasMap,
   isGroup,
   isMembershipKind,
   makeEdge,
@@ -793,27 +793,34 @@ function viewFromCore(
   const t = messages.tagging;
   const typed = state.query.trim();
   const needle = fold(typed);
-  /** A group's other names (`alias_of`), label and id each: the read side of D34. */
+  // The read side of D34: a group's other names (`alias_of`) match too, and an alias is listed only
+  // while the selection is in it (so it can be taken out), never as a group to add to.
+  const aliases = aliasMap(space);
+  const aliasIds = new Set([...aliases.values()].flat());
   const aliasNames = (group: NodeId): string[] =>
-    aliasesOf(space, group).flatMap((a) => [space.nodes.get(a)?.label ?? a, a]);
-  const rows: TagRow[] = [];
-  for (const r of needle ? core.allRows : []) {
-    if (fold(r.label).includes(needle) || (r.path !== undefined && fold(r.path).includes(needle)) || fold(r.group).includes(needle)) {
-      rows.push(r);
-      continue;
+    (aliases.get(group) ?? []).flatMap((a) => [space.nodes.get(a)?.label ?? a, a]);
+  const listed = aliasIds.size ? core.allRows.filter((r) => !aliasIds.has(r.group) || r.count > 0) : core.allRows;
+  let rows: readonly TagRow[] = listed;
+  if (needle) {
+    const matched: TagRow[] = [];
+    for (const r of listed) {
+      if (fold(r.label).includes(needle) || (r.path !== undefined && fold(r.path).includes(needle)) || fold(r.group).includes(needle)) {
+        matched.push(r);
+        continue;
+      }
+      const alias = aliases.size ? aliasNames(r.group).find((name) => fold(name).includes(needle)) : undefined;
+      if (alias !== undefined) matched.push({ ...r, matchedAlias: alias });
     }
-    const alias = aliasNames(r.group).find((name) => fold(name).includes(needle));
-    if (alias !== undefined) rows.push({ ...r, matchedAlias: alias });
+    rows = matched;
   }
-  if (!needle) rows.push(...core.allRows);
 
   let create: CreateOption | undefined;
   if (options.allowCreate !== false && typed) {
     const group = nodeId(options.mintGroupId ? options.mintGroupId(typed, space) : typed);
-    // A typed alias names its canonical group: no Create for it.
-    const exists = core.allRows.some(
-      (r) => r.group === group || fold(r.label) === needle || aliasNames(r.group).some((name) => fold(name) === needle),
-    );
+    // A typed alias names its canonical group, a row or not (the selection, an empty vocabulary
+    // node): no Create for it.
+    const namesAlias = [...aliasIds].some((a) => fold(a) === needle || fold(space.nodes.get(a)?.label ?? a) === needle);
+    const exists = namesAlias || core.allRows.some((r) => r.group === group || fold(r.label) === needle);
     if (!exists) {
       const reason =
         selection.length === 0

@@ -37,4 +37,22 @@ describe('tag input and aliases', () => {
     input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
     expect(g.parents(nodeId('song-1'))).toEqual(['todo']);
   });
+
+  it('never offers an alias that still has members; Enter files under the canonical group', () => {
+    const g = build();
+    g.add('song-7', 'to-do'); // legacy: the alias got a member of its own
+    renderTagInput(container, g).show(nodeId('song-1'));
+    typeText('to-d');
+    expect(options().filter((o) => !o.classList.contains('zg-tag-create')).map((o) => o.firstChild!.textContent)).toEqual(['todo']);
+    typeText('to-do');
+    input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
+    expect(g.parents(nodeId('song-1'))).toEqual(['todo']);
+  });
+
+  it('offers no Create for an alias whose canonical group is the item being tagged', () => {
+    const g = build();
+    renderTagInput(container, g).show(nodeId('todo'));
+    typeText('to-do');
+    expect(options().some((o) => o.classList.contains('zg-tag-create'))).toBe(false);
+  });
 });

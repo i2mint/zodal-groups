@@ -352,24 +352,39 @@ export function membershipParentCount(space: GroupSpace, id: NodeId): number {
   return count;
 }
 
+/** Per space and kind, canonical node → its aliases. Spaces are values (`applyDelta` returns a new
+ *  one and never touches its input), so an index is built once per space, on first use. */
+const aliasIndexes = new WeakMap<GroupSpace, Map<EdgeKind, ReadonlyMap<NodeId, readonly NodeId[]>>>();
+
 /**
- * The names of `id`: every node that `resolveAlias` maps to it, through a chain too (`b alias_of a`,
- * `c alias_of b` give `[b, c]` for `a`), in breadth-first order. The read side of D34: a search
- * box matches these and offers `id`, once. Cycle-safe for foreign data.
+ * Every canonical node with the names `resolveAlias` maps to it (chains included): one scan of the
+ * `alias_of` (or `kind`) edges per space, cached. The read side of D34: a search box matches these
+ * names and offers the canonical node, once.
  */
-export function aliasesOf(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): NodeId[] {
-  const seen = new Set<NodeId>([id]);
-  const out: NodeId[] = [];
-  const queue = [id];
-  for (let current = queue.shift(); current !== undefined; current = queue.shift()) {
-    for (const e of edgesOf(space, current)) {
+export function aliasMap(space: GroupSpace, kind: EdgeKind = 'alias_of'): ReadonlyMap<NodeId, readonly NodeId[]> {
+  let byKind = aliasIndexes.get(space);
+  if (!byKind) aliasIndexes.set(space, (byKind = new Map()));
+  let index = byKind.get(kind);
+  if (!index) {
+    const built = new Map<NodeId, NodeId[]>();
+    const seen = new Set<NodeId>();
+    for (const e of space.edges.values()) {
       if (e.kind !== kind || seen.has(e.child)) continue;
       seen.add(e.child);
-      out.push(e.child);
-      queue.push(e.child);
+      const canonical = resolveAlias(space, e.child, kind);
+      if (canonical === e.child) continue;
+      const names = built.get(canonical);
+      if (names) names.push(e.child);
+      else built.set(canonical, [e.child]);
     }
+    byKind.set(kind, (index = built));
   }
-  return out;
+  return index;
+}
+
+/** The names of `id`: every node that `resolveAlias` maps to it (`aliasMap`), chains included. */
+export function aliasesOf(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): NodeId[] {
+  return [...(aliasMap(space, kind).get(id) ?? [])];
 }
 
 /**

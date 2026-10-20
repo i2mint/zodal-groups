@@ -51,8 +51,8 @@ describe('alias_of', () => {
 describe('aliasesOf (the read side, #51)', () => {
   it('lists every name that resolves to a node, through a chain, and nothing for a non-canonical node', () => {
     const s = space(e('todo', 'to-do', 'alias_of'), e('to-do', 'TODO', 'alias_of'), e('todo', 'task', 'alias_of'));
-    expect(aliasesOf(s, n('todo'))).toEqual(['to-do', 'task', 'TODO']);
-    expect(aliasesOf(s, n('to-do'))).toEqual(['TODO']);
+    expect(aliasesOf(s, n('todo')).sort()).toEqual(['TODO', 'task', 'to-do']);
+    expect(aliasesOf(s, n('to-do'))).toEqual([]); // TODO resolves to todo, not to-do
     expect(aliasesOf(s, n('unknown'))).toEqual([]);
     for (const a of aliasesOf(s, n('todo'))) expect(resolveAlias(s, a)).toBe('todo');
   });

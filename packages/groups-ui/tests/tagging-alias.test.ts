@@ -28,4 +28,17 @@ describe('tagging search and aliases', () => {
     expect(view(build(), 'to-do').create).toBeUndefined();
     expect(view(build(), 'todo-list').create).toBeDefined();
   });
+
+  it('offers no Create for an alias whose canonical group is not a row (it is the selection)', () => {
+    const v = toTaggingView(build(), setTagQuery(EMPTY_TAGGING_STATE, 'to-do'), { selection: ['todo'] });
+    expect(v.create).toBeUndefined();
+  });
+
+  it('lists an alias that has members only while the selection is in it', () => {
+    const g = build();
+    g.add('c', 'to-do');
+    const groupsOf = (sel: string[]) => toTaggingView(g, EMPTY_TAGGING_STATE, { selection: sel }).rows.map((r) => r.group).sort();
+    expect(groupsOf(['b'])).toEqual(['done', 'todo']);
+    expect(groupsOf(['c'])).toEqual(['done', 'to-do', 'todo']);
+  });
 });
