@@ -58,7 +58,7 @@ Edge ids are minted unique (`uniqueEdgeId`), so an undo can never remove a newer
 
 1. Add the method to `TaggedCollection` (`types.ts`) and a plan builder in `define.ts`: units, spaces, `build` from intent. Use `perMember(full, members)` for a group-level delta whose members are records (embedded), `collectEmptied` after removals, `rt.mintEdge` for new edges.
 2. Data-dependent refusals return `refuse(id, code, reason)`; programming errors throw.
-   A group NAME the caller passes goes through `canonical(rt, name)` first, so an alias (`to-do alias_of todo`, D34) writes the canonical group, as `tag` / `untag` / `removeFromGroup` / `bulkTag` do.
+   A group NAME the caller passes is resolved (`resolveAlias` on the build-time space, or `canonical(rt, name)` at plan time), so an alias (`to-do alias_of todo`, D34) writes the canonical group, as every existing operation does.
 3. Add it to `operations` and `commandParams` (JSON-Schema-representable Zod) in `commands.ts`, and a handler in `createCommands`.
 4. Test it in `tests/operations.test.ts` — it runs over all three backings (embedded, memory store, fs store) and `undoable()` checks revert-then-redo restores the state exactly.
 

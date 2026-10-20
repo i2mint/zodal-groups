@@ -474,12 +474,12 @@ The view contract (polytag `ui-patterns.md` §4.2, M5 and M9) asks every view fo
 
 Implications ("A implies B", Hydrus parents) were already covered by a transitive edge read with `expand: 'closure'` (D9). Aliases were not: `related` is "see also", not "same as".
 
-**Decision.** A built-in kind `alias_of` in `DEFAULT_EDGE_KINDS` (so every profile, flat tags included, since Hydrus siblings are flat): not transitive (closure never follows it), not a membership, acyclic, at most one canonical per alias (a new per-kind dial, `EdgeKindDef.maxPerChild`, violation `maxPerChild`), disjoint with every other built-in kind. **Resolved by the facade, never by the core**: `resolveAlias(space, id)` is a read helper; `@zodal/groups-collection` resolves the group name in `tag`, `untag`, `removeFromGroup` and `bulkTag`; `applyDelta` never rewrites a delta (D7).
+**Decision.** A built-in kind `alias_of` in `DEFAULT_EDGE_KINDS` (so every profile, flat tags included, since Hydrus siblings are flat): not transitive (closure never follows it), not a membership, acyclic, at most one canonical per alias (a new per-kind dial, `EdgeKindDef.maxPerChild`, violation `maxPerChild`), disjoint with every other built-in kind. **Resolved by the facade, never by the core**: `resolveAlias(space, id)` is a read helper; `@zodal/groups-collection` resolves every group name a caller passes (`create`, `tag`, `untag`, `removeFromGroup`, `bulkTag` and its labels, `mergeGroups`' target, `moveInGroup`), on the space the write is built on, so a retry after a conflict sees new aliases; `untag` also removes a membership still filed under the alias name itself. `applyDelta` never rewrites a delta (D7).
 
 - **Chains collapse** (`a → b → c` resolves to `c`), as Hydrus does. No third kind semantic (`resolves: true`) until an import format needs chains kept.
 - **Not a typed kind for inference**: an alias edge alone does not make `inferProfile` choose `thesaurus`.
 - **Not enforced**: that an alias has no memberships of its own. Writes through the facade never create one; a store written directly can.
-- Read-side resolution in the tag input and search UI is a follow-up.
+- Read-side resolution in the tag input and search UI is a follow-up ([#51](https://github.com/i2mint/zodal-groups/issues/51)), and so is how projections treat non-membership edges (an alias, a `related` link) as structure ([#53](https://github.com/i2mint/zodal-groups/issues/53)). `membersOf` / `countIn` count membership edges only.
 
 ---
 

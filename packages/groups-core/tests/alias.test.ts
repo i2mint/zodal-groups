@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ancestors, applyDelta, inferProfile, isGroup, createGroupSpace, edgeId, makeEdge, nodeId, resolveAlias, type Edge } from '../src/index.js';
+import { ancestors, applyDelta, countIn, inferProfile, isGroup, membersOf, createGroupSpace, edgeId, makeEdge, nodeId, resolveAlias, type Edge } from '../src/index.js';
 
 const n = nodeId;
 const e = (parent: string, child: string, kind: string) => makeEdge(n(parent), n(child), { id: edgeId(`${parent}>${child}:${kind}`), kind });
@@ -29,6 +29,9 @@ describe('alias_of', () => {
     const s = space(e('todo', 'to-do', 'alias_of'), e('work', 'todo', 'contains'));
     expect([...ancestors(s, n('to-do'))]).toEqual([]);
     expect(isGroup(s, n('todo'))).toBe(false); // its only edge out is an alias, not a membership
+    const tagged = space(e('todo', 'to-do', 'alias_of'), e('todo', 'a', 'contains'));
+    expect(membersOf(tagged, n('todo'))).toEqual(['a']);
+    expect(countIn(tagged, n('todo'))).toBe(1);
   });
 
   it('is acyclic, and never combined with a hierarchical link between the same nodes', () => {

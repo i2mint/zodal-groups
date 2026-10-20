@@ -111,7 +111,7 @@ interface EdgeKindDef {
 }
 ```
 
-**`alias_of` (D34, Hydrus siblings)** is a built-in kind in every profile: `to-do alias_of todo` = one tag, two names. Not transitive, not membership, acyclic, `maxPerChild: 1`, disjoint with every other built-in kind. `resolveAlias(space, id)` follows it (chains collapse to the end, as Hydrus does); **facades resolve on write** (`groups-collection`'s `tag` / `untag` / `removeFromGroup` / `bulkTag`), **`applyDelta` never rewrites a delta (D7)**. It does not count as a "typed kind" for `inferProfile`'s `thesaurus` evidence.
+**`alias_of` (D34, Hydrus siblings)** is a built-in kind in every profile: `to-do alias_of todo` = one tag, two names. Not transitive, not membership, acyclic, `maxPerChild: 1`, disjoint with every other built-in kind. `resolveAlias(space, id)` follows it (chains collapse to the end, as Hydrus does); **facades resolve on write** (every group name `groups-collection` takes), **`applyDelta` never rewrites a delta (D7)**. It does not count as a "typed kind" for `inferProfile`'s `thesaurus` evidence.
 
 **When `composesWith` is absent, a chain only continues through the *same* kind.** That is the
 conservative reading, and it is what stops the wheel from becoming a vehicle. Do not "fix" it.

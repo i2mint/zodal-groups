@@ -9,13 +9,14 @@ import { createInMemoryProvider } from '@zodal/store';
 import { defineTaggedCollection } from '../src/index.js';
 import { groupsOf, items, type Item } from './helpers.js';
 
-async function setup() {
+async function setup(extra: { id: string; parent: string; child: string; kind: string }[] = []) {
   const store = createMemoryGroupStore({ profile: 'polyhierarchy' });
   const seeded = await store.apply({
     added: [
       { id: 'todo>a', parent: 'todo', child: 'a', kind: 'contains' },
       { id: 'todo>to-do', parent: 'todo', child: 'to-do', kind: 'alias_of' },
       { id: 'to-do>TODO', parent: 'to-do', child: 'TODO', kind: 'alias_of' },
+      ...extra,
     ],
   } as never);
   if (!seeded.ok) throw new Error(seeded.violations.map((v) => v.message).join('; '));
@@ -42,5 +43,20 @@ describe('aliases resolve on write', () => {
     expect(groupsOf(tc, 'b')).toContain('todo');
     expect((await tc.bulkTag(['b'], { remove: ['TODO'] })).ok).toBe(true);
     expect(groupsOf(tc, 'b')).not.toContain('todo');
+  });
+
+  it('untag by the alias also removes a membership filed under the alias name itself', async () => {
+    // Filed under `TODO` directly (a store written before the alias, or by another tool).
+    const tc = await setup([{ id: 'TODO>d', parent: 'TODO', child: 'd', kind: 'contains' }]);
+    expect(groupsOf(tc, 'd')).toContain('TODO');
+    expect((await tc.untag(['d'], 'TODO')).ok).toBe(true);
+    expect(groupsOf(tc, 'd')).not.toContain('TODO');
+  });
+
+  it('create takes alias names too', async () => {
+    const tc = await setup();
+    const r = await tc.create({ id: 'z', title: 'Z' } as Item, { groups: ['to-do'] });
+    expect(r.ok).toBe(true);
+    expect(groupsOf(tc, 'z')).toEqual(['todo']);
   });
 });
