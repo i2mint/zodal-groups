@@ -113,31 +113,59 @@ function upChain(profile: GroupProfile): Chain<EdgeKind | null> {
  * function — exactly what `ancestors` would conclude from below. A node that is not reached still
  * passes the function on: a longer chain through it may compose where its own edge does not.
  */
-type UpperChain = 'identity' | ReadonlyMap<EdgeKind, EdgeKind | null>;
+/** The upper part of a down walk's chain, interned: one object per distinct function. */
+interface UpperChain {
+  /** For each kind a chain could arrive with from below, the kind it ends as (`null`: it breaks). */
+  readonly ends: ReadonlyMap<EdgeKind, EdgeKind | null> | 'identity';
+  readonly key: string;
+}
 
 function downChain(profile: GroupProfile): Chain<UpperChain> {
   const transitive = Object.keys(profile.edgeKinds).filter((k) => profile.edgeKinds[k]?.transitive);
   // The identity is a marker, not a map over the transitive kinds: a composed kind may be one that
   // is not transitive (or not declared), and the empty upper chain must still map it to itself.
-  const look = (above: UpperChain, k: EdgeKind): EdgeKind | null => (above === 'identity' ? k : (above.get(k) ?? null));
+  const identity: UpperChain = { ends: 'identity', key: '\u0002' };
+  const look = (above: UpperChain, k: EdgeKind): EdgeKind | null =>
+    above.ends === 'identity' ? k : (above.ends.get(k) ?? null);
+  // A walk meets few distinct states (functions over a handful of kinds) but many edges: intern
+  // the states and cache each (state, kind) transition, so an edge costs one map lookup.
+  const interned = new Map<string, UpperChain>([[identity.key, identity]]);
+  type Step = { readonly state: UpperChain; readonly reached: boolean; readonly extends: boolean } | undefined;
+  const transitions = new Map<string, Step>();
+  const compute = (above: UpperChain, kind: EdgeKind): Step => {
+    if (!profile.edgeKinds[kind]?.transitive) return undefined; // no chain passes through it
+    const reached = look(above, kind) !== null;
+    const ends = new Map<EdgeKind, EdgeKind | null>();
+    let alive = false;
+    for (const k of transitive) {
+      const composed = composeKinds(profile, k, kind);
+      const end = composed === null ? null : look(above, composed);
+      ends.set(k, end);
+      if (end !== null) alive = true;
+    }
+    if (!alive && !reached) return undefined;
+    const key = [...ends.values()].map((v) => v ?? '').join('\u0001');
+    let state = interned.get(key);
+    if (!state) interned.set(key, (state = { ends, key }));
+    return { state, reached, extends: alive };
+  };
   return {
-    start: 'identity',
+    start: identity,
     step(above, kind) {
-      if (!profile.edgeKinds[kind]?.transitive) return undefined; // no chain passes through it
-      const reached = look(above, kind) !== null;
-      const state = new Map<EdgeKind, EdgeKind | null>();
-      let alive = false;
-      for (const k of transitive) {
-        const composed = composeKinds(profile, k, kind);
-        const end = composed === null ? null : look(above, composed);
-        state.set(k, end);
-        if (end !== null) alive = true;
-      }
-      return alive || reached ? { state, reached, extends: alive } : undefined;
+      const t = `${above.key}\u0003${kind}`;
+      if (transitions.has(t)) return transitions.get(t);
+      const result = compute(above, kind);
+      transitions.set(t, result);
+      return result;
     },
-    key: (state) => (state === 'identity' ? '\u0002' : [...state.values()].map((v) => v ?? '').join('\u0001')),
+    key: (state) => state.key,
   };
 }
+
+// One chain per profile (profiles are not mutated), so a down walk's transition cache is shared by
+// every walk over the same profile — facetPanel walks once per candidate.
+const upChains = new WeakMap<GroupProfile, Chain<EdgeKind | null>>();
+const downChains = new WeakMap<GroupProfile, Chain<UpperChain>>();
 
 function walk(
   space: GroupSpace,
@@ -145,9 +173,15 @@ function walk(
   direction: 'up' | 'down',
   options: WalkOptions,
 ): Set<NodeId> {
-  return direction === 'up'
-    ? walkChain(space, start, 'up', upChain(space.profile), options)
-    : walkChain(space, start, 'down', downChain(space.profile), options);
+  const profile = space.profile;
+  if (direction === 'up') {
+    let chain = upChains.get(profile);
+    if (!chain) upChains.set(profile, (chain = upChain(profile)));
+    return walkChain(space, start, 'up', chain, options);
+  }
+  let chain = downChains.get(profile);
+  if (!chain) downChains.set(profile, (chain = downChain(profile)));
+  return walkChain(space, start, 'down', chain, options);
 }
 
 function walkChain<S>(space: GroupSpace, start: NodeId, direction: 'up' | 'down', chain: Chain<S>, options: WalkOptions): Set<NodeId> {
