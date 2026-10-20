@@ -35,6 +35,7 @@ import {
   type NodeId,
   type ProfileName,
 } from '../src/index.js';
+import { closureScope } from '../src/closure.js';
 
 /** The definition, as the oracle: O(candidates × pool), one closure walk per group. */
 function referencePanel<P>(space: GroupSpace<P>, options: FacetOptions = {}): FacetValue[] {
@@ -173,6 +174,40 @@ describe('facet values compose edge kinds from the item up (issue #27)', () => {
         const selected = live.filter(() => random() < 0.2);
         const expected = live.filter((n) => selected.some((g) => descendants(s, g).has(n)));
         expect(ids(matchingItems(s, selected, live))).toEqual(ids(selected.length ? expected : live));
+      }
+    }
+  });
+});
+
+describe('closureScope is descendants, seen from the item (with kinds and maxDepth)', () => {
+  it('on random thesaurus spaces, an edge lands in the scope with its kind iff its child is a descendant', () => {
+    const NODES = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    const KINDS = Object.keys(DEFAULT_EDGE_KINDS);
+    const TRANSITIVE = KINDS.filter((k) => DEFAULT_EDGE_KINDS[k]!.transitive);
+    for (const seed of [11, 12, 13, 14, 15]) {
+      const random = rng(seed * 104729);
+      const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]!;
+      let s: GroupSpace = createGroupSpace({ profile: 'thesaurus' });
+      for (let step = 0; step < 80; step++) {
+        const parent = pick(NODES);
+        const child = pick(NODES.filter((n) => n !== parent));
+        const r = applyDelta(s, { added: [makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`e${step}`), kind: pick(KINDS) })] });
+        if (r.ok) s = r.value;
+      }
+      const live = [...s.nodes.keys()];
+      for (let trial = 0; trial < 30; trial++) {
+        const group = pick(live);
+        const options = {
+          ...(random() < 0.5 ? { kinds: TRANSITIVE.filter(() => random() < 0.6) } : {}),
+          ...(random() < 0.5 ? { maxDepth: Math.floor(random() * 4) } : {}),
+        };
+        const scope = closureScope(s, group, options);
+        const below = descendants(s, group, options);
+        for (const node of live) {
+          if (node === group) continue;
+          const reached = edgesInto(s, node).some((e) => scope.get(e.parent)?.has(e.kind) === true);
+          expect(reached, `${node} under ${group} ${JSON.stringify(options)}`).toBe(below.has(node));
+        }
       }
     }
   });
