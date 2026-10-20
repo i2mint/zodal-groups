@@ -27,7 +27,11 @@
  * (or creates the typed group); Ctrl/⌘+Enter applies; Escape discards what was staged and asks the
  * host to close (`onClose`), like Cancel — or, without `onClose`, clears the field.
  *
- * Nothing is written until Apply. The write is the host's (`onApply` receives the plan — call
+ * Nothing is written until Apply (`commit: 'staged'`, the default). With `commit: 'immediate'`
+ * (Zotero-style) each click is written at once, as its own `onApply` call and so its own undo
+ * step; there is no Apply button, and a click while a write is in flight is refused and said.
+ *
+ * The write is the host's (`onApply` receives the plan — call
  * `collection.bulkTag` per batch, or apply `planToDelta` to a store); with a `Groups` handle as the
  * source it defaults to applying there. While a write is in flight the menu will not close, and if
  * the host destroys it anyway the outcome still reaches `onAnnounce` and the `apply()` promise.
@@ -70,6 +74,12 @@ export interface TagMenuOptions extends TaggingOptions {
   readonly autoFocus?: boolean;
   /** The menu's accessible name. Default: none (the listbox is named); give one when the menu needs it. */
   readonly label?: string;
+  /**
+   * `'staged'` (default): clicks stage changes, written by Apply. `'immediate'`: each click (a
+   * toggle, a create) is written at once, as its own `onApply` — its own undo step. The Apply
+   * button is hidden; Cancel still closes.
+   */
+  readonly commit?: 'staged' | 'immediate';
 }
 
 export interface TagMenuRenderer {
@@ -110,6 +120,7 @@ interface OptionNodes {
   readonly label: HTMLSpanElement;
   readonly path: HTMLSpanElement;
   readonly count: HTMLSpanElement;
+  readonly inherited: HTMLSpanElement;
   readonly reason: HTMLDivElement;
   /** What it was last drawn from: the session reuses unchanged rows, so identity means "nothing to do". */
   drawn?: unknown;
@@ -131,6 +142,7 @@ export function renderTagMenu<P>(
   }
 
   const session = createTaggingSession(source, options);
+  const immediate = options.commit === 'immediate';
   const uid = `zg-tagmenu-${++instances}`;
   const ids = { list: `${uid}-list`, summary: `${uid}-summary`, conflicts: `${uid}-conflicts` };
 
@@ -187,6 +199,7 @@ export function renderTagMenu<P>(
   cancelButton.type = 'button';
   cancelButton.className = 'zg-tagmenu-cancel';
   actions.append(cancelButton, applyButton);
+  applyButton.hidden = immediate;
   footer.append(summary, conflicts, actions);
 
   // Present from the start: a live region added at announcement time is often not read.
@@ -230,11 +243,15 @@ export function renderTagMenu<P>(
     const count = document.createElement('span');
     count.className = 'zg-tagmenu-count';
     count.setAttribute('aria-hidden', 'true'); // already in the accessible name
+    const inherited = document.createElement('span');
+    inherited.className = 'zg-tagmenu-inherited';
+    inherited.setAttribute('aria-hidden', 'true'); // in the accessible name too
+    inherited.hidden = true;
     const reason = document.createElement('div');
     reason.className = 'zg-tagmenu-reason';
     reason.id = `${li.id}-reason`;
-    li.append(box, text, count, reason);
-    o = { li, label, path, count, reason };
+    li.append(box, text, count, inherited, reason);
+    o = { li, label, path, count, inherited, reason };
     nodes.set(key, o);
     return o;
   };
@@ -260,6 +277,8 @@ export function renderTagMenu<P>(
     setText(o.path, row.path ?? '');
     o.path.hidden = !row.path;
     setText(o.count, row.originalState === 'some' ? t.countOf(row.count, row.total) : '');
+    setText(o.inherited, row.inherited ? t.inheritedCount(row.inherited) : '');
+    o.inherited.hidden = !row.inherited;
     describe(o, row.aria.description);
   };
 
@@ -394,6 +413,7 @@ export function renderTagMenu<P>(
       session.toggle(key);
     }
     changed();
+    if (immediate) void apply();
   };
 
   const move = (step: number): void => {
@@ -424,6 +444,11 @@ export function renderTagMenu<P>(
     const view = session.view();
     if (!view.canApply) {
       announce(view.blocked ?? t.nothingToApply);
+      // Immediate: a click that cannot be written is not left staged behind a hidden Apply.
+      if (immediate && session.state.pending.size) {
+        session.reset();
+        changed();
+      }
       return '';
     }
     busy = true;

@@ -103,4 +103,4 @@ An item's groups as removable chips, and a field to add it to another group. The
 
 ## The others
 
-`renderColumns` (Miller columns, the best view for a polyhierarchy), `renderBreadcrumbs`, `renderFacets`, `renderTagMenu` (Gmail's label menu over a selection: tri-state per group, staged until "Apply to N items") and `createVanillaRegistry()` (pick a renderer by surface and profile) are described in their module docs and in the [repository README](../../README.md).
+`renderColumns` (Miller columns, the best view for a polyhierarchy), `renderBreadcrumbs`, `renderFacets`, `renderTagMenu` (Gmail's label menu over a selection: tri-state per group, staged until "Apply to N items", or written per click with `commit: 'immediate'`; a row says how many are in it through a subgroup) and `createVanillaRegistry()` (pick a renderer by surface and profile) are described in their module docs and in the [repository README](../../README.md).

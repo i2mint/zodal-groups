@@ -99,8 +99,14 @@ export interface TagRow {
   readonly state: TagState;
   /** The state now, before anything staged. */
   readonly originalState: TagState;
-  /** How many selected items are in the group now. */
+  /** How many selected items are in the group now (directly). */
   readonly count: number;
+  /**
+   * How many selected items are in the group only by closure — through a subgroup, not directly
+   * (an item tagged `poodle` is in `dog`). Not part of the tri-state: ticking the row still adds
+   * direct memberships. 0 with `inherited: false`.
+   */
+  readonly inherited: number;
   /** The selection size. */
   readonly total: number;
   /** The state differs from the original. */
@@ -241,6 +247,11 @@ export interface TaggingOptions {
    * (`resetTag` still restores a row).
    */
   readonly restoreMixed?: boolean;
+  /**
+   * Count each row's `inherited` (selected items in it through a subgroup only). One ancestor walk
+   * per selected item, when rows are (re)computed. Default `true`; `false` for very large selections.
+   */
+  readonly inherited?: boolean;
   /** Row order. Default: by path (or label), with a locale-aware, numeric collator. */
   readonly compare?: (a: TagRow, b: TagRow) => number;
 }
@@ -392,6 +403,21 @@ function computeCore(
     }
   }
 
+  // Selected items in a group only by closure: computed once, on the first row that needs it.
+  let inheritedOf: Map<NodeId, number> | undefined;
+  const inheritedIn = (group: NodeId): number => {
+    if (options.inherited === false) return 0;
+    if (!inheritedOf) {
+      inheritedOf = new Map();
+      for (const item of selection) {
+        for (const a of ancestors(space, item)) {
+          if (!membersOf.get(a)?.has(item)) inheritedOf.set(a, (inheritedOf.get(a) ?? 0) + 1);
+        }
+      }
+    }
+    return inheritedOf.get(group) ?? 0;
+  };
+
   // The candidates, then the groups created in the menu (never filtered away).
   const selectionSet = new Set(selection);
   const raw =
@@ -531,6 +557,7 @@ function computeCore(
       state: now,
       originalState,
       count,
+      inherited: inheritedIn(group),
       total,
       pending: now !== originalState,
       isNew: createdLabel.has(group) && !node,

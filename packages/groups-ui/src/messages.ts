@@ -368,7 +368,11 @@ export interface TaggingMessages {
     readonly isNew: boolean;
     readonly pending: boolean;
     readonly change: { readonly add: number; readonly remove: number };
+    /** Selected items in the group only through a subgroup (`TagRow.inherited`). */
+    readonly inherited?: number;
   }) => string;
+  /** A row's "2 through a subgroup": selected items in it by closure only. */
+  readonly inheritedCount: (n: number) => string;
   readonly createOption: (label: string) => string;
   readonly createNotAllowed: string;
   readonly createNeedsSelection: string;
@@ -431,8 +435,10 @@ export const TAGGING_MESSAGES: TaggingMessages = {
     const staged = row.pending
       ? [row.change.add ? `will add to ${row.change.add}` : '', row.change.remove ? `will remove from ${row.change.remove}` : '']
       : [];
-    return [row.path ?? row.label, now, ...staged].filter(Boolean).join(', ');
+    const through = row.inherited ? `${row.inherited} more through a subgroup` : '';
+    return [row.path ?? row.label, now, through, ...staged].filter(Boolean).join(', ');
   },
+  inheritedCount: (n) => `${n} through a subgroup`,
   createOption: (label) => `Create ${q(label)}`,
   createNotAllowed: 'New groups can’t be created here.',
   createNeedsSelection: 'Select items first, then create a group for them.',
