@@ -47,13 +47,20 @@ export interface FacetSidebarRendererOptions extends Omit<FacetSidebarOptions, '
   readonly onSelect?: (selected: ReadonlySet<NodeId>, view: FacetSidebarView) => void;
   /** A family's panel opened, or the open one closed (`null`). */
   readonly onOpen?: (family: NodeId | null) => void;
-  /** The widget's accessible name. Default "Filters". */
+  /** The widget's accessible name (as in every renderer here). Default "Filters". Its words are `labels`. */
   readonly label?: string;
 }
 
 export interface FacetSidebarRenderer {
   /** The selection applied (normalized: values of no listed family are dropped). */
   readonly selected: ReadonlySet<NodeId>;
+  /**
+   * What the last requested selection (the `selected` option, or the latest `setSelected`) could not
+   * apply, in request order: rewrite the URL with `selected`. Kept until the next request, unlike
+   * `view().dropped`, which a redraw (`setOpen`, a model change) recomputes from `selected`. A
+   * dropped id is not retried when the model later gains it.
+   */
+  readonly dropped: readonly NodeId[];
   /** The family whose panel is open. */
   readonly open: NodeId | null;
   /** Show this selection (from the URL, on Back). Returns what is applied. No `onSelect`. */
@@ -275,6 +282,7 @@ export function renderFacetSidebar<P>(
   };
 
   compute(initial ?? [], initialOpen ?? null);
+  let dropped = current!.dropped;
   draw();
 
   // Counts follow the model; if a change removes a selected value, say what is applied now.
@@ -291,8 +299,11 @@ export function renderFacetSidebar<P>(
     get open() {
       return open;
     },
+    get dropped() {
+      return dropped;
+    },
     setSelected(next) {
-      compute(next, open);
+      dropped = compute(next, open).dropped;
       draw();
       return selected;
     },

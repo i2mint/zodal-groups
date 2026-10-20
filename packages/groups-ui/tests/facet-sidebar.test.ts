@@ -73,6 +73,20 @@ describe('toFacetSidebar', () => {
     const view = toFacetSidebar(build(), { families: ['genre', 'nope'], items: ITEMS, selected: ['calm', 'ghost', 'rock', 'indie'] });
     expect(view.families.map((f) => f.family)).toEqual(['genre']);
     expect([...view.selected]).toEqual(['rock']); // indie is rock's child, not a genre value
+    expect(view.dropped).toEqual(['calm', 'ghost', 'indie']); // in request order, so a host can clean its URL
+  });
+
+  it('dropped is empty when everything applies, and lists a repeat once', () => {
+    expect(toFacetSidebar(build(), { families: ['genre'], items: ITEMS, selected: ['rock'] }).dropped).toEqual([]);
+    expect(toFacetSidebar(build(), { families: ['genre'], items: ITEMS }).dropped).toEqual([]);
+    expect(toFacetSidebar(build(), { families: ['genre'], items: ITEMS, selected: [nodeId('genre')] }).dropped).toEqual(['genre']);
+    expect(toFacetSidebar(build(), { families: ['genre'], items: ITEMS, selected: ['x', 'x'] }).dropped).toEqual(['x']);
+  });
+
+  it('a value shared by two families is applied, not dropped', () => {
+    const g = build();
+    g.add('calm', 'genre'); // calm is now a value of genre and of mood
+    expect(toFacetSidebar(g, { families: ['genre', 'mood'], items: ITEMS, selected: ['calm'] }).dropped).toEqual([]);
   });
 
   it('open: only a listed family; the aria says expanded and how many are selected', () => {
