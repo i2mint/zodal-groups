@@ -2,7 +2,10 @@
  * `facetPanel` counts in one pass over the pool (issue #11). Two things are checked here:
  *
  * - **the same answer**: on random spaces over every built-in edge kind (so mixed kinds and
- *   composition are exercised), the panel equals the one the old per-candidate loop produced;
+ *   composition are exercised), the panel equals a per-candidate loop over the definition: an item
+ *   counts towards a group when it is in `descendants(space, group)` (issue #27: the item's own
+ *   edge kind composes too, so `wheel part_of car is_a vehicle` does not count the wheel in
+ *   `vehicle`);
  * - **fast enough**: the annals page's shape (~600 items, five flat families, one with ~500
  *   values) counts all five panels well inside the ~400 ms Doherty budget. The old loop took
  *   ~635 ms for four panels on a server CPU, so 1–2 s per checkbox on a phone.
@@ -11,8 +14,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   allItems,
+  ancestors,
   applyDelta,
-  closureIds,
   createGroupSpace,
   DEFAULT_EDGE_KINDS,
   descendants,
@@ -32,8 +35,9 @@ import {
   type NodeId,
   type ProfileName,
 } from '../src/index.js';
+import { closureScope } from '../src/closure.js';
 
-/** The pre-#11 algorithm, kept verbatim as the oracle: O(candidates × pool). */
+/** The definition, as the oracle: O(candidates × pool), one closure walk per group. */
 function referencePanel<P>(space: GroupSpace<P>, options: FacetOptions = {}): FacetValue[] {
   const { selected = new Set<NodeId>(), expand = 'closure', hideEmpty = true, under } = options;
   const items = [...(options.items ?? allItems(space))];
@@ -48,19 +52,16 @@ function referencePanel<P>(space: GroupSpace<P>, options: FacetOptions = {}): Fa
       ]
     : [...space.nodes.keys()].filter((id) => isGroup(space, id) && !edgesInto(space, id).length);
   const others = new Set([...selected].filter((g) => !candidates.includes(g)));
-  const pool = others.size ? [...matchingItems(space, others, items)] : items;
+  const within = (group: NodeId) => descendants(space, group);
+  const othersClosures = [...others].map(within);
+  const pool = others.size ? [...new Set(items.filter((item) => othersClosures.some((d) => d.has(item))))] : items;
   const out: FacetValue[] = [];
   for (const group of candidates) {
-    const scope = expand === 'closure' ? new Set(closureIds(space, group)) : new Set([group]);
-    const matched = new Set<NodeId>();
-    for (const item of pool) {
-      for (const g of groupsOfItem(space, item, 'direct')) {
-        if (scope.has(g)) {
-          matched.add(item);
-          break;
-        }
-      }
-    }
+    const inside =
+      expand === 'closure'
+        ? within(group)
+        : new Set(edgesOf(space, group).filter((e) => space.profile.edgeKinds[e.kind]?.transitive).map((e) => e.child));
+    const matched = new Set<NodeId>(pool.filter((item) => inside.has(item)));
     const count = matched.size;
     if (hideEmpty && count === 0 && !selected.has(group)) continue;
     out.push({
@@ -122,6 +123,94 @@ describe('facetPanel gives the same answer as the per-candidate loop', () => {
       });
     }
   }
+});
+
+describe('facet values compose edge kinds from the item up (issue #27)', () => {
+  // wheel part_of car is_a vehicle: a wheel is not a vehicle. sedan is_a car part_of fleet: a
+  // sedan IS part of the fleet (is_a ∘ part_of → part_of).
+  const space = () =>
+    createGroupSpace({
+      profile: 'thesaurus',
+      edges: [
+        makeEdge(nodeId('car'), nodeId('wheel'), { kind: 'part_of' }),
+        makeEdge(nodeId('vehicle'), nodeId('car'), { kind: 'is_a' }),
+        makeEdge(nodeId('car'), nodeId('sedan'), { kind: 'is_a' }),
+        makeEdge(nodeId('fleet'), nodeId('car'), { kind: 'part_of' }),
+      ],
+    });
+  const ids = (xs: Iterable<NodeId>) => [...xs].sort();
+
+  it('groupsOfItem is ancestors: the wheel is in car and fleet, not vehicle; the sedan is in all three', () => {
+    const s = space();
+    expect(ids(groupsOfItem(s, nodeId('wheel')))).toEqual(['car', 'fleet']);
+    expect(ids(groupsOfItem(s, nodeId('wheel')))).toEqual(ids(ancestors(s, nodeId('wheel'))));
+    expect(ids(groupsOfItem(s, nodeId('sedan')))).toEqual(['car', 'fleet', 'vehicle']);
+  });
+
+  it('facet counts and matching agree with it', () => {
+    const s = space();
+    const counts = Object.fromEntries(facetPanel(s, { hideEmpty: false }).map((v) => [v.group, v.count]));
+    expect(counts).toEqual({ vehicle: 1, fleet: 2 }); // vehicle: sedan; fleet: wheel and sedan
+    expect(ids(matchingItems(s, [nodeId('vehicle')]))).toEqual(['sedan']);
+    expect(ids(matchingItems(s, [nodeId('fleet')]))).toEqual(['sedan', 'wheel']);
+  });
+
+  it('on random spaces, groupsOfItem = ancestors and matchingItems = the union of descendants', () => {
+    const NODES = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    const KINDS = Object.keys(DEFAULT_EDGE_KINDS);
+    for (const seed of [1, 2, 3, 4, 5, 6]) {
+      const random = rng(seed * 7919);
+      const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]!;
+      let s: GroupSpace = createGroupSpace({ profile: 'thesaurus' });
+      for (let step = 0; step < 80; step++) {
+        const parent = pick(NODES);
+        const child = pick(NODES.filter((n) => n !== parent));
+        const r = applyDelta(s, { added: [makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`e${step}`), kind: pick(KINDS) })] });
+        if (r.ok) s = r.value;
+      }
+      const live = [...s.nodes.keys()];
+      for (const node of live) expect(ids(groupsOfItem(s, node))).toEqual(ids(ancestors(s, node)));
+      for (let trial = 0; trial < 20; trial++) {
+        const selected = live.filter(() => random() < 0.2);
+        const expected = live.filter((n) => selected.some((g) => descendants(s, g).has(n)));
+        expect(ids(matchingItems(s, selected, live))).toEqual(ids(selected.length ? expected : live));
+      }
+    }
+  });
+});
+
+describe('closureScope is descendants, seen from the item (with kinds and maxDepth)', () => {
+  it('on random thesaurus spaces, an edge lands in the scope with its kind iff its child is a descendant', () => {
+    const NODES = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    const KINDS = Object.keys(DEFAULT_EDGE_KINDS);
+    const TRANSITIVE = KINDS.filter((k) => DEFAULT_EDGE_KINDS[k]!.transitive);
+    for (const seed of [11, 12, 13, 14, 15]) {
+      const random = rng(seed * 104729);
+      const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]!;
+      let s: GroupSpace = createGroupSpace({ profile: 'thesaurus' });
+      for (let step = 0; step < 80; step++) {
+        const parent = pick(NODES);
+        const child = pick(NODES.filter((n) => n !== parent));
+        const r = applyDelta(s, { added: [makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`e${step}`), kind: pick(KINDS) })] });
+        if (r.ok) s = r.value;
+      }
+      const live = [...s.nodes.keys()];
+      for (let trial = 0; trial < 30; trial++) {
+        const group = pick(live);
+        const options = {
+          ...(random() < 0.5 ? { kinds: TRANSITIVE.filter(() => random() < 0.6) } : {}),
+          ...(random() < 0.5 ? { maxDepth: Math.floor(random() * 4) } : {}),
+        };
+        const scope = closureScope(s, group, options);
+        const below = descendants(s, group, options);
+        for (const node of live) {
+          if (node === group) continue;
+          const reached = edgesInto(s, node).some((e) => scope.get(e.parent)?.has(e.kind) === true);
+          expect(reached, `${node} under ${group} ${JSON.stringify(options)}`).toBe(below.has(node));
+        }
+      }
+    }
+  });
 });
 
 describe('facetPanel is fast enough for a real sidebar', () => {

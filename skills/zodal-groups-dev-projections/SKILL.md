@@ -94,7 +94,7 @@ Multi-parenthood is then conveyed **semantically, never structurally**:
 | `primaryPath(space, node)` | `NodePath?` | for URLs/deep links. `'shortest' \| 'first' \| fn`. |
 | `breadcrumbs(space, node, {arrivedVia})` | `NodePath?` | **honour `arrivedVia`** — the route the user walked. |
 | `otherLocations(space, node)` | `OtherLocation[]` | the affordance a tree cannot have. |
-| `facetPanel(space, opts)` | `FacetValue[]` | de-duplicated counts; empty facets hidden. One pass over the pool: each candidate's closure is inverted once, so cost is O(items × direct groups), not O(values × items). `tests/facets.test.ts` keeps the old loop as an oracle and a 100 ms budget at 610 items × 5 families. |
+| `facetPanel(space, opts)` | `FacetValue[]` | de-duplicated counts; empty facets hidden. One pass over the pool: each candidate's `closureScope` (each group in its closure, with the item-edge kinds that compose up to it) is inverted once, so cost is O(items × direct edges), not O(values × items). An item counts towards a group exactly when it is in `descendants(group)`: the item's own edge kind composes too (`wheel part_of car is_a vehicle` is not counted in `vehicle`; issue #27). `groupsOfItem(…, 'closure')` is `ancestors`, and `matchingItems` uses the same scope. `tests/facets.test.ts` checks against a per-candidate loop over that definition and a 100 ms budget at 610 items × 5 families. |
 | `scopeFilter(space, group)` | a `FilterExpression` | **groups only**, never items. |
 | `ancestors` / `descendants` | `Set<NodeId>` | memoized, cycle-safe, per-kind. |
 | `membersOf(space, g, {expand})` | `NodeId[]` | `'direct' \| 'closure'` — **Zotero's checkbox**. |
