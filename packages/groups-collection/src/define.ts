@@ -649,9 +649,12 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         checkPosition(rt, { before: opts.before, after: opts.after } as Position);
         const anchor = (position.before ?? position.after)!;
         const g = nodeId(group);
-        if (!edgesOf(rt.current, g).some((e) => e.child === id)) return refuse(id, 'notFound', `'${id}' is not in '${group}'.`);
+        // Memberships only: an `excludes` edge (D36) or an alias says the item is NOT a ranked member (#66).
+        const member = (space: GroupSpace, child: string) =>
+          edgesOf(space, g).find((e) => e.child === child && isMembershipKind(space.profile, e.kind));
+        if (!member(rt.current, id)) return refuse(id, 'notFound', `'${id}' is not in '${group}'.`);
         if (anchor === id) return done(id);
-        if (!edgesOf(rt.current, g).some((e) => e.child === anchor)) {
+        if (!member(rt.current, anchor)) {
           return refuse(anchor, 'notFound', `'${anchor}' is not in '${group}', so nothing can be placed next to it.`);
         }
         return {
@@ -659,7 +662,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
           units: units([id]),
           spaces: [rt],
           build: (_r, space, ids) => {
-            const edge = ids.length ? edgesOf(space, g).find((e) => e.child === ids[0]) : undefined;
+            const edge = ids.length ? member(space, ids[0]!) : undefined;
             if (!edge) return {};
             const { ordered, reranked } = ranking(space, group, new Set([edge.child as string]));
             const [lo, hi] = slot(ordered, position);
@@ -784,9 +787,12 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
 
 /**
  * Read every record (#60). Pages are only stable under a sort, so a provider that can sort on the id
- * field (`serverSort`) is paged sorted by id; any other is read in one unpaged call. If that call
- * comes back capped (fewer rows than `total`), it is paged after all, de-duplicated by id: the best
- * an unsortable, capped provider allows (a repeat is dropped; a skip cannot be seen).
+ * field (`serverSort`) is paged sorted by id. One that cannot, but paginates server-side
+ * (`serverPagination`), is paged in its natural order (#67): one unpaged read of a large remote table
+ * may be too heavy, or refused, and such a server's own order is what its pages are built on. Any
+ * other is read in one unpaged call; if that comes back capped (fewer rows than `total`), it is paged
+ * after all. Unsorted pages are de-duplicated by id: the best an unsortable provider allows (a repeat
+ * is dropped; a skip cannot be seen).
  */
 async function readAll<T extends Record<string, unknown>>(
   provider: DataProvider<T>,
@@ -796,7 +802,7 @@ async function readAll<T extends Record<string, unknown>>(
   const caps = provider.getCapabilities?.();
   const sortable = caps?.serverSort === true || (Array.isArray(caps?.serverSort) && caps.serverSort.includes(idField));
   let size = pageSize;
-  if (!sortable) {
+  if (!sortable && caps?.serverPagination !== true) {
     const all = await provider.getList(base);
     if (!all.data.length || all.data.length >= all.total) return all.data;
     // Capped: page no larger than the cap, or every page would come back short and end the loop.
