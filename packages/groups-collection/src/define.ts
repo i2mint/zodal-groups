@@ -20,6 +20,7 @@ import {
   newEpoch,
   nodeId,
   orderBetween,
+  resolveAlias,
   type Edge,
   type EdgeDelta,
   type EdgeId,
@@ -386,9 +387,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
-    tag(ids, group, opts = {}) {
+    tag(ids, alias, opts = {}) {
       return run('tag', () => {
         const rt = runtime(opts.space);
+        const group = canonical(rt, alias);
         const kind = checkKind(rt, opts.kind);
         checkPosition(rt, opts.position);
         const anchor = opts.position?.before ?? opts.position?.after;
@@ -416,8 +418,8 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       return run('bulkTag', () => {
         const rt = runtime(change.space);
         const kind = checkKind(rt, change.kind);
-        const add = [...new Set(change.add ?? [])];
-        const remove = [...new Set(change.remove ?? [])];
+        const add = [...new Set((change.add ?? []).map((g) => canonical(rt, g)))];
+        const remove = [...new Set((change.remove ?? []).map((g) => canonical(rt, g)))];
         const both = add.filter((g) => remove.includes(g));
         if (both.length) throw new Error(`bulkTag: ${both.join(', ')} is both added and removed.`);
         // Labels for groups this change creates. A label equal to the id says nothing new.
@@ -588,8 +590,14 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     },
   };
 
-  function untagPlan(operation: string, ids: readonly string[], group: string, space: string | undefined): Plan<T> {
+  /** The name a tag is written under: an alias (`to-do alias_of todo`) resolves to `todo` (#43). */
+  function canonical(rt: { readonly current: GroupSpace }, group: string): string {
+    return resolveAlias(rt.current, nodeId(group));
+  }
+
+  function untagPlan(operation: string, ids: readonly string[], alias: string, space: string | undefined): Plan<T> {
     const rt = runtime(space);
+    const group = canonical(rt, alias);
     return {
       operation,
       units: units(ids),

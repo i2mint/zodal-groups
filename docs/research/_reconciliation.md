@@ -80,6 +80,7 @@ rejected.
 | **D32** | **Selection tagging is a headless descriptor that never writes**: tri-state over *direct* memberships; refusals dry-run with the staged *removals* applied; staged additions that clash are plan-level conflicts; the output is a plan (`add`/`remove` per group, `bulkTag` batches) the caller writes. Every `Violation` code maps to a sentence + fix in one overridable table. | A menu that calls the collection (groups-ui would import a store); refusals judged against the current space (the exclusive-family switch would read as refused); silently picking a winner between two staged values of an exclusive family. | §8.9; [#3](https://github.com/i2mint/zodal-groups/issues/3) |
 | **D31** | **`@zodal/groups-collection` runs every operation in one order — dry-run the rules, write records, write each store once with `expectedRevision`, update embedded caches — and returns an inverse split per item.** Per item, record and edges succeed together or are compensated; bulk keeps what succeeded; no history. | Edges first (the common failure, a record write, would then always need a compensating store write); one undo stack in the facade (the app's history owns undo, zgroups_05 §1.8); an all-or-nothing bulk (acture: partial stays applied). | §8.8; [#1](https://github.com/i2mint/zodal-groups/issues/1) |
 | **D33** | **Valued tags are a preset, not a field**: `keyedTags` = `{ maxParentsPerGroup: 1, maxDepth: 1 }`; a key is a group with `family` (`EXCLUSIVE`: one value per key), its values are child groups, values stay nodes (D1). Not a default `inferProfile` candidate | a `value` field on edges; a preset called `facets`; inferring it from dials (it would rename every shallow `nestedTags` space) | §8.10; [#42](https://github.com/i2mint/zodal-groups/issues/42) |
+| **D34** | **Aliases are an edge kind, resolved by the facade**: built-in `alias_of` (not transitive, not membership, acyclic, `maxPerChild: 1`); `resolveAlias` collapses chains; `groups-collection` resolves on write | `related` as "same as"; `applyDelta` rewriting a delta; keeping alias chains | §8.11; [#43](https://github.com/i2mint/zodal-groups/issues/43) |
 
 ---
 
@@ -468,6 +469,17 @@ The view contract (polytag `ui-patterns.md` §4.2, M5 and M9) asks every view fo
 - **What it enforces, and what it does not.** The dials hold a value under one key and stop a value having values *once the value holds an item*: an empty value is an item (D29), so it may sit under two keys until it is tagged onto something, and that tag is then refused. One value per key needs the key's `family`; nothing makes a key carry one, and nothing stops an item being put in a key directly. Those are the host's conventions (a `keyedTags` facade could check them; no consumer needs it yet).
 - **Not inferred by default.** Its dials alone describe a shallow `nestedTags`, so as a default candidate it would rename every such space (`inferProfile` picks the tightest fit). It is considered only when passed in `candidates`.
 - **Out of scope** until a consumer needs range or ordering queries over values (`year=2017`, `rating>=4`): typed values on `Edge.meta` with a store index.
+
+### 8.11 Aliases: the `alias_of` kind (D34) — [#43](https://github.com/i2mint/zodal-groups/issues/43), from [#4](https://github.com/i2mint/zodal-groups/issues/4) item 5
+
+Implications ("A implies B", Hydrus parents) were already covered by a transitive edge read with `expand: 'closure'` (D9). Aliases were not: `related` is "see also", not "same as".
+
+**Decision.** A built-in kind `alias_of` in `DEFAULT_EDGE_KINDS` (so every profile, flat tags included, since Hydrus siblings are flat): not transitive (closure never follows it), not a membership, acyclic, at most one canonical per alias (a new per-kind dial, `EdgeKindDef.maxPerChild`, violation `maxPerChild`), disjoint with every other built-in kind. **Resolved by the facade, never by the core**: `resolveAlias(space, id)` is a read helper; `@zodal/groups-collection` resolves the group name in `tag`, `untag`, `removeFromGroup` and `bulkTag`; `applyDelta` never rewrites a delta (D7).
+
+- **Chains collapse** (`a → b → c` resolves to `c`), as Hydrus does. No third kind semantic (`resolves: true`) until an import format needs chains kept.
+- **Not a typed kind for inference**: an alias edge alone does not make `inferProfile` choose `thesaurus`.
+- **Not enforced**: that an alias has no memberships of its own. Writes through the facade never create one; a store written directly can.
+- Read-side resolution in the tag input and search UI is a follow-up.
 
 ---
 

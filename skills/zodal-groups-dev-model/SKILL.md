@@ -48,7 +48,7 @@ interface Edge {
   readonly id: EdgeId;
   readonly parent: NodeId;      // the group
   readonly child: NodeId;       // an item OR another group
-  readonly kind: EdgeKind;      // 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | …
+  readonly kind: EdgeKind;      // 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | 'alias_of' | …
   readonly label?: string;      // the name of the child WITHIN THIS PARENT (dentry-style)
   readonly order?: string;      // fractional index — a rank per (group, item), not per item
   readonly meta?: Readonly<Record<string, unknown>>;   // provenance: `assertedBy` ⇒ folksonomy
@@ -107,8 +107,11 @@ interface EdgeKindDef {
   readonly composesWith?: Record<string, EdgeKind>;      // GO: is_a ∘ part_of → part_of
   readonly disjointWith?: readonly EdgeKind[];           // SKOS S27: related ⊥ broaderTransitive (checked both ways)
   readonly membership?: boolean;                         // "child is IN parent"? default !symmetric (D30)
+  readonly maxPerChild?: number;                         // edges of this kind INTO one node (alias_of: 1) → 'maxPerChild'
 }
 ```
+
+**`alias_of` (D34, Hydrus siblings)** is a built-in kind in every profile: `to-do alias_of todo` = one tag, two names. Not transitive, not membership, acyclic, `maxPerChild: 1`, disjoint with every other built-in kind. `resolveAlias(space, id)` follows it (chains collapse to the end, as Hydrus does); **facades resolve on write** (`groups-collection`'s `tag` / `untag` / `removeFromGroup` / `bulkTag`), **`applyDelta` never rewrites a delta (D7)**. It does not count as a "typed kind" for `inferProfile`'s `thesaurus` evidence.
 
 **When `composesWith` is absent, a chain only continues through the *same* kind.** That is the
 conservative reading, and it is what stops the wheel from becoming a vehicle. Do not "fix" it.

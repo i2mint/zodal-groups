@@ -37,6 +37,7 @@ const ALL_CODES = [
   'groupsAreItems',
   'unknownEdgeKind',
   'disjointEdgeKind',
+  'maxPerChild',
   'selfEdge',
   'duplicateEdge',
   'danglingEdge',

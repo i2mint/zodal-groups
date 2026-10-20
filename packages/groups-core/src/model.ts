@@ -57,7 +57,7 @@ export const edgeId = (s: string): EdgeId => s as EdgeId;
  *
  * The `(string & {})` union keeps the built-in names auto-completable without closing the set.
  */
-export type EdgeKind = 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | (string & {});
+export type EdgeKind = 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | 'alias_of' | (string & {});
 
 /**
  * The declared semantics of an edge kind. **This is the part most tagging libraries forget**, and
@@ -96,6 +96,11 @@ export interface EdgeKindDef {
    * custom kind: **declare `membership: false` on such kinds** (reconciliation D30).
    */
   readonly membership?: boolean;
+  /**
+   * At most this many edges of this kind may point INTO one child (`undefined`: no cap). An alias
+   * has one canonical name: `alias_of` declares `maxPerChild: 1`. Checked on write (`maxPerChild`).
+   */
+  readonly maxPerChild?: number;
 }
 
 /** The default kind: plain containment. Transitive and acyclic — the folder/tag intuition. */
@@ -111,6 +116,18 @@ export const DEFAULT_EDGE_KINDS: Readonly<Record<string, EdgeKindDef>> = Object.
   instance_of: { transitive: false, acyclic: true, membership: true },
   // `related` is an associative, non-hierarchical link. It never participates in closure.
   related: { transitive: false, symmetric: true, membership: false, disjointWith: ['contains', 'is_a', 'part_of'] },
+  // `alias_of` (Hydrus siblings): `to-do alias_of todo` says the two names are one tag. Never
+  // followed by closure, not a membership, acyclic, one canonical name per alias, and never
+  // combined with another link between the same two nodes. DECLARED here, RESOLVED by the facade
+  // on write (`resolveAlias`, in `@zodal/groups-collection`'s tagging), never by `applyDelta`, which
+  // does not rewrite a delta (D7). A chain `a → b → c` resolves to `c`, as Hydrus collapses it.
+  alias_of: {
+    transitive: false,
+    acyclic: true,
+    membership: false,
+    maxPerChild: 1,
+    disjointWith: ['contains', 'is_a', 'part_of', 'instance_of', 'related'],
+  },
 });
 
 // ── the canonical relation ──────────────────────────────────────────────────
@@ -284,6 +301,7 @@ export interface Violation {
     | 'groupsAreItems'
     | 'unknownEdgeKind'
     | 'disjointEdgeKind'
+    | 'maxPerChild'
     | 'selfEdge'
     | 'duplicateEdge'
     | 'danglingEdge'
