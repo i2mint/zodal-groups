@@ -182,3 +182,10 @@ describe('renderFacetSidebar', () => {
     expect(panelOf('misc').querySelector('.zg-facet-none')!.textContent).toBe('No values');
   });
 });
+
+describe('dropped ids (issue #30)', () => {
+  it('view().dropped lists what a restored selection could not apply', () => {
+    const s = renderFacetSidebar(container, build(), { families: ['genre'], selected: ['rock', 'ghost'] });
+    expect(s.view().dropped).toEqual(['ghost']);
+  });
+});

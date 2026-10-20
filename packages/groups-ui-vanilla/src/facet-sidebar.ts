@@ -47,12 +47,12 @@ export interface FacetSidebarRendererOptions extends Omit<FacetSidebarOptions, '
   readonly onSelect?: (selected: ReadonlySet<NodeId>, view: FacetSidebarView) => void;
   /** A family's panel opened, or the open one closed (`null`). */
   readonly onOpen?: (family: NodeId | null) => void;
-  /** The widget's accessible name. Default "Filters". */
+  /** The widget's accessible name (as in every renderer here). Default "Filters". Its words are `labels`. */
   readonly label?: string;
 }
 
 export interface FacetSidebarRenderer {
-  /** The selection applied (normalized: values of no listed family are dropped). */
+  /** The selection applied (normalized: values of no listed family are dropped; `view().dropped` lists them). */
   readonly selected: ReadonlySet<NodeId>;
   /** The family whose panel is open. */
   readonly open: NodeId | null;

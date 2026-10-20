@@ -20,8 +20,8 @@
  * The selection is one set of value ids. A group that is a value of two listed families is selected
  * in both at once: it shows a chip in each, unticking it in one unticks it in the other, and
  * clearing either family clears it. Ids that are not a listed family's direct child group (a
- * grandchild, an unknown id, a value not loaded yet) are dropped from `view.selected`; compare it
- * with what you passed to learn what was dropped.
+ * grandchild, an unknown id, a value not loaded yet) are dropped from `view.selected` and listed in
+ * `view.dropped`, so a host can clean its URL.
  *
  * @see issue #15; the `faceted-filter-ux` guidance (one button per family, inline panel, chips).
  */
@@ -101,7 +101,7 @@ export interface FacetSidebarOptions {
   readonly labels?: Partial<FacetSidebarLabels>;
 }
 
-/** One value in a family's panel: a checkbox. */
+/** One value in a family's panel: a checkbox. `depth` (from `FacetValue`) is always 0 here. */
 export interface FacetSidebarValue extends FacetValue {
   /** Unique within the sidebar: `family + '/' + group`. */
   readonly key: string;
@@ -136,6 +136,12 @@ export interface FacetSidebarView {
   readonly applied: readonly AppliedFacet[];
   /** The selection actually applied (normalized). */
   readonly selected: ReadonlySet<NodeId>;
+  /**
+   * The requested ids that were not applied, once each, in request order: a grandchild, an unknown
+   * id, a value of no listed family, or a URL selection restored before the model loaded. Empty
+   * when everything requested applies. A host that mirrors the selection in its URL rewrites it.
+   */
+  readonly dropped: readonly NodeId[];
   readonly open: NodeId | null;
   /** The items the whole selection matches, in pool order (the pool when nothing is selected). */
   readonly matching: readonly NodeId[];
@@ -240,6 +246,7 @@ export function toFacetSidebar<P>(groups: Groups<P>, options: FacetSidebarOption
     families: familyViews,
     applied,
     selected,
+    dropped: [...requested].filter((id) => !selected.has(id)),
     open,
     matching: matchOf.size ? pool.filter((item) => passes(item)) : pool,
     summary: applied.map((a) => a.text).join(` ${labels.and} `),
