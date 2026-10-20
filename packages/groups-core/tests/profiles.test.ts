@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { defineGroups, nodeId } from '../src/index.js';
+import { defineGroups, EXCLUSIVE, nodeId } from '../src/index.js';
 
 describe('profile: filesystem — an item lives in exactly one place', () => {
   it('accepts the first parent and refuses the second', () => {
@@ -160,5 +160,41 @@ describe('the same edges, different profiles', () => {
     const fs = defineGroups({ profile: 'filesystem' });
     expect(fs.add(edges[0]!.child, edges[0]!.parent).ok).toBe(true);
     expect(fs.add(edges[1]!.child, edges[1]!.parent).ok).toBe(false); // the ONLY difference
+  });
+});
+
+describe('profile: keyedTags — key=value tags, values are nodes (#42, D33)', () => {
+  const build = () => {
+    const g = defineGroups({ profile: 'keyedTags' });
+    expect(g.apply({ upsertNodes: [{ id: nodeId('year'), family: EXCLUSIVE }, { id: nodeId('env'), family: EXCLUSIVE }] }).ok).toBe(true);
+    for (const [value, key] of [['2017', 'year'], ['2018', 'year'], ['prod', 'env']] as const) expect(g.add(value, key).ok).toBe(true);
+    return g;
+  };
+
+  it('an item takes one value from each of several keys', () => {
+    const g = build();
+    expect(g.add('photo', '2017').ok).toBe(true);
+    expect(g.add('photo', 'prod').ok).toBe(true);
+  });
+
+  it('an item cannot take two values of an EXCLUSIVE key', () => {
+    const g = build();
+    expect(g.add('photo', '2017').ok).toBe(true);
+    const second = g.add('photo', '2018');
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.violations.map((v) => v.code)).toContain('maxPerFamily');
+  });
+
+  it('a value sits under one key, and has no values of its own', () => {
+    const g = build();
+    // A value with no items is still an item (group-ness is having children): tag one first.
+    expect(g.add('photo', '2017').ok).toBe(true);
+    const twoKeys = g.add('2017', 'env');
+    expect(twoKeys.ok).toBe(false);
+    if (!twoKeys.ok) expect(twoKeys.violations.map((v) => v.code)).toContain('maxParentsPerGroup');
+    expect(g.add('Q1', '2017').ok).toBe(true); // an item, for now
+    const nested = g.add('scan', 'Q1'); // would make Q1 a value of a value
+    expect(nested.ok).toBe(false);
+    if (!nested.ok) expect(nested.violations.map((v) => v.code)).toContain('maxDepth');
   });
 });

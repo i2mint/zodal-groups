@@ -72,13 +72,20 @@ export interface InferredProfile {
 }
 
 export interface InferProfileOptions {
-  /** The profiles to choose from, in preference order. Defaults to every non-deprecated built-in profile. */
+  /** The profiles to choose from, in preference order. Defaults to every non-deprecated built-in profile except `keyedTags` (`NOT_INFERRED`). */
   readonly candidates?: readonly (ProfileName | GroupProfile)[];
 }
 
+/**
+ * Presets whose defining trait is run-time data, not a dial (`keyedTags`: keys carry `family`).
+ * Inferred from the dials alone, every shallow `nestedTags` space would come out `keyedTags`
+ * (D33). Pass them in `candidates` to consider them.
+ */
+const NOT_INFERRED: ReadonlySet<ProfileName> = new Set<ProfileName>(['keyedTags']);
+
 /** Infer the tightest profile a space satisfies. See the module docstring. */
 export function inferProfile<P>(space: GroupSpace<P>, options: InferProfileOptions = {}): InferredProfile {
-  const defaults = (Object.keys(PROFILES) as ProfileName[]).filter((name) => !DEPRECATED_PROFILES[name]);
+  const defaults = (Object.keys(PROFILES) as ProfileName[]).filter((name) => !DEPRECATED_PROFILES[name] && !NOT_INFERRED.has(name));
   const candidates = (options.candidates ?? defaults).map((c) =>
     resolveProfile(c),
   );

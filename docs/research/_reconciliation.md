@@ -79,6 +79,7 @@ rejected.
 | **D29** | **Group-ness is judged on the delta's end state, and a node that *becomes* a group is held to the group rules** for the memberships it already has. | Judging each edge in list order (undo of a group delete could fail by edge order), and never re-checking a new group's parents (`flatTags` broke in two steps). | §8.5 |
 | **D32** | **Selection tagging is a headless descriptor that never writes**: tri-state over *direct* memberships; refusals dry-run with the staged *removals* applied; staged additions that clash are plan-level conflicts; the output is a plan (`add`/`remove` per group, `bulkTag` batches) the caller writes. Every `Violation` code maps to a sentence + fix in one overridable table. | A menu that calls the collection (groups-ui would import a store); refusals judged against the current space (the exclusive-family switch would read as refused); silently picking a winner between two staged values of an exclusive family. | §8.9; [#3](https://github.com/i2mint/zodal-groups/issues/3) |
 | **D31** | **`@zodal/groups-collection` runs every operation in one order — dry-run the rules, write records, write each store once with `expectedRevision`, update embedded caches — and returns an inverse split per item.** Per item, record and edges succeed together or are compensated; bulk keeps what succeeded; no history. | Edges first (the common failure, a record write, would then always need a compensating store write); one undo stack in the facade (the app's history owns undo, zgroups_05 §1.8); an all-or-nothing bulk (acture: partial stays applied). | §8.8; [#1](https://github.com/i2mint/zodal-groups/issues/1) |
+| **D33** | **Valued tags are a preset, not a field**: `keyedTags` = `{ maxParentsPerGroup: 1, maxDepth: 1 }`; a key is a group with `family` (`EXCLUSIVE`: one value per key), its values are child groups, values stay nodes (D1). Not a default `inferProfile` candidate | a `value` field on edges; a preset called `facets`; inferring it from dials (it would rename every shallow `nestedTags` space) | §8.10; [#42](https://github.com/i2mint/zodal-groups/issues/42) |
 
 ---
 
@@ -457,6 +458,16 @@ The view contract (polytag `ui-patterns.md` §4.2, M5 and M9) asks every view fo
 - **Failures are announced in plain language** by their code (`failureReasons`); the provider's raw text only for an unknown code.
 
 **Amendment (PR review: accessibility).** Options are updated in place with ids derived from the group, and `aria-activedescendant` is written only when the target changes (rebuilding pointed the same id at a new node: no event). `aria-checked="mixed"` is not defined on `option`: options are checked only for *all*, and the name carries the state and what is staged (*"urgent, on 1 of 3, will add to 2"*). Apply is `aria-disabled` (focusable, says why: `view.blocked`); one polite live region announces "Applying…", the outcome, a conflict (once), a discard, and `view.notice` (a selection change — compared as a set — that dropped staged changes). The menu does not close mid-write; if destroyed anyway, the outcome reaches `onAnnounce` and the `apply()` promise. Escape behaves like Cancel; text cues meet 4.5:1 and the active outline 3:1 on light and dark, with a forced-colors rule.
+
+### 8.10 Valued tags: the `keyedTags` preset (D33) — [#42](https://github.com/i2mint/zodal-groups/issues/42), from [#4](https://github.com/i2mint/zodal-groups/issues/4) item 3
+
+`key=value` tags (S3 object tags, Kubernetes labels, TMSU) needed no new model: a key is a group carrying `family` (D26), its values are its child groups, and an item takes a value by an ordinary edge. Values stay nodes (D1); edges get no `value` field.
+
+**Decision.** A named preset `keyedTags = { maxParentsPerGroup: 1, maxDepth: 1 }`: a value sits under one key, and a value has no values of its own. "One value per key" is the key's `family: EXCLUSIVE`, not a dial, because which groups are keys is run-time data. Not called `facets` (it would clash with the facet projection and with zodal-dials).
+
+- **What it enforces, and what it does not.** The dials hold a value under one key and stop a value having values *once the value holds an item*: an empty value is an item (D29), so it may sit under two keys until it is tagged onto something, and that tag is then refused. One value per key needs the key's `family`; nothing makes a key carry one, and nothing stops an item being put in a key directly. Those are the host's conventions (a `keyedTags` facade could check them; no consumer needs it yet).
+- **Not inferred by default.** Its dials alone describe a shallow `nestedTags`, so as a default candidate it would rename every such space (`inferProfile` picks the tightest fit). It is considered only when passed in `candidates`.
+- **Out of scope** until a consumer needs range or ordering queries over values (`year=2017`, `rating>=4`): typed values on `Edge.meta` with a store index.
 
 ---
 
