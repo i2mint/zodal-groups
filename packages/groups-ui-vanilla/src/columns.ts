@@ -142,7 +142,7 @@ export function renderColumns<P>(
       if (!dragging) return;
       const ok =
         e.altKey && dragging.parent
-          ? groups.move(dragging.nodeId, dragging.parent, row.nodeId, dragging.kind ? { kind: dragging.kind } : undefined).ok
+          ? groups.move(dragging.nodeId, dragging.parent, row.nodeId, dragging.kind ? { fromKind: dragging.kind } : undefined).ok
           : groups.add(dragging.nodeId, row.nodeId).ok;
       if (ok) {
         options.onChange?.();

@@ -104,9 +104,9 @@ function rowsFor<P>(
     if (!includeItems && childCount === 0) continue;
     const path = [...parentPath, id];
     const parentCount = space.inverse.get(id)?.size ?? 0;
-    const edge = parentPath.length
-      ? edgesOf(space, parentPath[parentPath.length - 1]!).find((e) => e.child === id)
-      : undefined;
+    // The row's edge: a transitive one when there is one (that is what put the row in the column).
+    const between = parentPath.length ? edgesOf(space, parentPath[parentPath.length - 1]!).filter((e) => e.child === id) : [];
+    const edge = between.find((e) => space.profile.edgeKinds[e.kind]?.transitive) ?? between[0];
 
     rows.push({
       nodeId: id,

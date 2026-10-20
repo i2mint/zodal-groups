@@ -174,7 +174,7 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
   const canMove = Boolean(sourceParent) && sourceParent !== parent;
   // The edge on screen: a row's `edge` runs from the parent it is shown under.
   const kind = source.edge?.parent === sourceParent ? source.edge?.kind : undefined;
-  const moveInit = kind !== undefined ? { kind } : {};
+  const moveInit = kind !== undefined ? { fromKind: kind } : {};
   if (modifiers?.alt && canMove) {
     const moved = moveTo(groups.space, child, sourceParent!, parent, moveInit);
     if (!moved.ok) return refuse(groups, moved.violations, options);
@@ -256,7 +256,7 @@ export function applyDrop<P>(groups: Groups<P>, target: DropTarget): boolean {
     case 'add':
       return groups.add(op.child, op.parent).ok;
     case 'move':
-      return groups.move(op.child, op.from, op.to, op.kind !== undefined ? { kind: op.kind } : undefined).ok;
+      return groups.move(op.child, op.from, op.to, op.kind !== undefined ? { fromKind: op.kind } : undefined).ok;
     case 'reorder':
       // Reordering is an edge update; the ranks come from the caller's fractional index.
       return true;

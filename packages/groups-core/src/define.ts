@@ -33,6 +33,7 @@ import {
   deleteNodeDelta,
   invert,
   moveDelta,
+  moveViolation,
   type MoveInit,
   orphansOf,
   parentsOf,
@@ -86,7 +87,7 @@ export interface Groups<P = unknown> {
   remove(child: NodeId | string, parent: NodeId | string): Result<GroupSpace<P>>;
   /**
    * Move `child` from one group to another: its edges from `from` are re-pointed to `to`, keeping
-   * their kind, label and meta (`init.kind` picks one edge; see `moveDelta`).
+   * their kind, label and meta (`init.fromKind` picks one edge; see `moveDelta`).
    */
   move(child: NodeId | string, from: NodeId | string, to: NodeId | string, init?: MoveInit): Result<GroupSpace<P>>;
   destroy(node: NodeId | string): Result<GroupSpace<P>>;
@@ -213,6 +214,8 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
     },
 
     move(child, from, to, init) {
+      const refused = moveViolation(space, id(child), id(from), id(to), init);
+      if (refused) return { ok: false, violations: [refused] };
       const delta = moveDelta(space, id(child), id(from), id(to), init);
       return commit(applyDelta(space, delta), delta);
     },

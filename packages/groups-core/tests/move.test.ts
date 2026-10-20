@@ -1,7 +1,7 @@
 /**
  * `moveDelta` / `moveTo`: a move re-points the edge, it does not replace it with a bare one.
  * The moved edge keeps its kind, label and meta; a ranked edge is re-ranked at the end of the new
- * parent; `init.kind` picks one edge when several link the old parent to the child (issue #25).
+ * parent; `init.fromKind` picks one edge when several link the old parent to the child (issue #25).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -68,11 +68,11 @@ describe('moveTo keeps the moved edge', () => {
     expect(into(moved, 'doc', 'b')[0]!.order).toBeUndefined();
   });
 
-  it('init.kind moves only that edge; without it every edge from `from` moves, each with its kind', () => {
+  it('init.fromKind moves only that edge; without it every edge from `from` moves, each with its kind', () => {
     const space = () =>
       createGroupSpace({ profile: 'thesaurus', edges: [e('car', 'wheel', { kind: 'part_of' }), e('car', 'wheel', { kind: 'instance_of' })] });
 
-    const one = ok(moveTo(space(), n('wheel'), n('car'), n('bike'), { kind: 'part_of' }));
+    const one = ok(moveTo(space(), n('wheel'), n('car'), n('bike'), { fromKind: 'part_of' }));
     expect(into(one, 'wheel', 'car').map((x) => x.kind)).toEqual(['instance_of']);
     expect(into(one, 'wheel', 'bike').map((x) => x.kind)).toEqual(['part_of']);
 
@@ -87,13 +87,61 @@ describe('moveTo keeps the moved edge', () => {
     expect(moveDelta(space, n('x'), n('a'), n('b'), { kind: 'is_a' }).added![0]!.kind).toBe('is_a');
   });
 
-  it('refuses one id for two moved edges', () => {
+  it('refuses one id for two moved edges: moveDelta throws, moveTo and Groups.move report it', () => {
     const space = createGroupSpace({
       profile: 'thesaurus',
       edges: [e('car', 'wheel', { kind: 'part_of' }), e('car', 'wheel', { kind: 'instance_of' })],
     });
-    expect(() => moveDelta(space, n('wheel'), n('car'), n('bike'), { id: edgeId('x') })).toThrow(/init\.kind/);
-    expect(moveDelta(space, n('wheel'), n('car'), n('bike'), { id: edgeId('x'), kind: 'part_of' }).added![0]!.id).toBe('x');
+    expect(() => moveDelta(space, n('wheel'), n('car'), n('bike'), { id: edgeId('x') })).toThrow(/fromKind/);
+    const refused = moveTo(space, n('wheel'), n('car'), n('bike'), { id: edgeId('x') });
+    expect(refused.ok).toBe(false);
+    expect(!refused.ok && refused.violations[0]!.code).toBe('malformed');
+    expect(moveDelta(space, n('wheel'), n('car'), n('bike'), { id: edgeId('x'), fromKind: 'part_of' }).added![0]!.id).toBe('x');
+
+    const g = defineGroups({ profile: 'thesaurus' });
+    g.add('wheel', 'car', { kind: 'part_of' });
+    g.add('wheel', 'car', { kind: 'instance_of' });
+    expect(g.move('wheel', 'car', 'bike', { id: edgeId('x') }).ok).toBe(false);
+  });
+
+  it('a fromKind with no matching edge is a plain add; init.kind re-types the moved edge', () => {
+    const space = createGroupSpace({ profile: 'thesaurus', edges: [e('car', 'wheel', { kind: 'part_of' })] });
+    const added = ok(moveTo(space, n('wheel'), n('car'), n('bike'), { fromKind: 'instance_of' }));
+    expect(into(added, 'wheel', 'car').map((x) => x.kind)).toEqual(['part_of']);
+    expect(into(added, 'wheel', 'bike').map((x) => x.kind)).toEqual(['contains']);
+
+    const retyped = ok(moveTo(space, n('wheel'), n('car'), n('bike'), { kind: 'is_a' }));
+    expect(into(retyped, 'wheel', 'bike').map((x) => x.kind)).toEqual(['is_a']);
+  });
+
+  it('an undefined init field never clears the carried one', () => {
+    const space = createGroupSpace({ profile: 'thesaurus', edges: [e('car', 'wheel', { kind: 'part_of', label: 'Front', meta: { a: 1 } })] });
+    const moved = ok(moveTo(space, n('wheel'), n('car'), n('bike'), { label: undefined, meta: undefined, kind: undefined }));
+    expect(into(moved, 'wheel', 'bike')[0]).toMatchObject({ kind: 'part_of', label: 'Front', meta: { a: 1 } });
+  });
+
+  it('from === to is a no-op', () => {
+    const space = createGroupSpace({ profile: 'filesystem', edges: [e('a', 'doc', { order: 'm' }), e('a', 'x', { order: 'q' })] });
+    expect(moveDelta(space, n('doc'), n('a'), n('a'))).toEqual({ added: [], removed: [] });
+  });
+
+  it('several ranked edges land after the last child, in increasing order', () => {
+    const space = createGroupSpace({
+      profile: 'thesaurus',
+      edges: [e('car', 'wheel', { kind: 'part_of', order: 'b' }), e('car', 'wheel', { kind: 'is_a', order: 'c' }), e('bike', 'frame', { order: 'q' })],
+    });
+    const delta = moveDelta(space, n('wheel'), n('car'), n('bike'));
+    const ranks = delta.added!.map((x) => x.order!);
+    expect(ranks.every((r) => r > 'q')).toBe(true);
+    expect(ranks[0]! < ranks[1]!).toBe(true);
+  });
+
+  it('refuses a move onto an edge `to` already has, and changes nothing', () => {
+    const space = createGroupSpace({ profile: 'thesaurus', edges: [e('car', 'wheel', { kind: 'part_of' }), e('bike', 'wheel', { kind: 'part_of' })] });
+    const result = moveTo(space, n('wheel'), n('car'), n('bike'));
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.violations.map((v) => v.code)).toContain('duplicateEdge');
+    expect(into(space, 'wheel', 'car')).toHaveLength(1);
   });
 
   it('inverts exactly: the original edge comes back with its id and fields', () => {
@@ -105,11 +153,11 @@ describe('moveTo keeps the moved edge', () => {
     expect([...back.edges.values()]).toEqual([original]);
   });
 
-  it('Groups.move takes the kind, and undo restores the edge', () => {
+  it('Groups.move takes fromKind, and undo restores the edge', () => {
     const g = defineGroups({ profile: 'thesaurus' });
     g.add('wheel', 'car', { kind: 'part_of', label: 'Front' });
     g.add('wheel', 'car', { kind: 'instance_of' });
-    expect(g.move('wheel', 'car', 'bike', { kind: 'part_of' }).ok).toBe(true);
+    expect(g.move('wheel', 'car', 'bike', { fromKind: 'part_of' }).ok).toBe(true);
     expect(into(g.space, 'wheel', 'bike')).toMatchObject([{ kind: 'part_of', label: 'Front' }]);
     expect(into(g.space, 'wheel', 'car').map((x) => x.kind)).toEqual(['instance_of']);
     expect(g.undo()).toBe(true);
