@@ -132,7 +132,7 @@ describe('a move under a single-parent profile (issue #18)', () => {
     const drop = resolveDrop(g, { source: row(g, 'report'), target: row(g, 'archive'), modifiers: { alt: true } });
 
     expect(drop.valid).toBe(true);
-    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive' });
+    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive', kind: 'contains' });
     expect(drop.destructive).toBe(true);
     expect(applyDrop(g, drop)).toBe(true);
     expect(g.parents('report')).toEqual(['archive']);
@@ -167,7 +167,7 @@ describe('a move under a single-parent profile (issue #18)', () => {
     const g = fs();
     const drop = resolveDrop(g, { source: row(g, 'report'), target: row(g, 'archive') }, { singleParentDrop: 'move' });
     expect(drop.valid).toBe(true);
-    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive' });
+    expect(drop.operation).toEqual({ type: 'move', child: 'report', from: 'documents', to: 'archive', kind: 'contains' });
     expect(drop.destructive).toBe(true);
     applyDrop(g, drop);
     expect(g.parents('report')).toEqual(['archive']);
@@ -225,7 +225,7 @@ describe('resolveDrop under single-parent profiles: the edges (review of #24)', 
   it("singleParentDrop: 'move' moves a group (maxParentsPerGroup: 1)", () => {
     const g = fs();
     const drop = resolveDrop(g, { source: row(g, 'plans'), target: row(g, 'archive') }, { singleParentDrop: 'move' });
-    expect(drop.operation).toEqual({ type: 'move', child: 'plans', from: 'projects', to: 'archive' });
+    expect(drop.operation).toEqual({ type: 'move', child: 'plans', from: 'projects', to: 'archive', kind: 'contains' });
   });
 
   it("singleParentDrop: 'move' never turns a loop into a move", () => {
@@ -268,5 +268,28 @@ describe('resolveDrop under single-parent profiles: the edges (review of #24)', 
     const drop = resolveDrop(g, { source: stale, target: row(g, 'archive'), modifiers: { alt: true } });
     expect(drop.valid).toBe(false);
     expect(drop.operation).toBeNull();
+  });
+});
+
+describe('a move keeps the edge on screen (issue #25)', () => {
+  it("⌥ drop of a part_of row moves that edge, keeping its kind, label and rank", () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    g.add('wheel', 'car', { kind: 'part_of', label: 'Front wheel', order: 'm' });
+    g.add('wheel', 'car', { kind: 'instance_of' });
+    g.add('frame', 'bike', { order: 'q' });
+    const rows = toTreeRows(g, { expandAll: true });
+    const source = rows.find((r) => r.nodeId === 'wheel')!.source; // tree rows follow transitive edges only
+    const target = rows.find((r) => r.nodeId === 'bike')!.source;
+
+    const drop = resolveDrop(g, { source, target, modifiers: { alt: true } });
+    expect(drop.operation).toEqual({ type: 'move', child: 'wheel', from: 'car', to: 'bike', kind: 'part_of' });
+    expect(applyDrop(g, drop)).toBe(true);
+
+    const moved = g.space.inverse.get(nodeId('wheel'))!;
+    const kinds = [...moved].map((id) => g.space.edges.get(id)!).map((e) => `${e.parent}:${e.kind}`).sort();
+    expect(kinds).toEqual(['bike:part_of', 'car:instance_of']); // the instance_of edge was not on screen: it stays
+    const edge = [...moved].map((id) => g.space.edges.get(id)!).find((e) => e.parent === 'bike')!;
+    expect(edge.label).toBe('Front wheel');
+    expect(edge.order! > 'q').toBe(true);
   });
 });

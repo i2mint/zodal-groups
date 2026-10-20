@@ -31,6 +31,7 @@
 import {
   canAddTo,
   moveTo,
+  type EdgeKind,
   type GroupProfile,
   type Groups,
   type NodeId,
@@ -84,8 +85,11 @@ export const DROP_MOVE_HINT = 'Hold ⌥ (Alt) while dropping to move it.';
 export type DropOperation =
   /** Add a parent. The node ends up in both places. The safe default. */
   | { readonly type: 'add'; readonly child: NodeId; readonly parent: NodeId }
-  /** Move between parents. Destructive — requires a modifier. */
-  | { readonly type: 'move'; readonly child: NodeId; readonly from: NodeId; readonly to: NodeId }
+  /**
+   * Move between parents. Destructive — requires a modifier. `kind` is the kind of the edge the
+   * dragged row was reached through (the one on screen); only that edge moves, and it stays that kind.
+   */
+  | { readonly type: 'move'; readonly child: NodeId; readonly from: NodeId; readonly to: NodeId; readonly kind?: EdgeKind }
   /** Reorder within the same parent. */
   | { readonly type: 'reorder'; readonly child: NodeId; readonly parent: NodeId; readonly before?: NodeId; readonly after?: NodeId };
 
@@ -168,10 +172,13 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
   // ⌥ = MOVE. Only meaningful when we know which parent to remove from, and it is checked as the
   // move it is (remove, then add): under a single-parent profile the add alone is never possible.
   const canMove = Boolean(sourceParent) && sourceParent !== parent;
+  // The edge on screen: a row's `edge` runs from the parent it is shown under.
+  const kind = source.edge?.parent === sourceParent ? source.edge?.kind : undefined;
+  const moveInit = kind !== undefined ? { fromKind: kind } : {};
   if (modifiers?.alt && canMove) {
-    const moved = moveTo(groups.space, child, sourceParent!, parent);
+    const moved = moveTo(groups.space, child, sourceParent!, parent, moveInit);
     if (!moved.ok) return refuse(groups, moved.violations, options);
-    return moveTarget(child, sourceParent!, parent);
+    return moveTarget(child, sourceParent!, parent, kind);
   }
 
   const violations = canAddTo(groups.space, child, parent);
@@ -179,8 +186,8 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
     const movable =
       canMove &&
       violations.every((v) => isSingleParentCap(groups.space.profile, v)) &&
-      moveTo(groups.space, child, sourceParent!, parent).ok;
-    if (movable && options.singleParentDrop === 'move') return moveTarget(child, sourceParent!, parent);
+      moveTo(groups.space, child, sourceParent!, parent, moveInit).ok;
+    if (movable && options.singleParentDrop === 'move') return moveTarget(child, sourceParent!, parent, kind);
     const hint = options.moveHint ?? DROP_MOVE_HINT;
     return refuse(groups, violations, options, movable && hint ? hint : undefined);
   }
@@ -194,9 +201,9 @@ export function resolveDrop<P>(groups: Groups<P>, gesture: DragGesture, options:
   };
 }
 
-function moveTarget(child: NodeId, from: NodeId, to: NodeId): DropTarget {
+function moveTarget(child: NodeId, from: NodeId, to: NodeId, kind?: EdgeKind): DropTarget {
   return {
-    operation: { type: 'move', child, from, to },
+    operation: { type: 'move', child, from, to, ...(kind !== undefined ? { kind } : {}) },
     valid: true,
     violations: [],
     indicator: 'highlight',
@@ -249,7 +256,7 @@ export function applyDrop<P>(groups: Groups<P>, target: DropTarget): boolean {
     case 'add':
       return groups.add(op.child, op.parent).ok;
     case 'move':
-      return groups.move(op.child, op.from, op.to).ok;
+      return groups.move(op.child, op.from, op.to, op.kind !== undefined ? { fromKind: op.kind } : undefined).ok;
     case 'reorder':
       // Reordering is an edge update; the ranks come from the caller's fractional index.
       return true;

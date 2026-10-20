@@ -20,6 +20,7 @@ import {
   edgeId,
   type Edge,
   type EdgeDelta,
+  type EdgeKind,
   type EdgeId,
   type GroupSpace,
   type Node,
@@ -31,6 +32,7 @@ import {
 import { resolveProfile, type GroupProfile, type ProfileName } from './profile.js';
 import { familyViolations, hasFamilyAtOrAbove } from './family.js';
 import { edgeProblem, isFamilyRule, nodeProblem, safe, sameValue } from './structure.js';
+import { compareOrder, orderBetween } from './order.js';
 
 // ── construction ────────────────────────────────────────────────────────────
 
@@ -771,23 +773,100 @@ export function removeFrom<P>(space: GroupSpace<P>, child: NodeId, parent: NodeI
 }
 
 /**
- * Move a node from one group to another — remove + add, atomically.
+ * What `moveTo` / `moveDelta` take: which edge moves (`fromKind`), and fields to set on the moved
+ * edge (`kind` re-types it, `label` / `order` / `meta` / `id` replace the carried ones). An
+ * `undefined` field is ignored, never a clear: a move keeps what it is not told to change.
+ */
+export type MoveInit = Partial<Omit<Edge, 'parent' | 'child'>> & {
+  /** Move only the edge of this kind from `from` (the edge on screen). Default: every edge from `from`. */
+  readonly fromKind?: EdgeKind;
+};
+
+/**
+ * The delta that moves a node from one group to another: its edges from `from` are re-pointed to
+ * `to`, each **keeping its kind, label and meta** (a moved `part_of` stays `part_of`).
+ *
+ * - `init.fromKind` picks which edge moves; without it, every edge from `from` to `child` moves (in
+ *   practice the one there is). When none matches, the move is a plain add of
+ *   `init.kind ?? 'contains'` (a move out of a group the node is not in removes nothing).
+ * - A ranked edge (one with an `order`) is re-ranked after `to`'s last ranked child: a rank only
+ *   means something among the siblings it was minted for, so carrying it across would drop the node
+ *   at an arbitrary position (or onto a tie). `init.order` places every moved edge there instead.
+ * - Other `init` fields override the carried ones (`kind` re-types the moved edge).
+ * - `from === to` is a no-op (an empty delta), not a move to the end of the list.
+ *
+ * @throws when `init.id` is given and more than one edge would move — one id cannot name two
+ *   edges. (`moveTo` and `Groups.move` report it as a `malformed` violation instead.)
+ */
+export function moveDelta<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to: NodeId, init: MoveInit = {}): EdgeDelta {
+  const { fromKind, ...fields } = definedFields(init);
+  if (from === to) return { added: [], removed: [] };
+  const moving = edgesMoving(space, child, from, fromKind);
+  if (!moving.length) return { removed: [], added: [makeEdge(to, child, fields)] };
+  if (fields.id !== undefined && moving.length > 1) throw new Error(moveIdProblem(moving.length, from, child));
+  let last: string | undefined | null = null; // null: not computed yet (it walks `to`'s children)
+  const nextRank = (): string => {
+    if (last === null) last = lastRankIn(space, to);
+    last = orderBetween(last, undefined);
+    return last;
+  };
+  const added = moving.map((e) => {
+    const order = fields.order ?? (e.order !== undefined ? nextRank() : undefined);
+    return makeEdge(to, child, { ...carriedFields(e), ...fields, ...(order !== undefined ? { order } : {}) });
+  });
+  return { removed: moving.map((e) => e.id), added };
+}
+
+/**
+ * Move a node from one group to another — remove + add, atomically (`moveDelta`, applied).
  *
  * Distinct from `addTo`, and the distinction is the single most dangerous one in the UI: a *move*
  * destroys an edge the user often cannot see. Renderers should default to `addTo` and require a
- * modifier for `moveTo` (Gmail's `Label` vs `Move to`).
+ * modifier for `moveTo` (Gmail's `Label` vs `Move to`). The moved edge keeps its kind, label and
+ * meta; see `moveDelta` for which edge moves and where a ranked edge lands.
  */
-export function moveTo<P>(
-  space: GroupSpace<P>,
-  child: NodeId,
-  from: NodeId,
-  to: NodeId,
-  init: Partial<Omit<Edge, 'parent' | 'child'>> = {},
-): Result<GroupSpace<P>> {
-  const removed = edgesInto(space, child)
-    .filter((e) => e.parent === from)
-    .map((e) => e.id);
-  return applyDelta(space, { removed, added: [makeEdge(to, child, init)] });
+export function moveTo<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to: NodeId, init: MoveInit = {}): Result<GroupSpace<P>> {
+  const refused = moveViolation(space, child, from, to, init);
+  if (refused) return { ok: false, violations: [refused] };
+  return applyDelta(space, moveDelta(space, child, from, to, init));
+}
+
+/** Why `moveDelta` would throw, as a violation: `init.id` with several edges to move. */
+export function moveViolation<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, to: NodeId, init: MoveInit = {}): Violation | undefined {
+  if (init.id === undefined || from === to) return undefined;
+  const count = edgesMoving(space, child, from, init.fromKind).length;
+  return count > 1 ? { code: 'malformed', message: moveIdProblem(count, from, child) } : undefined;
+}
+
+function edgesMoving<P>(space: GroupSpace<P>, child: NodeId, from: NodeId, fromKind: EdgeKind | undefined): Edge[] {
+  return edgesInto(space, child).filter((e) => e.parent === from && (fromKind === undefined || e.kind === fromKind));
+}
+
+const moveIdProblem = (count: number, from: NodeId, child: NodeId): string =>
+  `${count} edges link ${from} → ${child}, and one id cannot name them all; pass fromKind to pick one.`;
+
+/** `init` without its `undefined` fields, so spreading it never clears a carried field. */
+function definedFields(init: MoveInit): MoveInit {
+  return Object.fromEntries(Object.entries(init).filter(([, v]) => v !== undefined)) as MoveInit;
+}
+
+/** The highest rank among `group`'s children, or `undefined` when none is ranked. */
+function lastRankIn<P>(space: GroupSpace<P>, group: NodeId): string | undefined {
+  let last: string | undefined;
+  for (const e of edgesOf(space, group)) {
+    if (e.order !== undefined && (last === undefined || compareOrder(e.order, last) > 0)) last = e.order;
+  }
+  return last;
+}
+
+/** The fields an edge keeps when it is re-pointed (by a move or a merge): everything but its ends and id. */
+function carriedFields(e: Edge): MoveInit {
+  return {
+    kind: e.kind,
+    ...(e.label !== undefined ? { label: e.label } : {}),
+    ...(e.order !== undefined ? { order: e.order } : {}),
+    ...(e.meta !== undefined ? { meta: e.meta } : {}),
+  };
 }
 
 /**
@@ -833,23 +912,17 @@ export function mergeDelta<P>(space: GroupSpace<P>, from: NodeId, into: NodeId, 
   const mint = (parent: NodeId, child: NodeId, kind: string) => options.mintId?.(parent, child, kind);
   const has = (parent: NodeId, child: NodeId, kind: string) =>
     edgesInto(space, child).some((x) => x.parent === parent && x.kind === kind);
-  const carry = (e: Edge) => ({
-    kind: e.kind,
-    ...(e.label !== undefined ? { label: e.label } : {}),
-    ...(e.order !== undefined ? { order: e.order } : {}),
-    ...(e.meta !== undefined ? { meta: e.meta } : {}),
-  });
 
   const added: Edge[] = [];
   for (const e of edgesOf(space, from)) {
     if (e.child === into || has(into, e.child, e.kind)) continue;
     const id = mint(into, e.child, e.kind);
-    added.push(makeEdge(into, e.child, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+    added.push(makeEdge(into, e.child, { ...carriedFields(e), ...(id !== undefined ? { id } : {}) }));
   }
   for (const e of edgesInto(space, from)) {
     if (e.parent === into || has(e.parent, into, e.kind)) continue;
     const id = mint(e.parent, into, e.kind);
-    added.push(makeEdge(e.parent, into, { ...carry(e), ...(id !== undefined ? { id } : {}) }));
+    added.push(makeEdge(e.parent, into, { ...carriedFields(e), ...(id !== undefined ? { id } : {}) }));
   }
   return { ...deleteNodeDelta(space, from), added };
 }

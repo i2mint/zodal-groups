@@ -32,7 +32,9 @@ import {
   createGroupSpace,
   deleteNodeDelta,
   invert,
-  moveTo,
+  moveDelta,
+  moveViolation,
+  type MoveInit,
   orphansOf,
   parentsOf,
   removeFrom,
@@ -83,7 +85,11 @@ export interface Groups<P = unknown> {
   // ── writes (all of them are deltas underneath) ────────────────────────────
   add(child: NodeId | string, parent: NodeId | string, init?: Partial<Omit<Edge, 'parent' | 'child'>>): Result<GroupSpace<P>>;
   remove(child: NodeId | string, parent: NodeId | string): Result<GroupSpace<P>>;
-  move(child: NodeId | string, from: NodeId | string, to: NodeId | string): Result<GroupSpace<P>>;
+  /**
+   * Move `child` from one group to another: its edges from `from` are re-pointed to `to`, keeping
+   * their kind, label and meta (`init.fromKind` picks one edge; see `moveDelta`).
+   */
+  move(child: NodeId | string, from: NodeId | string, to: NodeId | string, init?: MoveInit): Result<GroupSpace<P>>;
   destroy(node: NodeId | string): Result<GroupSpace<P>>;
   apply(delta: EdgeDelta): Result<GroupSpace<P>>;
   /**
@@ -207,15 +213,11 @@ export function defineGroups<P = unknown>(options: DefineGroupsOptions<P> = {}):
       return commit(removeFrom(space, id(child), id(parent)), { removed });
     },
 
-    move(child, from, to) {
-      const before = space;
-      const result = moveTo(space, id(child), id(from), id(to));
-      if (!result.ok) return result;
-      const removed = [...before.edges.values()]
-        .filter((e) => e.child === id(child) && e.parent === id(from))
-        .map((e) => e.id);
-      const added = [...result.value.edges.values()].filter((e) => !before.edges.has(e.id));
-      return commit(result, { added, removed });
+    move(child, from, to, init) {
+      const refused = moveViolation(space, id(child), id(from), id(to), init);
+      if (refused) return { ok: false, violations: [refused] };
+      const delta = moveDelta(space, id(child), id(from), id(to), init);
+      return commit(applyDelta(space, delta), delta);
     },
 
     destroy(node) {
