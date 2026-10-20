@@ -77,6 +77,8 @@ export {
   deleteNodeDelta,
   mergeDelta,
   canAddTo,
+  mayRefusePlainItems,
+  mayRefuseEmptying,
   findCycle,
   childrenOf,
   parentsOf,

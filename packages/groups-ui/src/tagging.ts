@@ -42,6 +42,8 @@ import {
   isGroup,
   isMembershipKind,
   makeEdge,
+  mayRefuseEmptying,
+  mayRefusePlainItems,
   nodeId,
   primaryPath,
   validateEdge,
@@ -473,8 +475,21 @@ function computeCore(
     };
   };
 
+  // Plain items only (nothing below any selected node): then a row where no rule could refuse a
+  // plain item skips the per-item dry run (issue #31). `mayRefusePlainItems` is the core's
+  // guarantee, property-tested against `validateEdge`.
+  const plainSelection = selection.every((item) => !(space.forward.get(item)?.size ?? 0));
+
   /** Which of `lacking` the model would refuse to put in `group` — the dry run of Apply. */
   const addRefusals = (group: NodeId, lacking: readonly NodeId[], against: GroupSpace): Refusal[] => {
+    if (
+      plainSelection &&
+      !selectionSet.has(group) &&
+      !hasFamilyAtOrAbove(against, group) &&
+      !mayRefusePlainItems(against, group, kind)
+    ) {
+      return [];
+    }
     const out: Refusal[] = [];
     const passing: Edge[] = [];
     for (const item of lacking) {
@@ -506,6 +521,7 @@ function computeCore(
 
   /** Taking the selection out of `group` is refused only when it empties the group (D29). */
   const removalRefusals = (group: NodeId): ExplainedViolation[] => {
+    if (!mayRefuseEmptying(space, group)) return []; // no rule could refuse it: skip the dry run (#31)
     const all = edgesOf(space, group).filter((e) => isMembershipKind(space.profile, e.kind));
     const leaving = removalEdges(group);
     if (!leaving.length || leaving.length < all.length) return [];
