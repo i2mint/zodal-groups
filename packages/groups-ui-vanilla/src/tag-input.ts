@@ -19,12 +19,14 @@
  * matching groups, and, when no group has that exact name, an explicit **Create “…”** option. Enter
  * picks the group the text names (case-insensitively), or the only group it is a prefix of; with no
  * match it says so and creates nothing. Creating is choosing that option (arrow to it, or tap it),
- * so a typo ("Campf") picks "Campfire" or asks, and never quietly becomes a new group. The field is
+ * so a typo ("Campf") picks "Campfire" or asks, and never quietly becomes a new group. A group's
+ * other names (`alias_of`, D34) match too: typing `to-do` offers `todo`, once, and Enter picks it. The field is
  * built once and never re-rendered: what you are typing, and focus, survive every redraw.
  */
 
 import {
   edgesInto,
+  aliasMap,
   edgesOf,
   invert,
   isGroup,
@@ -274,7 +276,9 @@ export function renderTagInput<P>(
   root.insertBefore(field, status);
 
   /** What an option does when chosen. */
-  type Option = { readonly kind: 'group'; readonly id: NodeId; readonly label: string; readonly path?: string } | { readonly kind: 'create'; readonly text: string };
+  type Option =
+    | { readonly kind: 'group'; readonly id: NodeId; readonly label: string; readonly path?: string; readonly alias?: string }
+    | { readonly kind: 'create'; readonly text: string };
   let choices: Option[] = [];
   let active = -1;
   /** Bumped on every list render, so an option id never points at a different node (aria-activedescendant). */
@@ -287,24 +291,52 @@ export function renderTagInput<P>(
     const q = norm(text);
     const space = groups.space;
     const member = new Set(groups.parents(current));
+    // Each group with its other names (`alias_of`): a match through one is shown on the group, once,
+    // and an alias is never offered itself (a tag goes to the canonical group, D34).
+    const aliases = aliasMap(space);
+    const aliasIds = new Set([...aliases.values()].flat());
+    const namesOf = (id: NodeId) => (aliases.get(id) ?? []).flatMap((a) => [nameOf(a), a]);
     const all = [...space.nodes.keys()]
-      .filter((id) => id !== current && isGroup(space, id))
-      .map((id) => ({ id, label: nameOf(id) }));
-    const exact = all.find((g) => norm(g.label) === q) ?? all.find((g) => norm(g.id) === q);
+      .filter((id) => id !== current && isGroup(space, id) && !aliasIds.has(id))
+      .map((id) => ({ id, label: nameOf(id), aliases: namesOf(id) }));
+    // The canonical node a typed alias names, whether or not it is offered (an empty vocabulary node).
+    const named = [...aliases].find(([, names]) => names.some((a) => norm(a) === q || norm(nameOf(a)) === q))?.[0];
+    /** `g` when its label passes `test`, else `g` with the first alias that does, else `null`. */
+    const via = (g: (typeof all)[number], test: (name: string) => boolean) => {
+      if (test(norm(g.label))) return g;
+      const alias = g.aliases.find((a) => test(norm(a)));
+      return alias === undefined ? null : { ...g, alias };
+    };
+    const exact =
+      all.find((g) => norm(g.label) === q) ??
+      all.find((g) => norm(g.id) === q) ??
+      all.map((g) => via(g, (n) => n === q)).find((g) => g !== null) ??
+      (named !== undefined && named !== current
+        ? { id: named, label: nameOf(named), aliases: namesOf(named), alias: aliases.get(named)!.find((a) => norm(a) === q || norm(nameOf(a)) === q)! }
+        : undefined);
     // Prefixes count among the groups it could join: one it is already in cannot be picked.
+    const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label);
     const prefixed = all
-      .filter((g) => !member.has(g.id) && norm(g.label).startsWith(q))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .filter((g) => !member.has(g.id))
+      .map((g) => via(g, (n) => n.startsWith(q)))
+      .filter((g): g is NonNullable<typeof g> => g !== null)
+      .sort(byLabel);
+    const prefixedIds = new Set(prefixed.map((g) => g.id));
     const containing = all
-      .filter((g) => !norm(g.label).startsWith(q) && norm(g.label).includes(q))
-      .sort((a, b) => a.label.localeCompare(b.label));
-    const offered = [...new Set([...(exact ? [exact] : []), ...prefixed, ...containing])]
+      .filter((g) => !prefixedIds.has(g.id))
+      .map((g) => via(g, (n) => n.includes(q)))
+      .filter((g): g is NonNullable<typeof g> => g !== null)
+      .sort(byLabel);
+    // One entry per group, the first (best) one: an exact match keeps the alias it matched by.
+    const firstById = new Map<NodeId, (typeof prefixed)[number]>();
+    for (const g of [...(exact ? [exact] : []), ...prefixed, ...containing]) if (!firstById.has(g.id)) firstById.set(g.id, g);
+    const offered = [...firstById.values()]
       .filter((g) => !member.has(g.id))
       .slice(0, maxSuggestions);
     // Enter picks the group the text names, or the only one it is a prefix of. Never a guess.
     const pick = exact ?? (prefixed.length === 1 ? prefixed[0] : undefined);
     // (`exact` may be a group it is already in: Enter then says so instead of picking.)
-    return { offered, exact, prefixed, pick, member };
+    return { offered, exact, prefixed, pick, member, named: named !== undefined };
   };
 
   const pathOf = (id: NodeId): string | undefined => {
@@ -336,13 +368,14 @@ export function renderTagInput<P>(
   const refreshList = (): void => {
     const text = input.value.trim();
     if (!item || !text) return closeList();
-    const { offered, exact, pick } = match(text, item);
+    const { offered, exact, pick, named } = match(text, item);
     choices = [
       ...offered.map((g): Option => {
         const path = pathOf(g.id);
-        return { kind: 'group', id: g.id, label: g.label, ...(path ? { path } : {}) };
+        const alias = 'alias' in g ? (g.alias as string) : undefined;
+        return { kind: 'group', id: g.id, label: g.label, ...(path ? { path } : {}), ...(alias ? { alias } : {}) };
       }),
-      ...(exact ? [] : [{ kind: 'create', text } as const]),
+      ...(exact || named ? [] : [{ kind: 'create', text } as const]),
     ];
     generation += 1;
     list.replaceChildren(
@@ -352,6 +385,12 @@ export function renderTagInput<P>(
         li.setAttribute('role', 'option');
         li.className = option.kind === 'create' ? 'zg-tag-option zg-tag-create' : 'zg-tag-option';
         li.textContent = option.kind === 'create' ? labels.create(option.text) : option.label;
+        if (option.kind === 'group' && option.alias) {
+          const alias = document.createElement('span');
+          alias.className = 'zg-tag-option-alias';
+          alias.textContent = option.alias;
+          li.appendChild(alias);
+        }
         if (option.kind === 'group' && option.path) {
           const path = document.createElement('span');
           path.className = 'zg-tag-option-path';

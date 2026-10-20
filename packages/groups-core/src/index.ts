@@ -85,6 +85,8 @@ export {
   childrenOf,
   parentsOf,
   resolveAlias,
+  aliasesOf,
+  aliasMap,
   edgesOf,
   edgesInto,
   isGroup,
