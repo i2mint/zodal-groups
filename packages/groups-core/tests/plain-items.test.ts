@@ -70,6 +70,34 @@ describe('mayRefusePlainItems is sound', () => {
   }
 });
 
+describe('mayRefusePlainItems on a custom profile', () => {
+  // `tags` is disjoint from `see` only on `see`'s side; `blocks` is acyclic but not membership;
+  // `member` is membership but not transitive.
+  const profile = {
+    profile: 'polyhierarchy' as const,
+    overrides: {
+      edgeKinds: {
+        tags: { transitive: true, acyclic: true, membership: true },
+        see: { transitive: false, membership: false, disjointWith: ['tags'] },
+        blocks: { transitive: false, acyclic: true, membership: false },
+        member: { transitive: false, acyclic: true, membership: true },
+      },
+    },
+  };
+  it('one-sided disjointWith, non-membership and non-transitive kinds', () => {
+    const space = createGroupSpace({
+      ...profile,
+      edges: [makeEdge(nodeId('g'), nodeId('a'), { kind: 'tags' }), makeEdge(nodeId('g'), nodeId('b'), { kind: 'see' }), makeEdge(nodeId('h'), nodeId('a'), { kind: 'member' })],
+    });
+    expect(mayRefusePlainItems(space, nodeId('g'), 'tags')).toBe(true); // g → b is `see`, disjoint from `tags`
+    expect(validateEdge(space, makeEdge(nodeId('g'), nodeId('b'), { kind: 'tags' })).map((v) => v.code)).toEqual(['disjointEdgeKind']);
+    expect(mayRefusePlainItems(space, nodeId('g'), 'blocks')).toBe(true); // not a membership kind
+    expect(mayRefusePlainItems(space, nodeId('h'), 'member')).toBe(false);
+    expect(validateEdge(space, makeEdge(nodeId('h'), nodeId('c'), { kind: 'member' }))).toEqual([]);
+    expect(mayRefusePlainItems(space, nodeId('h'), 'tags')).toBe(false); // nothing disjoint goes out of h
+  });
+});
+
 describe('mayRefuseEmptying is sound', () => {
   for (const profile of PROFILES) {
     it(`${profile}: false ⇒ removing every member of the group is accepted`, () => {

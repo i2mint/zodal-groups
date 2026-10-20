@@ -48,5 +48,5 @@ describe('a large first view', () => {
     const ms = performance.now() - t;
     expect(view.rows).toHaveLength(51);
     expect(ms).toBeLessThan(1500); // ~0.2 s here; ~2.4 s before the fast path
-  });
+  }, 20_000); // building the 20k-item space takes ~1 s before the timer starts
 });

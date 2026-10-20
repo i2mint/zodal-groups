@@ -959,7 +959,9 @@ export function mayRefusePlainItems<P>(space: GroupSpace<P>, group: NodeId, kind
       .filter(([other, def]) => def.disjointWith?.includes(kind) || p.edgeKinds[kind]!.disjointWith?.includes(other))
       .map(([other]) => other),
   );
-  return disjoint.size > 0 && edgesOf(space, group).some((e) => disjoint.has(e.kind));
+  if (!disjoint.size) return false;
+  for (const id of space.forward.get(group) ?? []) if (disjoint.has(space.edges.get(id)?.kind ?? '')) return true;
+  return false;
 }
 
 /**
