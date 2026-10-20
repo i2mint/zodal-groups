@@ -70,12 +70,17 @@ export const isExcluded = <P>(space: GroupSpace<P>, group: NodeId, item: NodeId)
  * A fluid group's extent: the items its rule selected (`matches`, in their order), then its pinned
  * members not already there, minus the items it excludes. An exclusion wins over a rule match; a
  * pin and an exclusion cannot co-exist (`excludes` is disjoint with every membership kind).
+ *
+ * In an **ordered** space only pins carry a rank (D37), so the pins come FIRST, in rank order, and
+ * the unpinned matches follow in `matches` order: a pin the rule also matches sits at its rank, and
+ * `moveInGroup` visibly reorders it. To place a matched item, pin it (`tag`), then move it.
  */
 export function fluidExtent<P>(space: GroupSpace<P>, group: NodeId, matches: Iterable<NodeId>): NodeId[] {
   const excluded = new Set(excludedOf(space, group));
+  const pins = pinnedOf(space, group);
   const out = new Set<NodeId>();
-  for (const id of matches) if (!excluded.has(id)) out.add(id);
-  for (const id of pinnedOf(space, group)) if (!excluded.has(id)) out.add(id);
+  const sources = space.profile.ordered ? [pins, matches] : [matches, pins];
+  for (const source of sources) for (const id of source) if (!excluded.has(id)) out.add(id);
   return [...out];
 }
 
