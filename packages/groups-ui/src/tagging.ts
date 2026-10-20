@@ -809,7 +809,9 @@ function viewFromCore(
         continue;
       }
       const alias = aliases.size ? aliasNames(r.group).find((name) => fold(name).includes(needle)) : undefined;
-      if (alias !== undefined) matched.push({ ...r, matchedAlias: alias });
+      if (alias !== undefined) {
+        matched.push({ ...r, matchedAlias: alias, aria: { ...r.aria, label: t.rowLabel({ ...r, matchedAlias: alias }) } });
+      }
     }
     rows = matched;
   }

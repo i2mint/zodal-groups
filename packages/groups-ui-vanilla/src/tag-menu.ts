@@ -118,6 +118,8 @@ const setAttr = (el: Element, name: string, value: string | null): void => {
 interface OptionNodes {
   readonly li: HTMLLIElement;
   readonly label: HTMLSpanElement;
+  /** The other name the search matched (`TagRow.matchedAlias`). */
+  readonly alias: HTMLSpanElement;
   readonly path: HTMLSpanElement;
   readonly count: HTMLSpanElement;
   readonly inherited: HTMLSpanElement;
@@ -238,9 +240,12 @@ export function renderTagMenu<P>(
     text.className = 'zg-tagmenu-text';
     const label = document.createElement('span');
     label.className = 'zg-tagmenu-label';
+    const alias = document.createElement('span');
+    alias.className = 'zg-tagmenu-alias';
+    alias.hidden = true;
     const path = document.createElement('span');
     path.className = 'zg-tagmenu-path';
-    text.append(label, path);
+    text.append(label, alias, path);
     const count = document.createElement('span');
     count.className = 'zg-tagmenu-count';
     count.setAttribute('aria-hidden', 'true'); // already in the accessible name
@@ -252,7 +257,7 @@ export function renderTagMenu<P>(
     reason.className = 'zg-tagmenu-reason';
     reason.id = `${li.id}-reason`;
     li.append(box, text, count, inherited, reason);
-    o = { li, label, path, count, inherited, reason };
+    o = { li, label, alias, path, count, inherited, reason };
     nodes.set(key, o);
     return o;
   };
@@ -275,6 +280,8 @@ export function renderTagMenu<P>(
     li.classList.toggle('is-new', row.isNew);
     li.classList.toggle('is-disabled', row.disabled);
     setText(o.label, row.label);
+    setText(o.alias, row.matchedAlias ?? '');
+    o.alias.hidden = !row.matchedAlias;
     setText(o.path, row.path ?? '');
     o.path.hidden = !row.path;
     setText(o.count, row.originalState === 'some' ? t.countOf(row.count, row.total) : '');
