@@ -46,7 +46,7 @@ export interface ObservedDials {
   readonly maxParentsPerItem: number;
   /** The most parents any group has. */
   readonly maxParentsPerGroup: number;
-  /** The deepest group-in-group nesting through transitive kinds (0 = flat). Cycle-safe. */
+  /** The deepest group-in-group nesting through transitive membership kinds (0 = flat). Cycle-safe. */
   readonly maxDepth: number;
   readonly groupsContainGroups: boolean;
   readonly groupsContainItems: boolean;
@@ -230,7 +230,7 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
     onPath.add(node);
     let deepest = 0;
     for (const edge of edgesOf(space, node)) {
-      if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
+      if (!space.profile.edgeKinds[edge.kind]?.transitive || !isMembershipKind(space.profile, edge.kind)) continue;
       if (!isGroup(space, edge.child)) continue;
       deepest = Math.max(deepest, 1 + depthBelow(edge.child));
     }
