@@ -216,8 +216,11 @@ describe('closureScope is descendants, seen from the item (with kinds and maxDep
 
 describe('facetPanel is fast enough for a real sidebar', () => {
   // A phone is 2–4× slower than a CI runner, so a quarter of the ~400 ms Doherty threshold, for all
-  // five panels. One pass takes ~10 ms here; the old loop took ~120 ms on the same machine.
+  // five panels. One pass takes ~10–40 ms here; the old loop took ~120 ms on the same machine.
   const BUDGET_MS = 100;
+  // The budget is held by the FASTEST of a few passes: a shared runner's stalls only ever add time
+  // (one pass took 135 ms on CI, #58: the fs store's 4-process test runs alongside), while a slower algorithm is slow on every pass.
+  const PASSES = 15; // spread over ~0.5–2 s, longer than a neighbouring suite's burst
 
   /** ~600 items in five flat families; `session` has ~500 values, most holding one item. */
   function annalsLike(): { space: GroupSpace; families: string[] } {
@@ -247,12 +250,16 @@ describe('facetPanel is fast enough for a real sidebar', () => {
     const items = allItems(space).filter((id) => id.startsWith('item-'));
     expect(items).toHaveLength(610);
 
-    // One untimed pass first: the budget guards the algorithm (~10 ms warm), not the JIT's first
-    // compile on a CI runner shared with the fs store's multi-process test.
-    facetPanel(space, { under: nodeId(`fam:${families[0]}`), selected, items });
-    const start = performance.now();
-    const panels = families.map((fam) => facetPanel(space, { under: nodeId(`fam:${fam}`), selected, items }));
-    const ms = performance.now() - start;
+    // One untimed pass first: the budget guards the algorithm, not the JIT's first compile on a CI
+    // runner shared with the fs store's multi-process test.
+    const pass = () => families.map((fam) => facetPanel(space, { under: nodeId(`fam:${fam}`), selected, items }));
+    let panels = pass();
+    let ms = Infinity;
+    for (let i = 0; i < PASSES; i++) {
+      const start = performance.now();
+      panels = pass();
+      ms = Math.min(ms, performance.now() - start);
+    }
 
     expect(ms, `${ms.toFixed(0)} ms`).toBeLessThan(BUDGET_MS);
     expect(panels[families.indexOf('session')]!.length).toBeGreaterThan(0);
