@@ -75,4 +75,65 @@ describe("tag menu: commit: 'immediate'", () => {
     expect(menu.session.state.pending.size).toBe(0);
     expect(g.parents('a')).toEqual(['todo']);
   });
+
+  it('a failed write is not left staged: the next click does not resend it', async () => {
+    const g = defineGroups({ profile: 'labels' });
+    g.add('a', 'work');
+    g.add('b', 'urgent');
+    g.add('c', 'later');
+    let fail = true;
+    const sent: unknown[] = [];
+    const onApply = vi.fn((plan: { add: unknown[]; remove: unknown[] }) => {
+      sent.push(plan);
+      if (fail) throw new Error('offline');
+      return { succeeded: ['a'], failed: [] };
+    });
+    const menu = renderTagMenu(container, g, { selection: ['a'], commit: 'immediate', onApply: onApply as never, onError: () => {} });
+    option('urgent').click();
+    await flush();
+    expect(menu.session.state.pending.size).toBe(0);
+    fail = false;
+    option('later').click();
+    await flush();
+    expect(sent[1]).toMatchObject({ add: [{ group: 'later', ids: ['a'] }], remove: [] });
+    expect((sent[1] as { add: unknown[] }).add).toHaveLength(1);
+  });
+
+  it('clicks during a write wait their turn, each its own write', async () => {
+    const g = defineGroups({ profile: 'labels' });
+    g.add('a', 'work');
+    g.add('b', 'urgent');
+    let release!: () => void;
+    const calls: string[] = [];
+    const onApply = vi.fn(async (plan: { add: { group: string }[]; remove: { group: string }[] }) => {
+      calls.push([...plan.add.map((c) => `+${c.group}`), ...plan.remove.map((c) => `-${c.group}`)].join(','));
+      if (calls.length === 1) await new Promise<void>((done) => (release = done));
+      return { succeeded: ['a'], failed: [] };
+    });
+    renderTagMenu(container, g, { selection: ['a'], commit: 'immediate', onApply: onApply as never });
+    option('urgent').click();
+    await flush();
+    option('work').click(); // while the first write is in flight
+    await flush();
+    expect(calls).toEqual(['+urgent']);
+    release();
+    await flush();
+    await flush();
+    expect(calls).toEqual(['+urgent', '-work']);
+  });
+
+  it('Enter writes the active option; Ctrl+Enter does nothing (there is no Apply)', async () => {
+    const g = defineGroups({ profile: 'labels' });
+    g.add('a', 'work');
+    g.add('b', 'urgent');
+    const onApply = vi.fn(() => ({ succeeded: ['a'], failed: [] }));
+    const menu = renderTagMenu(container, g, { selection: ['a'], commit: 'immediate', onApply });
+    menu.search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
+    await flush();
+    expect(onApply).not.toHaveBeenCalled();
+    menu.search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    menu.search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flush();
+    expect(onApply).toHaveBeenCalledTimes(1);
+  });
 });

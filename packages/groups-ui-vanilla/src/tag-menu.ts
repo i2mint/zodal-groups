@@ -184,6 +184,7 @@ export function renderTagMenu<P>(
   const summary = document.createElement('ul');
   summary.className = 'zg-tagmenu-summary';
   summary.id = ids.summary;
+  summary.hidden = immediate; // it describes Apply, which immediate mode does not have
   // Plain text, referenced by Apply's description. Not a live region: the status region below says
   // a conflict once, politely, when it appears.
   const conflicts = document.createElement('div');
@@ -400,20 +401,51 @@ export function renderTagMenu<P>(
     if (!destroyed) options.onChange?.(session.view());
   };
 
-  /** Toggle a group, or create the typed one. The session's notification renders. */
-  const activate = (key: string): void => {
-    if (busy) return announce(session.view().messages.tagging.stillApplying);
+  /** Stage the click: toggle a group, or create the typed one. False when there was nothing to do. */
+  const stage = (key: string): boolean => {
     if (key === CREATE_KEY) {
       const create = session.view().create;
-      if (!create?.allowed) return;
+      if (!create?.allowed) return false;
       activeKey = create.group;
       session.create();
     } else {
       setActive(key);
       session.toggle(key);
     }
+    return true;
+  };
+
+  // Immediate: clicks are written one after another, each its own write — a click while one is in
+  // flight waits its turn instead of being dropped.
+  let queue: Promise<unknown> = Promise.resolve();
+
+  /** Toggle a group, or create the typed one. The session's notification renders. */
+  const activate = (key: string): void => {
+    if (immediate) {
+      queue = queue.then(async () => {
+        if (destroyed || !stage(key)) return;
+        if (!session.state.pending.size) {
+          // A click that changes nothing (a refused row): say why, rather than "nothing to apply".
+          const row = session.view().allRows.find((r) => r.key === key);
+          const why = row?.aria.description;
+          if (why) announce(why);
+          return;
+        }
+        await apply();
+      });
+      return;
+    }
+    if (busy) return announce(session.view().messages.tagging.stillApplying);
+    if (!stage(key)) return;
     changed();
-    if (immediate) void apply();
+  };
+
+  /** Immediate: nothing may stay staged behind the hidden Apply (a refused or failed write). */
+  const discardStagedIfImmediate = (): void => {
+    if (immediate && session.state.pending.size) {
+      session.reset();
+      changed();
+    }
   };
 
   const move = (step: number): void => {
@@ -444,11 +476,7 @@ export function renderTagMenu<P>(
     const view = session.view();
     if (!view.canApply) {
       announce(view.blocked ?? t.nothingToApply);
-      // Immediate: a click that cannot be written is not left staged behind a hidden Apply.
-      if (immediate && session.state.pending.size) {
-        session.reset();
-        changed();
-      }
+      discardStagedIfImmediate();
       return '';
     }
     busy = true;
@@ -467,6 +495,7 @@ export function renderTagMenu<P>(
     }
     announce(text);
     if (destroyed) return text;
+    discardStagedIfImmediate(); // a failed write, or a row another writer moved
     render();
     changed();
     if (!root.contains(document.activeElement)) search.focus();
@@ -498,7 +527,9 @@ export function renderTagMenu<P>(
         break;
       case 'Enter':
         e.preventDefault();
-        if (e.ctrlKey || e.metaKey) void apply();
+        if (e.ctrlKey || e.metaKey) {
+          if (!immediate) void apply(); // immediate has no Apply: every click already wrote
+        }
         else if (activeKey) activate(activeKey);
         break;
       case 'Escape':
