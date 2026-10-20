@@ -323,7 +323,10 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
   /**
    * The ids of the items in `group`: the records its rule selects (asked of the provider, so a
    * remote one evaluates it server-side), then its pinned members, minus those it excludes —
-   * `fluidExtent`. A group without a rule yields its direct members, minus exclusions.
+   * `fluidExtent`. A group without a rule yields its direct members, minus exclusions. In an ordered
+   * space the pins come first, in rank order, then the unpinned matches (D37): to place a matched
+   * item, `tag` it, then `moveInGroup`. The provider is read sorted by the id field when it can sort
+   * on it, unpaged otherwise (#60).
    */
   extent(group: string, options?: SpaceOption): Promise<string[]>;
 

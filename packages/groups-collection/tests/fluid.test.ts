@@ -158,3 +158,65 @@ describe('fluid groups', () => {
     expect(tc.space().nodes.get('bare' as never)?.rule).toEqual(jazzAndBlues);
   });
 });
+
+describe('reading the rule\'s matches (#60)', () => {
+  type Params = Parameters<ReturnType<typeof createInMemoryProvider<Track>>['getList']>[0];
+  /** An in-memory provider that records each call, with chosen capabilities and an optional row cap. */
+  function spy(caps: { serverSort: boolean | string[] }, cap = Infinity) {
+    const inner = createInMemoryProvider(tracks());
+    const calls: Params[] = [];
+    const provider = {
+      ...inner,
+      getCapabilities: () => ({ ...inner.getCapabilities!(), serverFilter: true, ...caps }),
+      async getList(params: Params) {
+        calls.push(params);
+        const r = await inner.getList(params);
+        return { ...r, data: r.data.slice(0, cap) };
+      },
+    };
+    const tc = defineTaggedCollection<Track>({ provider, loadPageSize: 2, spaces: { playlists: { edges: createMemoryGroupStore({ profile: 'polyhierarchy' }) } } });
+    return { tc, calls };
+  }
+
+  it('pages sorted by the id field when the provider can sort on it', async () => {
+    for (const serverSort of [true, ['id']]) {
+      const { tc, calls } = spy({ serverSort });
+      await tc.setRule('evening', jazzAndBlues);
+      expect(await tc.extent('evening')).toEqual(['t1', 't2', 't3']);
+      expect(calls.length).toBe(2);
+      expect(calls.every((c) => c.pagination && c.sort?.[0]?.id === 'id' && c.sort[0].desc === false)).toBe(true);
+    }
+  });
+
+  it('reads unpaged when it cannot sort on the id field', async () => {
+    for (const serverSort of [false, ['path']]) {
+      const { tc, calls } = spy({ serverSort });
+      await tc.setRule('evening', jazzAndBlues);
+      expect(sorted(await tc.extent('evening'))).toEqual(['t1', 't2', 't3']);
+      expect(calls).toEqual([expect.objectContaining({ filter: jazzAndBlues })]);
+      expect(calls[0]!.pagination).toBeUndefined();
+    }
+  });
+
+  it('pages after all, de-duplicated, when the unpaged read comes back capped', async () => {
+    const { tc, calls } = spy({ serverSort: false }, 2);
+    await tc.setRule('evening', jazzAndBlues);
+    expect(sorted(await tc.extent('evening'))).toEqual(['t1', 't2', 't3']);
+    expect(calls[0]!.pagination).toBeUndefined();
+    expect(calls.slice(1).every((c) => c.pagination && !c.sort)).toBe(true);
+  });
+});
+
+describe('a fluid group in an ordered space (D37)', () => {
+  it('lists its pins first, in rank order, then the unpinned matches; ordering a match means pinning it', async () => {
+    const store = createMemoryGroupStore({ profile: 'polyhierarchy', overrides: { ordered: true } });
+    const tc = defineTaggedCollection<Track>({ provider: createInMemoryProvider(tracks()), spaces: { playlists: { edges: store } } });
+    await tc.setRule('evening', jazzAndBlues);
+    expect(await tc.extent('evening')).toEqual(['t1', 't2', 't3']);
+    expect((await tc.moveInGroup('t3', 'evening', { before: 't1' })).failed).toMatchObject([{ id: 't3', code: 'notFound' }]);
+    await tc.tag(['t3', 't5'], 'evening');
+    expect(await tc.extent('evening')).toEqual(['t3', 't5', 't1', 't2']);
+    expect((await tc.moveInGroup('t3', 'evening', { after: 't5' })).ok).toBe(true);
+    expect(await tc.extent('evening')).toEqual(['t5', 't3', 't1', 't2']);
+  });
+});

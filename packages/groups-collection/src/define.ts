@@ -117,7 +117,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
   const loadNow = async (): Promise<void> => {
     const embedded = [...runtimes.values()].filter((rt) => rt.mode === 'embedded');
     if (embedded.length) {
-      const records = await readAll(provider, pageSize);
+      const records = await readAll(provider, { pageSize, idField });
       recordIds.clear();
       for (const r of records) recordIds.add(String(r[idField]));
       for (const rt of embedded) deriveEmbedded(rt, configs[rt.name]!, records, idField);
@@ -635,7 +635,7 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         const rule = space.nodes.get(g)?.rule as FilterExpression | undefined;
         const problem = rule === undefined ? undefined : filterProblem(rule);
         if (problem) throw new Error(`extent: group '${g}' carries a malformed rule (${problem}); replace it with setRule.`);
-        const records = !rule ? [] : canPushFilter(provider, rule) ? await readAll(provider, pageSize, rule) : localFilter(await readAll(provider, pageSize), rule);
+        const records = !rule ? [] : canPushFilter(provider, rule) ? await readAll(provider, { pageSize, idField, filter: rule }) : localFilter(await readAll(provider, { pageSize, idField }), rule);
         const matches = records.map((r) => nodeId(String(r[idField])));
         return fluidExtent(space, g, matches).map(String);
       });
@@ -782,13 +782,29 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
   return tc;
 }
 
-/** Read every record, page by page (a provider may cap an unpaginated list). */
-async function readAll<T extends Record<string, unknown>>(provider: DataProvider<T>, pageSize: number, filter?: FilterExpression): Promise<T[]> {
-  const out: T[] = [];
+/**
+ * Read every record (#60). Pages are only stable under a sort, so a provider that can sort on the id
+ * field (`serverSort`) is paged sorted by id; any other is read in one unpaged call. If that call
+ * comes back capped (fewer rows than `total`), it is paged after all, de-duplicated by id: the best
+ * an unsortable, capped provider allows (a repeat is dropped; a skip cannot be seen).
+ */
+async function readAll<T extends Record<string, unknown>>(
+  provider: DataProvider<T>,
+  { pageSize, idField, filter }: { pageSize: number; idField: string; filter?: FilterExpression },
+): Promise<T[]> {
+  const base = filter ? { filter } : {};
+  const caps = provider.getCapabilities?.();
+  const sortable = caps?.serverSort === true || (Array.isArray(caps?.serverSort) && caps.serverSort.includes(idField));
+  if (!sortable) {
+    const all = await provider.getList(base);
+    if (all.data.length >= all.total) return all.data;
+  }
+  const params = sortable ? { ...base, sort: [{ id: idField, desc: false }] } : base;
+  const out = new Map<string, T>();
   for (let page = 1; ; page++) {
-    const { data, total } = await provider.getList({ ...(filter ? { filter } : {}), pagination: { page, pageSize } });
-    out.push(...data);
-    if (!data.length || data.length < pageSize || out.length >= total) return out;
+    const { data, total } = await provider.getList({ ...params, pagination: { page, pageSize } });
+    for (const r of data) if (!out.has(String(r[idField]))) out.set(String(r[idField]), r);
+    if (!data.length || data.length < pageSize || page * pageSize >= total) return [...out.values()];
   }
 }
 
