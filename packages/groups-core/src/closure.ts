@@ -283,7 +283,11 @@ export function closureIds(space: GroupSpace, group: NodeId, options: WalkOption
  * All the members of a group.
  *
  * `expand: 'direct'` — only what is immediately in it.
- * `expand: 'closure'` — everything in it or in any subgroup, de-duplicated.
+ * `expand: 'closure'` — what is directly in it, plus everything below it that `descendants` reaches,
+ *   de-duplicated. The kind of each member's OWN edge counts (`closureScope`): with `wheel part_of
+ *   car` and `car is_a vehicle`, `wheel` is in `car` but not in `vehicle`. A member of a subgroup
+ *   by a non-transitive edge (`instance_of`) is not a member of the group above it either, exactly
+ *   as `descendants` and `ancestors` say.
  *
  * This flag is Zotero's `View → Show Items from Subcollections`, and exposing it as a *view*
  * parameter rather than baking one answer into the model is the clearest single demonstration of
@@ -295,12 +299,16 @@ export function membersOf(
   options: WalkOptions & { readonly expand?: 'direct' | 'closure'; readonly itemsOnly?: boolean } = {},
 ): NodeId[] {
   const { expand = 'direct', itemsOnly = false } = options;
-  const groups = expand === 'closure' ? closureIds(space, group, options) : [group];
+  // Each group the members may sit in, with the kinds their own edge may have (`null`: any kind).
+  const scope: Map<NodeId, ReadonlySet<EdgeKind> | null> =
+    expand === 'closure' ? new Map(closureScope(space, group, options)) : new Map();
+  scope.set(group, null); // the direct members, by any kind, as in `expand: 'direct'`
 
   const out = new Set<NodeId>();
-  for (const g of groups) {
+  for (const [g, kinds] of scope) {
     for (const edge of edgesOf(space, g)) {
       if (options.kinds && !options.kinds.includes(edge.kind)) continue;
+      if (kinds && !kinds.has(edge.kind)) continue;
       if (itemsOnly && (space.forward.get(edge.child)?.size ?? 0) > 0) continue;
       out.add(edge.child);
     }

@@ -202,6 +202,18 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
  * const filter = scopeFilter(space, animal, { field: 'groups' });
  * // → { field: 'groups', operator: 'arrayContainsAny', value: ['animal','dog','poodle'] }
  * provider.getList({ filter });
+ *
+ * **Mixed edge kinds.** The item's indexed field holds group ids, not the kinds of its edges, so on a
+ * profile with several transitive kinds that do not all compose (`thesaurus`) this over-matches:
+ * `wheel part_of car is_a vehicle` puts `car` in `vehicle`'s scope, and the wheel's `['car']`
+ * matches, though `descendants(vehicle)` has no wheel. Single-kind spaces are exact. For exact
+ * scoping on a mixed-kind space, index each item's whole closure instead
+ * (`[...groupsOfItem(space, item, 'closure')]`, which composes kinds from the item up) and filter
+ * with `expand: 'direct'`:
+ *
+ * @example
+ * // on write: record.groups = [...groupsOfItem(space, item, 'closure')]
+ * provider.getList({ filter: scopeFilter(space, vehicle, { expand: 'direct' }) });
  */
 export function scopeFilter<P>(
   space: GroupSpace<P>,
