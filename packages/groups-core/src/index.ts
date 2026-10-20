@@ -84,6 +84,7 @@ export {
   findCycle,
   childrenOf,
   parentsOf,
+  resolveAlias,
   edgesOf,
   edgesInto,
   isGroup,

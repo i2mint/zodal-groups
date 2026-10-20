@@ -67,7 +67,7 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ## Reference Materials
 
-- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 33 numbered decisions (D25–D33 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
+- **The decisions (SSOT)**: [`docs/research/_reconciliation.md`](../docs/research/_reconciliation.md) — 34 numbered decisions (D25–D34 in §8 came from issues and PR review), the conflicts and how they resolved. **Read before designing anything.**
 - **The thesis**: [`docs/zodal-groups-concept.md`](../docs/zodal-groups-concept.md)
 - **Research corpus**: `docs/research/` — 5 reports, ~3,900 lines, ~264 cited sources. Route via `docs/research/README.md`; don't read linearly.
 

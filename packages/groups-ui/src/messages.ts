@@ -264,6 +264,20 @@ export const VIOLATION_MESSAGES: ViolationMessages = {
     };
   },
 
+  maxPerChild: (ctx) => {
+    const kind = ctx.violation.edge?.kind;
+    if (kind === 'alias_of') {
+      return {
+        message: `${q(childOf(ctx))} is already another name for something else.`,
+        fix: `Remove its current alias first, or merge the two.`,
+      };
+    }
+    return {
+      message: `${q(childOf(ctx))} already has as many ${kind ? `${q(kind)} ` : ''}links as allowed.`,
+      fix: `Remove one of them first.`,
+    };
+  },
+
   selfEdge: () => ({
     message: `A group can't contain itself.`,
     fix: `Choose a different group.`,

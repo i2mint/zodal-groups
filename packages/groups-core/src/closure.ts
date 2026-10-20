@@ -31,7 +31,7 @@
 
 import type { EdgeKind, GroupSpace, NodeId } from './model.js';
 import type { GroupProfile } from './profile.js';
-import { edgesInto, edgesOf, isAcyclicKind } from './space.js';
+import { edgesInto, edgesOf, isAcyclicKind, isMembershipKind } from './space.js';
 
 /**
  * The kind of the chain `lower` then `upper`, read child-first as the Gene Ontology writes it
@@ -282,7 +282,8 @@ export function closureIds(space: GroupSpace, group: NodeId, options: WalkOption
 /**
  * All the members of a group.
  *
- * `expand: 'direct'` — only what is immediately in it.
+ * `expand: 'direct'` — only what is immediately in it, by a membership edge (an alias or a
+ *   `related` link is not a member).
  * `expand: 'closure'` — what is directly in it, plus everything below it that `descendants` reaches,
  *   de-duplicated. The kind of each member's OWN edge counts (`closureScope`): with `wheel part_of
  *   car` and `car is_a vehicle`, `wheel` is in `car` but not in `vehicle`. A member of a subgroup
@@ -302,13 +303,13 @@ export function membersOf(
   // Each group the members may sit in, with the kinds their own edge may have (`null`: any kind).
   const scope: Map<NodeId, ReadonlySet<EdgeKind> | null> =
     expand === 'closure' ? new Map(closureScope(space, group, options)) : new Map();
-  scope.set(group, null); // the direct members, by any kind, as in `expand: 'direct'`
+  scope.set(group, null); // the direct members, by any membership kind, as in `expand: 'direct'`
 
   const out = new Set<NodeId>();
   for (const [g, kinds] of scope) {
     for (const edge of edgesOf(space, g)) {
       if (options.kinds && !options.kinds.includes(edge.kind)) continue;
-      if (kinds && !kinds.has(edge.kind)) continue;
+      if (kinds ? !kinds.has(edge.kind) : !isMembershipKind(space.profile, edge.kind)) continue;
       if (itemsOnly && (space.forward.get(edge.child)?.size ?? 0) > 0) continue;
       out.add(edge.child);
     }

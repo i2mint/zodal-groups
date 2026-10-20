@@ -246,6 +246,9 @@ describe('facetPanel is fast enough for a real sidebar', () => {
     const items = allItems(space).filter((id) => id.startsWith('item-'));
     expect(items).toHaveLength(610);
 
+    // One untimed pass first: the budget guards the algorithm (~10 ms warm), not the JIT's first
+    // compile on a CI runner shared with the fs store's multi-process test.
+    facetPanel(space, { under: nodeId(`fam:${families[0]}`), selected, items });
     const start = performance.now();
     const panels = families.map((fam) => facetPanel(space, { under: nodeId(`fam:${fam}`), selected, items }));
     const ms = performance.now() - start;

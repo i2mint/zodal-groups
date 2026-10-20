@@ -298,6 +298,24 @@ export const parentsOf = (space: GroupSpace, child: NodeId): NodeId[] =>
   edgesInto(space, child).map((e) => e.parent);
 
 /**
+ * The canonical name of `id`: follow its `alias_of` edge (or `kind`'s) to the node it names, and
+ * on through a chain (`a → b → c` resolves to `c`, as Hydrus collapses sibling chains). A node that
+ * is no alias resolves to itself. Facades call this on write (`tag(ids, 'to-do')` records `todo`)
+ * and search UIs on read; `applyDelta` never does (D7). Cycle-safe for foreign data: a cycle
+ * resolves to the last node before it repeats.
+ */
+export function resolveAlias(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): NodeId {
+  const seen = new Set<NodeId>([id]);
+  let current = id;
+  for (;;) {
+    const next = edgesInto(space, current).find((e) => e.kind === kind)?.parent;
+    if (next === undefined || seen.has(next)) return current;
+    seen.add(next);
+    current = next;
+  }
+}
+
+/**
  * Is this edge kind a **membership** (hierarchical) kind? Its declared `membership`, defaulting to
  * `!symmetric` (D30). Undeclared kinds (foreign data) count as membership, the conservative reading
  * for projections.
@@ -741,6 +759,18 @@ function checkEdge<P>(
     });
   }
 
+  // One target per child for a capped kind (an alias has one canonical name).
+  if (kindDef.maxPerChild !== undefined) {
+    const already = edgesInto(space, edge.child).filter((e) => e.kind === edge.kind && e.id !== edge.id).length;
+    if (already + 1 > kindDef.maxPerChild) {
+      out.push({
+        code: 'maxPerChild',
+        message: `${edge.child} would have ${already + 1} '${edge.kind}' edges; kind '${edge.kind}' allows ${kindDef.maxPerChild} per node.`,
+        edge,
+      });
+    }
+  }
+
   // Acyclicity. Enforced for any kind that participates in closure.
   if (kindDef.transitive || kindDef.acyclic) {
     const cycle = findCycle(space, edge.parent, edge.child);
@@ -1163,7 +1193,7 @@ export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpa
  * `group` yet, `validateEdge(space, makeEdge(group, item, { kind }))` is empty. A caller adding many
  * items (the tagging menu, a bulk tag) can then skip the per-item check. `true` means "check each".
  *
- * The guarantee holds when: `kind` is a declared membership kind; the profile admits items in
+ * The guarantee holds when: `kind` is a declared membership kind with no `maxPerChild`; the profile admits items in
  * groups and caps no item's parents; `group` already has children (so it is not *becoming* a
  * group, which brings its own rules); and `group` has no outgoing edge of a kind disjoint with
  * `kind` (`related` vs `contains`: a plain item has nothing below it, so that is the only place a
@@ -1174,7 +1204,7 @@ export function deleteNode<P>(space: GroupSpace<P>, id: NodeId): Result<GroupSpa
  */
 export function mayRefusePlainItems<P>(space: GroupSpace<P>, group: NodeId, kind: string = CONTAINS): boolean {
   const p = space.profile;
-  if (!p.edgeKinds[kind] || !isMembershipKind(p, kind)) return true;
+  if (!p.edgeKinds[kind] || !isMembershipKind(p, kind) || p.edgeKinds[kind]!.maxPerChild !== undefined) return true;
   if (!p.groupsMayContainItems || p.maxParentsPerItem !== null || p.maxGroupsPerItem !== null) return true;
   if (!isGroup(space, group)) return true;
   const disjoint = new Set(

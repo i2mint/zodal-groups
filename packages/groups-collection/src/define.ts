@@ -20,6 +20,7 @@ import {
   newEpoch,
   nodeId,
   orderBetween,
+  resolveAlias,
   type Edge,
   type EdgeDelta,
   type EdgeId,
@@ -208,8 +209,9 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
    * `reranked` are those edges with their new rank (same id), to put in the delta.
    */
   const ranking = (space: GroupSpace, group: string, moving: ReadonlySet<string>): { ordered: Edge[]; reranked: Edge[] } => {
+    // Memberships only: an alias or a `related` link is not a ranked sibling.
     const sorted = edgesOf(space, nodeId(group))
-      .filter((e) => !moving.has(e.child))
+      .filter((e) => !moving.has(e.child) && isMembershipKind(space.profile, e.kind))
       .sort((x, y) => compareOrder(x.order, y.order));
     let last = sorted.filter((e) => e.order !== undefined).at(-1)?.order;
     const reranked: Edge[] = [];
@@ -375,7 +377,8 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
             if (!ids.length) return {};
             const itemId = ids[0]!;
             if (rt.mode === 'store') {
-              return { added: [...new Set(groups[rt.name] ?? [])].flatMap((g) => tagDelta(rt, space, [itemId], g, 'contains').added ?? []) };
+              const names = new Set((groups[rt.name] ?? []).map((g) => resolveAlias(space, nodeId(g)) as string));
+              return { added: [...names].flatMap((g) => tagDelta(rt, space, [itemId], g, 'contains').added ?? []) };
             }
             return {
               ...(space.nodes.has(nodeId(itemId)) ? {} : { addedNodes: [{ id: nodeId(itemId) }] }),
@@ -386,20 +389,22 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
-    tag(ids, group, opts = {}) {
+    tag(ids, alias, opts = {}) {
       return run('tag', () => {
         const rt = runtime(opts.space);
+        const group = canonical(rt, alias);
         const kind = checkKind(rt, opts.kind);
         checkPosition(rt, opts.position);
         const anchor = opts.position?.before ?? opts.position?.after;
-        if (anchor !== undefined && !edgesOf(rt.current, nodeId(group)).some((e) => e.child === anchor)) {
+        if (anchor !== undefined && !edgesOf(rt.current, nodeId(group)).some((e) => e.child === anchor && isMembershipKind(rt.current.profile, e.kind))) {
           return refuse(anchor, 'notFound', `'${anchor}' is not in '${group}', so nothing can be placed next to it.`);
         }
         return {
           operation: 'tag',
           units: units(ids),
           spaces: [rt],
-          build: (r, space, live) => tagDelta(r, space, live, group, kind, opts.position),
+          // Resolved again on the space the write is built on: a retry after a conflict sees new aliases.
+          build: (r, space, live) => tagDelta(r, space, live, resolveAlias(space, nodeId(alias)), kind, opts.position),
         };
       });
     },
@@ -416,12 +421,14 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       return run('bulkTag', () => {
         const rt = runtime(change.space);
         const kind = checkKind(rt, change.kind);
-        const add = [...new Set(change.add ?? [])];
-        const remove = [...new Set(change.remove ?? [])];
+        const add = [...new Set((change.add ?? []).map((g) => canonical(rt, g)))];
+        const remove = [...new Set((change.remove ?? []).map((g) => canonical(rt, g)))];
         const both = add.filter((g) => remove.includes(g));
         if (both.length) throw new Error(`bulkTag: ${both.join(', ')} is both added and removed.`);
         // Labels for groups this change creates. A label equal to the id says nothing new.
-        const labels = Object.entries(change.labels ?? {}).filter(([g, label]) => label !== g && add.includes(g));
+        const labels = Object.entries(change.labels ?? {})
+          .map(([g, label]) => [canonical(rt, g), label] as const)
+          .filter(([g, label]) => label !== g && add.includes(g));
         if (labels.length && rt.mode === 'embedded') {
           throw new Error(
             `bulkTag: space '${rt.name}' is embedded in the '${rt.field}' field, which stores ids, not labels ` +
@@ -479,10 +486,11 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
-    mergeGroups(from, into, opts = {}) {
+    mergeGroups(from, alias, opts = {}) {
       return run('mergeGroups', () => {
-        if (from === into) throw new Error(`mergeGroups: cannot merge '${from}' into itself.`);
         const rt = runtime(opts.space);
+        const into = canonical(rt, alias);
+        if (from === into) throw new Error(`mergeGroups: cannot merge '${from}' into itself.`);
         const f = nodeId(from);
         if (!rt.current.nodes.has(f)) return refuse(from, 'notFound', `No group '${from}' in space '${rt.name}'.`);
         const refused = notAGroupRecord(rt, from, 'merging away');
@@ -548,9 +556,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
-    moveInGroup(id, group, opts) {
+    moveInGroup(id, alias, opts) {
       return run('moveInGroup', () => {
         const rt = runtime(opts.space);
+        const group = canonical(rt, alias);
         const position: Position = opts.before !== undefined ? { before: opts.before } : { after: opts.after! };
         checkPosition(rt, { before: opts.before, after: opts.after } as Position);
         const anchor = (position.before ?? position.after)!;
@@ -588,13 +597,23 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
     },
   };
 
-  function untagPlan(operation: string, ids: readonly string[], group: string, space: string | undefined): Plan<T> {
+  /** The name a tag is written under: an alias (`to-do alias_of todo`) resolves to `todo` (#43). */
+  function canonical(rt: { readonly current: GroupSpace }, group: string): string {
+    return resolveAlias(rt.current, nodeId(group));
+  }
+
+  function untagPlan(operation: string, ids: readonly string[], alias: string, space: string | undefined): Plan<T> {
     const rt = runtime(space);
     return {
       operation,
       units: units(ids),
       spaces: [rt],
-      build: (r, s, live) => collectEmptied(r, s, untagDelta(r, s, live, group)),
+      // The canonical group, and the alias name itself: a membership filed under it before the
+      // alias was declared must stay removable by the name the user sees.
+      build: (r, s, live) => {
+        const names = [...new Set([resolveAlias(s, nodeId(alias)) as string, alias])];
+        return collectEmptied(r, s, { removed: names.flatMap((g) => untagDelta(r, s, live, g).removed ?? []) });
+      },
     };
   }
 
