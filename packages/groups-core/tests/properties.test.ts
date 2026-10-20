@@ -9,6 +9,9 @@
  * - every state is valid, in any order  (validateProfile is empty, and empty with edges reversed)
  * - closure agrees with itself           (y ∈ descendants(x) ⟺ x ∈ ancestors(y), on mixed kinds)
  *
+ * `canApply` predicts every delta's outcome exactly, `canMoveTo` every random move's, and neither
+ * changes the space they were asked about (the copy-on-write staging never writes through).
+ *
  * A refused delta changes nothing. And at the end the whole history undoes, LIFO, to empty — a
  * single writer's undo is never refused. The order-dependent cycle and disjointness checks
  * (PR review, round 2) were found by exactly this kind of run.
@@ -18,6 +21,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ancestors,
   applyDelta,
+  canApply,
+  canMoveTo,
   DEFAULT_EDGE_KINDS,
   descendants,
   defineGroups,
@@ -27,6 +32,7 @@ import {
   invert,
   makeEdge,
   mergeDelta,
+  moveTo,
   nodeId,
   parseSnapshot,
   toSnapshot,
@@ -34,6 +40,7 @@ import {
   type EdgeDelta,
   type GroupSpace,
   type ProfileName,
+  type Violation,
 } from '../src/index.js';
 
 /** mulberry32: a tiny seeded PRNG. */
@@ -107,8 +114,26 @@ describe('properties over random deltas', () => {
 
         for (let step = 0; step < STEPS; step++) {
           const before = g.space;
+          const beforeShape = shape(before);
           const delta = randomDelta(before, random, step);
+          const predicted = canApply(before, delta);
+
+          const moving = [...before.edges.values()];
+          if (moving.length) {
+            const e = moving[Math.floor(random() * moving.length)]!;
+            const to = nodeId(NODES[Math.floor(random() * NODES.length)]!);
+            const init = random() < 0.5 ? { fromKind: e.kind } : {};
+            const moved = moveTo(before, e.child, e.parent, to, init);
+            // Each move mints its own edge id: compare the violations with it blanked out.
+            const unminted = (vs: readonly Violation[]) => vs.map((v) => (v.edge ? { ...v, edge: { ...v.edge, id: '' } } : v));
+            expect(unminted(canMoveTo(before, e.child, e.parent, to, init)), `step ${step}: canMoveTo disagrees with moveTo`).toEqual(
+              unminted(moved.ok ? [] : moved.violations),
+            );
+          }
+
           const result = g.apply(delta);
+          expect(predicted, `step ${step}: canApply disagrees with apply`).toEqual(result.ok ? [] : result.violations);
+          expect(shape(before), `step ${step}: staging wrote through to the space`).toBe(beforeShape);
           if (!result.ok) {
             expect(g.space, `step ${step}: a refused delta changed the space`).toBe(before);
             continue;

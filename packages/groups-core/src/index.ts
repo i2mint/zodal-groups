@@ -65,6 +65,7 @@ export {
 export {
   createGroupSpace,
   applyDelta,
+  canApply,
   invert,
   makeEdge,
   validateEdge,
@@ -77,6 +78,7 @@ export {
   deleteNodeDelta,
   mergeDelta,
   canAddTo,
+  canMoveTo,
   mayRefusePlainItems,
   mayRefuseEmptying,
   findCycle,

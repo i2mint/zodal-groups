@@ -79,6 +79,8 @@ interface EdgeDelta {                          // the ONE write primitive
 }
 
 applyDelta(space, delta): Result<GroupSpace>   // validates profile + acyclicity + families, all-or-nothing
+canApply(space, delta): Violation[]           // the same checks, staged copy-on-write: no O(N) copy
+canMoveTo(space, child, from, to, init?)       // canApply(moveDelta(...)): the ⌥-dragover check
 invert(space, delta): EdgeDelta                // undo, for free — and EXACT (see below)
 deleteNodeDelta(space, id): EdgeDelta          // touching edges + the tombstone
 mergeDelta(space, from, into): EdgeDelta       // re-point from's edges (skip duplicates) + tombstone from
@@ -176,7 +178,7 @@ Within one delta, "is the child a group?" is judged on the delta's end state, so
 
 ## Cost model
 
-Checking an added edge reads the **child's** parents, never the group's members — keep it that way (`tests/scale.test.ts` fails if a check goes O(group size) again). `applyDelta` copies the space's maps on every call (O(N)), so bulk changes go in ONE delta.
+Checking an added edge reads the **child's** parents, never the group's members — keep it that way (`tests/scale.test.ts` fails if a check goes O(group size) again). `applyDelta` copies the space's maps on every call (O(N)), so bulk changes go in ONE delta. A probe that only asks *would this pass?* calls `canApply` / `canAddTo` / `canMoveTo`: one `stageDelta` path validates both, `applyDelta` into eager copies (the space it returns) and `canApply` into copy-on-write views, and `tests/properties.test.ts` checks they agree on every random delta and move.
 
 ## Adding a new dial
 
