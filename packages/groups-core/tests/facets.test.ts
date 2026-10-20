@@ -219,8 +219,8 @@ describe('facetPanel is fast enough for a real sidebar', () => {
   // five panels. One pass takes ~10–40 ms here; the old loop took ~120 ms on the same machine.
   const BUDGET_MS = 100;
   // The budget is held by the FASTEST of a few passes: a shared runner's stalls only ever add time
-  // (one pass took 135 ms on CI, #58), while a slower algorithm is slow on every pass.
-  const PASSES = 5;
+  // (one pass took 135 ms on CI, #58: the fs store's 4-process test runs alongside), while a slower algorithm is slow on every pass.
+  const PASSES = 15; // spread over ~0.5–2 s, longer than a neighbouring suite's burst
 
   /** ~600 items in five flat families; `session` has ~500 values, most holding one item. */
   function annalsLike(): { space: GroupSpace; families: string[] } {
