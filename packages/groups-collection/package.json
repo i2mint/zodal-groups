@@ -1,6 +1,7 @@
 {
   "name": "@zodal/groups-collection",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "description": "One CRUD object over a zodal item collection and its zodal-groups memberships: create-with-groups, bulk tag, rename, merge, delete — every operation returns its inverse",
   "type": "module",
   "sideEffects": false,
@@ -23,7 +24,8 @@
     "access": "public"
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsup",

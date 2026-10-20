@@ -1,6 +1,7 @@
 {
   "name": "@zodal/groups-ui-vanilla",
   "version": "0.2.0",
+  "license": "Apache-2.0",
   "description": "Zero-dependency vanilla HTML/JS renderers for zodal-groups: tree, Miller columns, breadcrumbs, facets, tag input",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -14,7 +15,7 @@
     "./styles.css": "./dist/styles.css"
   },
   "publishConfig": { "access": "public" },
-  "files": ["dist"],
+  "files": ["dist", "NOTICE"],
   "scripts": { "build": "tsup", "test": "vitest run", "typecheck": "tsc --noEmit" },
   "peerDependencies": { "@zodal/groups-core": "^0.2.0", "@zodal/groups-ui": "^0.2.0" },
   "devDependencies": {

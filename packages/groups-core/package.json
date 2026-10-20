@@ -1,6 +1,7 @@
 {
   "name": "@zodal/groups-core",
   "version": "0.2.0",
+  "license": "Apache-2.0",
   "description": "Canonical membership model, constraint profiles, closure, and projections for polyhierarchical grouping",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -17,7 +18,7 @@
     }
   },
   "publishConfig": { "access": "public" },
-  "files": ["dist"],
+  "files": ["dist", "NOTICE"],
   "scripts": {
     "build": "tsup",
     "prepublishOnly": "pnpm build",

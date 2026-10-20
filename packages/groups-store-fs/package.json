@@ -1,6 +1,7 @@
 {
   "name": "@zodal/groups-store-fs",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "description": "Node filesystem GroupStore for zodal-groups: the DAG and memberships in one sidecar JSON manifest, written atomically",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -13,7 +14,7 @@
     }
   },
   "publishConfig": { "access": "public" },
-  "files": ["dist"],
+  "files": ["dist", "NOTICE"],
   "engines": { "node": ">=18" },
   "scripts": { "build": "tsup", "prepublishOnly": "pnpm build", "test": "vitest run", "typecheck": "tsc --noEmit" },
   "peerDependencies": { "@zodal/groups-core": "^0.2.0" },
