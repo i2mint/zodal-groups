@@ -59,7 +59,7 @@ function problemAt(value: unknown, path: string, seen: Set<object>, depth: numbe
   if (value === null) return undefined;
   const object = value as object;
   if (seen.has(object)) return `${path}: a cycle — JSON cannot hold it`;
-  if (depth >= MAX_JSON_DEPTH) return `${path}: nested deeper than ${MAX_JSON_DEPTH} levels`;
+  if (depth >= MAX_JSON_DEPTH) return `${path.slice(0, 60)}…: nested deeper than ${MAX_JSON_DEPTH} levels`;
   const proto = Object.getPrototypeOf(object);
   if (!Array.isArray(object) && proto !== Object.prototype && proto !== null) {
     return `${path}: a ${proto?.constructor?.name ?? 'class'} instance is not plain JSON data (convert it first)`;

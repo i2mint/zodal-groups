@@ -2,7 +2,7 @@
 
 ## Project Stage: CORE + FS STORE + COLLECTION FACADE BUILT, RENDERERS IN PROGRESS
 
-`@zodal/groups-core` (269 tests), `@zodal/groups-ui` (130), `@zodal/groups-ui-vanilla` (136 tests: DOM in jsdom, plus the stylesheet's touch contract), `@zodal/groups-store-fs` (77) and `@zodal/groups-collection` (143) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 33-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). groups-ui has `toGroupChips` (drill-down chips for phones), the selection-level tagging descriptor (tri-state, staged changes, a plan the caller writes) and a message for every `Violation` code; groups-ui-vanilla renders the menu (issue #3, D32) and the chips, and is touch-ready (44px targets, 16px inputs, host typography). Next: shadcn and Ark renderers (tag menu included), the zodal tag-chip widget upstream.
+`@zodal/groups-core` (270 tests), `@zodal/groups-ui` (130), `@zodal/groups-ui-vanilla` (136 tests: DOM in jsdom, plus the stylesheet's touch contract), `@zodal/groups-store-fs` (77) and `@zodal/groups-collection` (143) are implemented and green. groups-core holds the `GroupStore` contract (`apply → { revision, inverse }` with `expectedRevision`), the memory store, the 33-case contract kit (`@zodal/groups-core/testing`), tombstones, `mergeDelta`, per-family cardinality and `inferProfile`. groups-collection is the facade over an item `DataProvider` + named group spaces (issue #1, D31). groups-ui has `toGroupChips` (drill-down chips for phones), the selection-level tagging descriptor (tri-state, staged changes, a plan the caller writes) and a message for every `Violation` code; groups-ui-vanilla renders the menu (issue #3, D32) and the chips, and is touch-ready (44px targets, 16px inputs, host typography). Next: shadcn and Ark renderers (tag menu included), the zodal tag-chip widget upstream.
 
 ## What zodal-groups Is
 
@@ -87,7 +87,7 @@ Real files live in `skills/`; `.claude/skills/` is a symlink bridge.
 
 ```bash
 pnpm install
-pnpm --filter @zodal/groups-core test        # 269 tests (+3 skipped: the memory store is not persistent)
+pnpm --filter @zodal/groups-core test        # 270 tests (+3 skipped: the memory store is not persistent)
 pnpm --filter @zodal/groups-store-fs test    # 77 tests: the contract kit, fs hardening, the lock, and a real 4-process run
 pnpm --filter @zodal/groups-ui test          # 130 tests: drag intent (incl. moves under single-parent profiles), the tagging descriptor (tri-state, cycle, plan, refusals, stale plans, caching), every Violation message, group chips
 pnpm --filter @zodal/groups-ui-vanilla test  # 136 tests (jsdom): ARIA, drops, APG tree keys, in-place updates, the tag menu's live region, the tag input's onWrite rollback and picking, group chips, touch CSS

@@ -258,10 +258,20 @@ export function resyncEmbedded(rt: SpaceRuntime, records: ReadonlyMap<string, Re
   rt.current = fromSnapshot({ nodes, edges, revision: space.revision + 1 }, { profile: rt.profile });
 }
 
-/** Load a store space (the epoch is learned again from the next apply). */
+/**
+ * Load a store space. A store with `loadVersioned` gives the epoch with the space (one read), so
+ * the next write expects it too; otherwise the epoch is learned again from the next apply.
+ */
 export async function loadStore(rt: SpaceRuntime): Promise<void> {
-  rt.current = await rt.store!.load();
-  rt.epoch = undefined;
+  const store = rt.store!;
+  if (store.loadVersioned) {
+    const { space, epoch } = await store.loadVersioned();
+    rt.current = space;
+    rt.epoch = epoch;
+  } else {
+    rt.current = await store.load();
+    rt.epoch = undefined;
+  }
   rt.stale = false;
 }
 

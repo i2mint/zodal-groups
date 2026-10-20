@@ -79,12 +79,12 @@ export function ancestors(space: GroupSpace, node: NodeId, options: WalkOptions 
 
 /**
  * How a walk carries a chain: `start` is the state before the first hop, `step` extends it by one
- * edge — `undefined` when nothing further along can be reached, else the new state and whether the
- * node at the far end is in the closure. `key` makes a state hashable for the visited set.
+ * edge — `undefined` when nothing further along can be reached, else the new state, whether the
+ * node at the far end is in the closure, and whether a longer chain could still compose. `key` makes a state hashable for the visited set.
  */
 interface Chain<S> {
   readonly start: S;
-  step(state: S, kind: EdgeKind): { readonly state: S; readonly reached: boolean } | undefined;
+  step(state: S, kind: EdgeKind): { readonly state: S; readonly reached: boolean; readonly extends: boolean } | undefined;
   key(state: S): string;
 }
 
@@ -97,7 +97,9 @@ function upChain(profile: GroupProfile): Chain<EdgeKind | null> {
     start: null,
     step(carried, kind) {
       const composed = carried === null ? (profile.edgeKinds[kind]?.transitive ? kind : null) : composeKinds(profile, carried, kind);
-      return composed === null ? undefined : { state: composed, reached: true };
+      // A composed kind that is not transitive (a custom `composesWith` may yield one) still
+      // reaches this node, and ends the chain.
+      return composed === null ? undefined : { state: composed, reached: true, extends: profile.edgeKinds[composed]?.transitive === true };
     },
     key: (carried) => carried ?? '',
   };
@@ -111,25 +113,29 @@ function upChain(profile: GroupProfile): Chain<EdgeKind | null> {
  * function — exactly what `ancestors` would conclude from below. A node that is not reached still
  * passes the function on: a longer chain through it may compose where its own edge does not.
  */
-function downChain(profile: GroupProfile): Chain<ReadonlyMap<EdgeKind, EdgeKind | null>> {
+type UpperChain = 'identity' | ReadonlyMap<EdgeKind, EdgeKind | null>;
+
+function downChain(profile: GroupProfile): Chain<UpperChain> {
   const transitive = Object.keys(profile.edgeKinds).filter((k) => profile.edgeKinds[k]?.transitive);
-  const identity = new Map<EdgeKind, EdgeKind | null>(transitive.map((k) => [k, k]));
+  // The identity is a marker, not a map over the transitive kinds: a composed kind may be one that
+  // is not transitive (or not declared), and the empty upper chain must still map it to itself.
+  const look = (above: UpperChain, k: EdgeKind): EdgeKind | null => (above === 'identity' ? k : (above.get(k) ?? null));
   return {
-    start: identity,
+    start: 'identity',
     step(above, kind) {
-      if (!above.has(kind)) return undefined; // not transitive: no chain passes through it
-      const reached = above.get(kind) != null;
+      if (!profile.edgeKinds[kind]?.transitive) return undefined; // no chain passes through it
+      const reached = look(above, kind) !== null;
       const state = new Map<EdgeKind, EdgeKind | null>();
       let alive = false;
       for (const k of transitive) {
         const composed = composeKinds(profile, k, kind);
-        const end = composed === null ? null : (above.get(composed) ?? null);
+        const end = composed === null ? null : look(above, composed);
         state.set(k, end);
         if (end !== null) alive = true;
       }
-      return alive || reached ? { state, reached } : undefined;
+      return alive || reached ? { state, reached, extends: alive } : undefined;
     },
-    key: (state) => [...state.values()].map((v) => v ?? '').join('\u0001'),
+    key: (state) => (state === 'identity' ? '\u0002' : [...state.values()].map((v) => v ?? '').join('\u0001')),
   };
 }
 
@@ -167,6 +173,7 @@ function walkChain<S>(space: GroupSpace, start: NodeId, direction: 'up' | 'down'
         if (!stepped) continue; // the chain does not compose — stop here, don't lie
         const target = direction === 'down' ? edge.child : edge.parent;
         if (stepped.reached && target !== start) out.add(target);
+        if (!stepped.extends) continue;
         const k = visitKey(target, stepped.state);
         if (visited.has(k)) continue;
         visited.add(k);

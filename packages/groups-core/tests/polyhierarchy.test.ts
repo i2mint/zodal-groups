@@ -5,9 +5,12 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  ancestors,
   defineGroups,
   descendants,
   detectCycles,
+  edgeId,
+  fromSnapshot,
   createGroupSpace,
   expandedForPath,
   makeEdge,
@@ -150,6 +153,38 @@ describe('closure semantics are per edge KIND — the wheel/car/vehicle problem'
     g.add('y', 'top', { kind: 'is_a' });
     expect(g.ancestors('leaf')).toContain('top');
     expect(g.descendants('top')).toContain('leaf');
+  });
+
+  it('agrees on custom tables whose composition yields a non-transitive kind (review of #26)', () => {
+    const edgeKinds = {
+      k0: { transitive: true, acyclic: true, membership: true, composesWith: { k0: 'k1', k1: 'k1' } },
+      k1: { transitive: false, acyclic: true, membership: true, composesWith: { k0: 'k1' } },
+    };
+    const kinds = ['k0', 'k1'];
+    let seed = 7;
+    const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    for (let round = 0; round < 200; round++) {
+      const ids = ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'];
+      const edges = Array.from({ length: 8 }, (_, i) => {
+        const parent = ids[Math.floor(random() * ids.length)]!;
+        const child = ids[Math.floor(random() * ids.length)]!;
+        return makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`e${i}`), kind: kinds[Math.floor(random() * 2)]! });
+      });
+      // Foreign data (cycles, self-loops included): the read path must still agree with itself.
+      const space = fromSnapshot({ nodes: ids.map((id) => ({ id: nodeId(id) })), edges }, { profile: 'thesaurus', overrides: { edgeKinds } });
+      for (const x of ids) {
+        const down = descendants(space, nodeId(x));
+        for (const y of ids) {
+          expect(down.has(nodeId(y)), `round ${round}: ${y} under ${x}`).toBe(ancestors(space, nodeId(y)).has(nodeId(x)));
+        }
+      }
+    }
+    const fixed = fromSnapshot(
+      { nodes: [], edges: [makeEdge(nodeId('n4'), nodeId('n5'), { id: edgeId('a'), kind: 'k0' }), makeEdge(nodeId('n5'), nodeId('n0'), { id: edgeId('b'), kind: 'k0' })] },
+      { profile: 'thesaurus', overrides: { edgeKinds } },
+    );
+    expect(ancestors(fixed, nodeId('n0')).has(nodeId('n4'))).toBe(true);
+    expect(descendants(fixed, nodeId('n4')).has(nodeId('n0'))).toBe(true);
   });
 
   it('DOES conclude that a poodle is an animal', () => {

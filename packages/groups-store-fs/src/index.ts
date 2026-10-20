@@ -156,13 +156,17 @@ export interface ManifestIO {
 }
 
 export interface NodeManifestIOOptions {
-  /** Give up taking the lock after this long (`ManifestLockError`). Default `staleLockMs` + 5 s. */
+  /** Give up taking the lock after this long (`ManifestLockError`). Default `staleLockMs` + 5 s (10 s if that is infinite). */
   readonly lockTimeoutMs?: number;
   /** A lock older than this is broken even if its process is alive (it hung). Default 30 s. */
   readonly staleLockMs?: number;
 }
 
 const DEFAULT_STALE_LOCK_MS = 30_000;
+/** The lock timeout when stale-breaking is off (`staleLockMs: Infinity`). */
+const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+/** A `.break` file is judged stale by age no sooner than this, however small `staleLockMs` is. */
+const MIN_STALE_BREAK_MS = 2_000;
 /** The default lock timeout outlasts the stale age by this much (issue #6: a reused pid). */
 const LOCK_TIMEOUT_MARGIN_MS = 5_000;
 let lockCounter = 0;
@@ -193,7 +197,8 @@ async function lockHolder(lockPath: string): Promise<{ text: string; pid?: numbe
  * scheme) could take a fresh lock another process had just created, and putting it back raced a
  * third writer — two holders. What remains: the stale holder itself releasing and a new writer
  * locking between our re-read and our remove, which needs a hung holder to wake in that instant;
- * the pre-rename re-read still turns that into a `conflict`, never a lost write.
+ * the pre-rename re-read then catches nearly every case as a `conflict`. Vanishingly unlikely, but
+ * there is no portable compare-and-delete to close it.
  *
  * Resolves `false` when another breaker is at work (the caller backs off), `true` otherwise.
  */
@@ -210,22 +215,26 @@ async function breakLock(lockPath: string, stale: { text: string }, staleMs: num
     const breaker = await lockHolder(breakPath);
     if (breaker) {
       const dead = breaker.pid !== undefined && breaker.pid !== process.pid && !isAlive(breaker.pid);
-      if ((dead || Date.now() - breaker.at > staleMs) && (await readText(breakPath)) === breaker.text) {
+      const old = Date.now() - breaker.at > Math.max(staleMs, MIN_STALE_BREAK_MS);
+      if ((dead || old) && (await readText(breakPath)) === breaker.text) {
         await rm(breakPath, { force: true });
       }
     }
     return false;
   }
+  let wrote = false;
   try {
     try {
       await handle.writeFile(body, 'utf8');
+      wrote = true;
     } finally {
       await handle.close();
     }
     if ((await readText(lockPath)) === stale.text) await rm(lockPath, { force: true });
     return true;
   } finally {
-    if ((await readText(breakPath)) === body) await rm(breakPath, { force: true });
+    // Ours to remove: the file we created, even if writing its body failed (ENOSPC).
+    if (!wrote || (await readText(breakPath)) === body) await rm(breakPath, { force: true });
   }
 }
 
@@ -299,7 +308,7 @@ async function syncDirectory(dir: string): Promise<void> {
  */
 export function nodeManifestIO(options: NodeManifestIOOptions = {}): ManifestIO {
   const staleMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
-  const timeoutMs = options.lockTimeoutMs ?? staleMs + LOCK_TIMEOUT_MARGIN_MS;
+  const timeoutMs = options.lockTimeoutMs ?? (Number.isFinite(staleMs) ? staleMs + LOCK_TIMEOUT_MARGIN_MS : DEFAULT_LOCK_TIMEOUT_MS);
   return {
     read: readText,
     lock: (path) => acquireLock(path, timeoutMs, staleMs),
