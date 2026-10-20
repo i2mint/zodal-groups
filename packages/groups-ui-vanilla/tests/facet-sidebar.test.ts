@@ -140,4 +140,45 @@ describe('renderFacetSidebar', () => {
     expect(container.children.length).toBe(0);
     g.add('s4', 'jazz'); // no throw, no redraw
   });
+
+  it('ids with spaces or colons: aria-controls resolves, and a removed chip hands focus to its own family', () => {
+    const g = defineGroups({ profile: 'polyhierarchy' });
+    g.add('kind:rock', 'my genre');
+    g.add('kind:jazz', 'my genre');
+    g.add('s1', 'kind:rock');
+    g.add('s2', 'kind:jazz');
+    g.add('a:b', 'other');
+    g.add('s1', 'a:b');
+    renderFacetSidebar(container, g, { families: ['other', 'my genre'], selected: ['kind:rock', 'a:b'] });
+    const toggle = toggleOf('my genre');
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).not.toBeNull();
+    const chip = container.querySelector<HTMLButtonElement>('.zg-facet-chip[data-node-id="kind:rock"]')!;
+    chip.focus();
+    chip.click();
+    expect(document.activeElement).toBe(toggleOf('my genre'));
+  });
+
+  it("after a family's Clear, focus goes to that family's button", () => {
+    renderFacetSidebar(container, build(), { families: ['genre', 'mood'], selected: ['calm'], open: 'mood' });
+    const clear = container.querySelector<HTMLButtonElement>('.zg-facet-clear')!;
+    clear.focus();
+    clear.click();
+    expect(document.activeElement).toBe(toggleOf('mood'));
+  });
+
+  it('a live region says what the filter matches', () => {
+    renderFacetSidebar(container, build(), { families: ['genre', 'mood'], open: 'genre' });
+    const live = container.querySelector<HTMLElement>('[role="status"]')!;
+    expect(live.textContent).toBe('');
+    tick('rock');
+    expect(live.textContent).toBe('genre: rock. 2 items match');
+    expect(container.querySelector('[role="status"]')).toBe(live); // persistent, not redrawn
+  });
+
+  it('an open family with nothing to offer says so', () => {
+    const g = build();
+    g.add('empty-family-value', 'misc'); // misc has only an item child: no group values
+    renderFacetSidebar(container, g, { families: ['misc'], open: 'misc' });
+    expect(panelOf('misc').querySelector('.zg-facet-none')!.textContent).toBe('No values');
+  });
 });

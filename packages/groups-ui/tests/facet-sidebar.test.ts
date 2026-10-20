@@ -100,6 +100,29 @@ describe('toFacetSidebar', () => {
   });
 });
 
+describe('toFacetSidebar: the edges (review of #29)', () => {
+  it('a value shared by two families is selected in both, and clearing either clears it', () => {
+    const g = build();
+    g.add('rock', 'mood'); // `rock` is now also a mood value
+    const view = toFacetSidebar(g, { families: ['genre', 'mood'], items: ITEMS, selected: ['rock'] });
+    expect(view.applied.map((a) => a.family)).toEqual(['genre', 'mood']);
+    expect(view.families.map((f) => f.selectedCount)).toEqual([1, 1]);
+    expect(view.matching).toEqual(['s1', 's2']);
+    expect([...clearFacetFamily(g, view.selected, 'mood')]).toEqual([]);
+  });
+
+  it("values: 'open' computes only the open family's panel", () => {
+    const view = toFacetSidebar(build(), { families: ['genre', 'mood'], items: ITEMS, values: 'open', open: 'mood' });
+    expect(view.families[0]!.values).toEqual([]);
+    expect(counts(view, 'mood')).toEqual({ calm: 2, loud: 1 });
+  });
+
+  it('a repeated item is counted and matched once', () => {
+    const view = toFacetSidebar(build(), { families: ['genre'], items: [...ITEMS, nodeId('s1')], selected: ['rock'] });
+    expect(view.matching).toEqual(['s1', 's2']);
+  });
+});
+
 describe('selection helpers', () => {
   it('toggleFacetValue and clearFacetFamily return new sets', () => {
     const g = build();

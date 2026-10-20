@@ -89,7 +89,8 @@ window.addEventListener('popstate', () => sidebar.setSelected(fromUrl()));  // n
 
 - Options: `families`, `selected`, `open` (the family whose panel starts open), `items` (a list or a function read on each render), `onSelect(selected, view)`, `onOpen(family | null)`, `hideEmpty` (default `true`; a selected value always stays), `sort` (`'count'`, default, or `'label'`), `labels` (`anyOf`, `or`, `and`, `clear`, `clearAll`, `applied`, `remove`, `count`, `family`), `label` (the widget's accessible name, default "Filters").
 - Returns `{ selected, open, setSelected(ids) → normalized, setOpen(family | null), items(), view(), render(), destroy(), element }`. Selected ids that are no listed family's value are dropped.
-- Each family button has `aria-expanded` and `aria-controls`; its accessible name says how many values are selected. One panel is open at a time. Removing a chip moves focus to its family's button.
+- Each family button has `aria-expanded` and `aria-controls`; its accessible name says how many values are selected. One panel is open at a time (only its counts are computed). Removing a chip or clearing a family moves focus to that family's button. A polite live region says what the filter matches ("genre: rock. 2 items match").
+- A group that is a value of two listed families is selected in both at once (one chip in each; unticking or clearing either drops it). The labels also include `matching(n)` and `none`.
 - The view comes from `toFacetSidebar` in `@zodal/groups-ui` (with `toggleFacetValue` and `clearFacetFamily`), so a React renderer draws the same thing.
 
 ## renderTagInput

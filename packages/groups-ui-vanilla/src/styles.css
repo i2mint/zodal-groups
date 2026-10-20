@@ -90,6 +90,9 @@
 .zg-facet-family-badge { font-variant-numeric: tabular-nums; padding: 0 .45em; border-radius: 999px;
   background: color-mix(in srgb, currentColor 14%, transparent); }
 .zg-facet-family-panel { padding: .2rem 0 .2rem .5rem; }
+.zg-facet-sidebar-body { display: flex; flex-direction: column; gap: .4rem; }
+.zg-facet-none { margin: .2rem 0; opacity: .7; }
+.zg-facet-live { font-size: .85em; min-height: 1.2em; }
 .zg-facet-chip:focus-visible, .zg-facet-family-toggle:focus-visible, .zg-facet-clear:focus-visible, .zg-facet-clear-all:focus-visible {
   outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: 1px; }
 

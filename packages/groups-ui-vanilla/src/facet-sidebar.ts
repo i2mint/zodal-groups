@@ -87,7 +87,7 @@ export function renderFacetSidebar<P>(
 
   const compute = (sel: Iterable<NodeId | string>, opened: NodeId | string | null): FacetSidebarView => {
     const items = pool();
-    const view = toFacetSidebar(groups, { ...viewOptions, selected: sel, open: opened, ...(items ? { items } : {}) });
+    const view = toFacetSidebar(groups, { values: 'open', ...viewOptions, selected: sel, open: opened, ...(items ? { items } : {}) });
     selected = view.selected;
     open = view.open;
     current = view;
@@ -98,6 +98,14 @@ export function renderFacetSidebar<P>(
   root.className = 'zg-facet-sidebar';
   root.setAttribute('role', 'group');
   root.setAttribute('aria-label', label);
+  // Persistent, outside the redrawn part: a live region must exist before its text changes.
+  const body = document.createElement('div');
+  body.className = 'zg-facet-sidebar-body';
+  const live = document.createElement('div');
+  live.className = 'zg-facet-live';
+  live.setAttribute('role', 'status');
+  live.setAttribute('aria-live', 'polite');
+  root.append(body, live);
   container.appendChild(root);
 
   const sameSet = (a: ReadonlySet<NodeId>, b: ReadonlySet<NodeId>) => a.size === b.size && [...a].every((x) => b.has(x));
@@ -109,12 +117,13 @@ export function renderFacetSidebar<P>(
     onSelect?.(selected, current);
   };
 
-  const button = (className: string, text: string, focusKey: string): HTMLButtonElement => {
+  const button = (className: string, text: string, focusKey: string, family?: NodeId): HTMLButtonElement => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = className;
     b.textContent = text;
     b.dataset.focusKey = focusKey;
+    if (family !== undefined) b.dataset.family = family;
     return b;
   };
 
@@ -144,7 +153,7 @@ export function renderFacetSidebar<P>(
           or.textContent = view.labels.or;
           group.appendChild(or);
         }
-        const chip = button('zg-facet-chip', '', `chip:${applied.family}:${value.group}`);
+        const chip = button('zg-facet-chip', '', `chip:${applied.family}:${value.group}`, applied.family);
         chip.dataset.nodeId = value.group;
         chip.setAttribute('aria-label', value.removeLabel);
         const text = document.createElement('span');
@@ -167,13 +176,13 @@ export function renderFacetSidebar<P>(
     return el;
   };
 
-  const drawFamily = (family: FacetSidebarFamily, view: FacetSidebarView): HTMLElement => {
+  const drawFamily = (family: FacetSidebarFamily, index: number, view: FacetSidebarView): HTMLElement => {
     const section = document.createElement('div');
     section.className = 'zg-facet-family';
     section.dataset.nodeId = family.family;
-    const panelId = `${id}-${family.family}`;
+    const panelId = `${id}-p${index}`; // by position: a node id may hold spaces, which break IDREFs
 
-    const toggle = button('zg-facet-family-toggle', '', `family:${family.family}`);
+    const toggle = button('zg-facet-family-toggle', '', `family:${family.family}`, family.family);
     toggle.setAttribute('aria-expanded', String(family.aria.expanded));
     toggle.setAttribute('aria-controls', panelId);
     toggle.setAttribute('aria-label', family.aria.label);
@@ -210,6 +219,7 @@ export function renderFacetSidebar<P>(
         box.type = 'checkbox';
         box.checked = value.aria.checked;
         box.dataset.focusKey = `value:${value.key}`;
+        box.dataset.family = family.family;
         box.dataset.nodeId = value.group;
         box.setAttribute('aria-label', value.aria.label);
         box.addEventListener('change', () => select(toggleFacetValue(selected, value.group)));
@@ -223,8 +233,14 @@ export function renderFacetSidebar<P>(
         row.append(box, text, count);
         panel.appendChild(row);
       }
+      if (!family.values.length) {
+        const none = document.createElement('p');
+        none.className = 'zg-facet-none';
+        none.textContent = view.labels.none;
+        panel.appendChild(none);
+      }
       if (family.selectedCount) {
-        const clear = button('zg-facet-clear', view.labels.clear, `clear:${family.family}`);
+        const clear = button('zg-facet-clear', view.labels.clear, `clear:${family.family}`, family.family);
         clear.addEventListener('click', () => select(clearFacetFamily(groups, selected, family.family)));
         panel.appendChild(clear);
       }
@@ -234,17 +250,22 @@ export function renderFacetSidebar<P>(
   };
 
   const draw = (): void => {
-    // Keep focus on the same control across the redraw; a removed chip hands it to its family button.
-    const focused = document.activeElement as HTMLElement | null;
-    const focusKey = focused && root.contains(focused) ? focused.dataset.focusKey : undefined;
+    // Keep focus on the same control across the redraw. If it is gone (a removed chip, a cleared
+    // family, a value hidden at zero), hand focus to its family's button; else the first one.
+    const doc = root.getRootNode() as Document | ShadowRoot;
+    const focused = (doc.activeElement ?? null) as HTMLElement | null;
+    const at = focused && body.contains(focused) ? { key: focused.dataset.focusKey, family: focused.dataset.family } : null;
 
     const view = current;
-    root.replaceChildren(drawApplied(view), ...view.families.map((f) => drawFamily(f, view)));
+    body.replaceChildren(drawApplied(view), ...view.families.map((f, i) => drawFamily(f, i, view)));
+    const said = view.summary ? `${view.summary}. ${view.labels.matching(view.matching.length)}` : '';
+    if (live.textContent !== said) live.textContent = said;
 
-    if (focusKey) {
-      const find = (key: string) => [...root.querySelectorAll<HTMLElement>('[data-focus-key]')].find((el) => el.dataset.focusKey === key);
-      const fallback = focusKey.startsWith('chip:') ? `family:${focusKey.split(':')[1]}` : undefined;
-      (find(focusKey) ?? (fallback ? find(fallback) : undefined) ?? root.querySelector<HTMLElement>('.zg-facet-family-toggle'))?.focus();
+    if (at) {
+      const controls = [...body.querySelectorAll<HTMLElement>('[data-focus-key]')];
+      const same = controls.find((el) => el.dataset.focusKey === at.key);
+      const home = at.family !== undefined ? controls.find((el) => el.dataset.focusKey === `family:${at.family}`) : undefined;
+      (same ?? home ?? body.querySelector<HTMLElement>('.zg-facet-family-toggle'))?.focus();
     }
   };
 
@@ -279,7 +300,8 @@ export function renderFacetSidebar<P>(
       compute(selected, family);
       draw();
     },
-    items: () => [...compute(selected, open).matching],
+    // A host list given as a function may have changed since the last render: recompute then.
+    items: () => [...(typeof itemsOption === 'function' ? compute(selected, open) : current).matching],
     view: () => current,
     render,
     element: root,

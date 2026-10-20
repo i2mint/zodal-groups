@@ -17,6 +17,12 @@
  * (groups-ui-vanilla `renderFacetSidebar`, or a React one) draws the view and hands the new set
  * back. Pure: a function of `(groups, options)`; memoize on `groups.revision` and the options.
  *
+ * The selection is one set of value ids. A group that is a value of two listed families is selected
+ * in both at once: it shows a chip in each, unticking it in one unticks it in the other, and
+ * clearing either family clears it. Ids that are not a listed family's direct child group (a
+ * grandchild, an unknown id, a value not loaded yet) are dropped from `view.selected`; compare it
+ * with what you passed to learn what was dropped.
+ *
  * @see issue #15; the `faceted-filter-ux` guidance (one button per family, inline panel, chips).
  */
 
@@ -50,6 +56,10 @@ export interface FacetSidebarLabels {
   readonly remove: (value: string, family: string) => string;
   /** The count as spoken, appended to a value's accessible name. */
   readonly count: (n: number) => string;
+  /** What the filter now matches, for a live region: "12 items match". */
+  readonly matching: (n: number) => string;
+  /** An open panel with no values to offer. */
+  readonly none: string;
   /** The family button's accessible name: "Genre, 2 selected". */
   readonly family: (family: string, selected: number) => string;
 }
@@ -63,6 +73,8 @@ export const FACET_SIDEBAR_LABELS: FacetSidebarLabels = {
   applied: 'Applied filters',
   remove: (value, family) => `Remove ${value} from ${family}`,
   count: (n) => `${n} item${n === 1 ? '' : 's'}`,
+  matching: (n) => `${n} item${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''}`,
+  none: 'No values',
   family: (family, selected) => (selected ? `${family}, ${selected} selected` : family),
 };
 
@@ -79,6 +91,13 @@ export interface FacetSidebarOptions {
   readonly hideEmpty?: boolean;
   /** Value order in a panel: by count (facetPanel's, the default) or by label (stable as counts change). */
   readonly sort?: 'count' | 'label';
+  /**
+   * Which families get their `values` (one `facetPanel` each): every family (the default), or only
+   * the open one — what a renderer that shows one panel at a time needs. The others get `[]`.
+   */
+  readonly values?: 'all' | 'open';
+  /** The locale for label order (values with `sort: 'label'`, applied chips). Default: the runtime's. */
+  readonly locale?: string;
   readonly labels?: Partial<FacetSidebarLabels>;
 }
 
@@ -153,7 +172,8 @@ export function clearFacetFamily<P>(groups: Groups<P>, selected: Iterable<NodeId
 
 /** The sidebar's view: families with counts, the applied chips, and the matching items. */
 export function toFacetSidebar<P>(groups: Groups<P>, options: FacetSidebarOptions): FacetSidebarView {
-  const { hideEmpty = true, sort = 'count' } = options;
+  const { hideEmpty = true, sort = 'count', values: which = 'all', locale } = options;
+  const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label, locale);
   const labels = { ...FACET_SIDEBAR_LABELS, ...options.labels };
   const space = groups.space;
   const labelOf = (id: NodeId) => space.nodes.get(id)?.label ?? id;
@@ -170,7 +190,7 @@ export function toFacetSidebar<P>(groups: Groups<P>, options: FacetSidebarOption
   const openRaw = options.open == null ? null : nodeId(String(options.open));
   const open = openRaw && valuesOf.has(openRaw) ? openRaw : null;
 
-  const pool = [...(options.items ?? allItems(space))];
+  const pool = [...new Set(options.items ?? allItems(space))];
   // Each family's own match (OR over its selected values, with their closures), once.
   const matchOf = new Map<NodeId, Set<NodeId>>();
   for (const f of families) {
@@ -185,9 +205,11 @@ export function toFacetSidebar<P>(groups: Groups<P>, options: FacetSidebarOption
   const familyViews = families.map((f): FacetSidebarFamily => {
     const label = labelOf(f);
     const sel = selectedIn.get(f)!;
-    const facetPool = pool.filter((item) => passes(item, f));
-    const values = facetPanel(space, { under: f, items: facetPool, selected: sel, hideEmpty });
-    if (sort === 'label') values.sort((a, b) => a.label.localeCompare(b.label));
+    const values =
+      which === 'all' || open === f
+        ? facetPanel(space, { under: f, items: pool.filter((item) => passes(item, f)), selected: sel, hideEmpty })
+        : [];
+    if (sort === 'label') values.sort(byLabel);
     return {
       family: f,
       key: f,
@@ -210,7 +232,7 @@ export function toFacetSidebar<P>(groups: Groups<P>, options: FacetSidebarOption
       const label = labelOf(f);
       const values = [...selectedIn.get(f)!]
         .map((g) => ({ group: g, label: labelOf(g), removeLabel: labels.remove(labelOf(g), label) }))
-        .sort((a, b) => a.label.localeCompare(b.label));
+        .sort(byLabel);
       return { family: f, label, values, text: `${label}: ${values.map((v) => v.label).join(` ${labels.or} `)}` };
     });
 
