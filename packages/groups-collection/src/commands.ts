@@ -23,7 +23,7 @@
  */
 
 import { z, type ZodType } from 'zod';
-import type { OperationDefinition } from '@zodal/core';
+import type { FilterExpression, OperationDefinition } from '@zodal/core';
 import type { OperationResult, TaggedCollection } from './types.js';
 
 /** A state patch (acture's `Patch`). */
@@ -73,6 +73,9 @@ export const operations: readonly OperationDefinition[] = Object.freeze([
   { name: 'mergeGroups', label: 'Merge groups', scope: 'collection', icon: 'merge' },
   { name: 'moveInGroup', label: 'Move within group', scope: 'item', icon: 'arrow-up-down' },
   { name: 'deleteGroup', label: 'Delete group', scope: 'collection', icon: 'trash-2', variant: 'destructive', confirm: true },
+  { name: 'setRule', label: 'Set smart-group rule', scope: 'collection', icon: 'filter' },
+  { name: 'exclude', label: 'Exclude from smart group', scope: 'selection', icon: 'eye-off' },
+  { name: 'unexclude', label: 'Stop excluding', scope: 'selection', icon: 'eye' },
 ] satisfies OperationDefinition[]);
 
 /**
@@ -122,6 +125,9 @@ export const commandParams = {
   mergeGroups: z.object({ from: z.string().min(1), into: z.string().min(1), space }),
   moveInGroup: z.object({ id: z.string().min(1), group: z.string().min(1), before: z.string().min(1).optional(), after: z.string().min(1).optional(), space }),
   deleteGroup: z.object({ group: z.string().min(1), space }),
+  setRule: z.object({ group: z.string().min(1), rule: z.record(z.string(), z.unknown()).nullable(), label: z.string().min(1).optional(), space }),
+  exclude: z.object({ ids, group: z.string().min(1), space }),
+  unexclude: z.object({ ids, group: z.string().min(1), space }),
 } as const;
 
 type Params = { [K in keyof typeof commandParams]: z.infer<(typeof commandParams)[K]> };
@@ -170,6 +176,10 @@ export function createCommands<T extends Record<string, unknown>>(
       return tc.moveInGroup(p.id, p.group, { ...where, ...(p.space ? { space: p.space } : {}) });
     },
     deleteGroup: (p) => tc.deleteGroup(p.group, p.space ? { space: p.space } : {}),
+    setRule: (p) =>
+      tc.setRule(p.group, p.rule as FilterExpression | null, { ...(p.label ? { label: p.label } : {}), ...(p.space ? { space: p.space } : {}) }),
+    exclude: (p) => tc.exclude(p.ids, p.group, p.space ? { space: p.space } : {}),
+    unexclude: (p) => tc.unexclude(p.ids, p.group, p.space ? { space: p.space } : {}),
   };
   const namespace = options.namespace ?? 'groups';
   return Object.freeze(

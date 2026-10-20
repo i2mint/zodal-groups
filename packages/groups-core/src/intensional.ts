@@ -18,11 +18,19 @@
  * enforced by `defineGroups`, and it is the single place where we chose "possible later" over
  * "possible now".
  *
- * @see `docs/research/_reconciliation.md` — D21.
+ * **Fluid groups (D36).** A smart group can be edited by hand without giving up its rule: an item
+ * is **pinned** by an ordinary membership edge into the group's node, and **excluded** by an edge of
+ * the built-in non-membership kind `excludes`. The extent is `rule(items) ∪ pinned \ excluded`
+ * (`fluidExtent`). Both are edges, so every `GroupStore` persists them, `invert` undoes them, and
+ * the projections show the pinned members like any others. A rule that must persist lives on the
+ * node (`Node.rule`, a `FilterExpression` that `@zodal/groups-collection` evaluates); the predicate
+ * form here stays as the in-memory escape hatch, and `extentOf` applies the same edits to it.
+ *
+ * @see `docs/research/_reconciliation.md` — D21, D36.
  */
 
-import type { GroupSpace, Node, NodeId } from './model.js';
-import { isAliasName, isGroup, membershipParentCount } from './space.js';
+import type { EdgeKind, GroupSpace, Node, NodeId } from './model.js';
+import { edgesInto, edgesOf, isAliasName, isGroup, isMembershipKind, membershipParentCount } from './space.js';
 import { allItems } from './projections/facets.js';
 
 /** A predicate over an item, given the space it lives in. */
@@ -35,8 +43,39 @@ export interface IntensionalGroup<P = unknown> {
   readonly rule: GroupRule<P>;
 }
 
+/** The edge kind that keeps an item out of a smart group (`group excludes item`). */
+export const EXCLUDES: EdgeKind = 'excludes';
+
+/** The members pinned into `group` by hand: the children of its membership edges, in edge order. */
+export function pinnedOf<P>(space: GroupSpace<P>, group: NodeId): NodeId[] {
+  return [...new Set(edgesOf(space, group).filter((e) => isMembershipKind(space.profile, e.kind)).map((e) => e.child))];
+}
+
+/** The items `group` keeps out by hand: the children of its `excludes` edges. */
+export function excludedOf<P>(space: GroupSpace<P>, group: NodeId): NodeId[] {
+  return [...new Set(edgesOf(space, group).filter((e) => e.kind === EXCLUDES).map((e) => e.child))];
+}
+
+/** Is `item` kept out of `group` by an `excludes` edge? */
+export const isExcluded = <P>(space: GroupSpace<P>, group: NodeId, item: NodeId): boolean =>
+  edgesInto(space, item).some((e) => e.parent === group && e.kind === EXCLUDES);
+
 /**
- * The computed extent of an intensional group.
+ * A fluid group's extent: the items its rule selected (`matches`, in their order), then its pinned
+ * members not already there, minus the items it excludes. An exclusion wins over a rule match; a
+ * pin and an exclusion cannot co-exist (`excludes` is disjoint with every membership kind).
+ */
+export function fluidExtent<P>(space: GroupSpace<P>, group: NodeId, matches: Iterable<NodeId>): NodeId[] {
+  const excluded = new Set(excludedOf(space, group));
+  const out = new Set<NodeId>();
+  for (const id of matches) if (!excluded.has(id)) out.add(id);
+  for (const id of pinnedOf(space, group)) if (!excluded.has(id)) out.add(id);
+  return [...out];
+}
+
+/**
+ * The computed extent of an intensional group: the items its rule selects, edited by the pins and
+ * exclusions on the node of the same id (`fluidExtent`; none by default).
  *
  * Re-evaluated on read. There is no invalidation machinery and deliberately so: the item pool is
  * the expensive thing to iterate, and a host that cares can memoize on `space.revision`, which is
@@ -47,13 +86,13 @@ export function extentOf<P>(
   group: IntensionalGroup<P>,
   items: Iterable<NodeId> = allItems(space),
 ): NodeId[] {
-  const out: NodeId[] = [];
+  const matches: NodeId[] = [];
   for (const id of items) {
     const node = space.nodes.get(id);
     if (!node) continue;
-    if (group.rule(node, space)) out.push(id);
+    if (group.rule(node, space)) matches.push(id);
   }
-  return out;
+  return fluidExtent(space, group.id, matches);
 }
 
 // ── the built-in smart groups every product ends up needing ─────────────────

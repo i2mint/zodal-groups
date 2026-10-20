@@ -56,6 +56,7 @@ export type {
   OperationResult,
   RecordOp,
   RenameOptions,
+  SetRuleOptions,
   SpaceConfig,
   SpaceEdges,
   SpaceOption,

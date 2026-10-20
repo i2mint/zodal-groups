@@ -15,6 +15,9 @@ import {
   edgesInto,
   edgesOf,
   isGroup,
+  EXCLUDES,
+  fluidExtent,
+  isExcluded,
   isMembershipKind,
   mergeDelta,
   newEpoch,
@@ -29,6 +32,7 @@ import {
   type Node,
   type NodeId,
 } from '@zodal/groups-core';
+import type { FilterExpression } from '@zodal/core';
 import type { DataProvider } from '@zodal/store';
 import { createCommands, operations } from './commands.js';
 import { combine, concatDeltas, partition } from './delta.js';
@@ -51,6 +55,7 @@ import type {
   FailureCode,
   OperationResult,
   Position,
+  SetRuleOptions,
   SpaceConfig,
   TaggedCollection,
 } from './types.js';
@@ -556,6 +561,73 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
+    setRule(group, rule, opts: SetRuleOptions = {}) {
+      return run('setRule', () => {
+        const rt = runtime(opts.space);
+        if (rt.mode === 'embedded') {
+          throw new Error(`setRule: space '${rt.name}' stores group ids in the '${rt.field}' field, so a rule cannot be persisted; declare it on a vocabulary node, or use a GroupStore space.`);
+        }
+        const g = nodeId(canonical(rt, group));
+        if (rule === null && rt.current.nodes.get(g)?.rule === undefined) return done(g);
+        return {
+          operation: 'setRule',
+          units: [],
+          spaces: [rt],
+          subject: g,
+          build: (_r, space) => {
+            const created = !space.nodes.has(g);
+            if (created && rule === null) return {};
+            return { upsertNodes: [{ id: g, rule: rule ?? undefined, ...(created && opts.label !== undefined ? { label: opts.label } : {}) }] };
+          },
+        };
+      });
+    },
+
+    exclude(ids, alias, opts = {}) {
+      return run('exclude', () => {
+        const rt = runtime(opts.space);
+        checkKind(rt, EXCLUDES);
+        return {
+          operation: 'exclude',
+          units: units(ids),
+          spaces: [rt],
+          build: (r, space, live) => {
+            const g = resolveAlias(space, nodeId(alias));
+            const fresh = live.filter((id) => !isExcluded(space, g, nodeId(id)));
+            // A pin and an exclusion are disjoint: the pin goes in the same write.
+            return concatDeltas([untagDelta(r, space, live, g), { added: fresh.map((id) => r.mintEdge(g, id, EXCLUDES)) }]);
+          },
+        };
+      });
+    },
+
+    unexclude(ids, alias, opts = {}) {
+      return run('unexclude', () => {
+        const rt = runtime(opts.space);
+        checkKind(rt, EXCLUDES);
+        return {
+          operation: 'unexclude',
+          units: units(ids),
+          spaces: [rt],
+          build: (_r, space, live) => {
+            const g = resolveAlias(space, nodeId(alias));
+            return { removed: live.flatMap((id) => edgesInto(space, nodeId(id)).filter((e) => e.parent === g && e.kind === EXCLUDES).map((e) => e.id)) };
+          },
+        };
+      });
+    },
+
+    extent(group, opts = {}) {
+      return serialize(async () => {
+        await ensureLoaded();
+        const space = runtime(opts.space).current;
+        const g = resolveAlias(space, nodeId(group));
+        const rule = space.nodes.get(g)?.rule as FilterExpression | undefined;
+        const matches = rule ? (await readAll(provider, pageSize, rule)).map((r) => nodeId(String(r[idField]))) : [];
+        return fluidExtent(space, g, matches).map(String);
+      });
+    },
+
     moveInGroup(id, alias, opts) {
       return run('moveInGroup', () => {
         const rt = runtime(opts.space);
@@ -698,10 +770,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
 }
 
 /** Read every record, page by page (a provider may cap an unpaginated list). */
-async function readAll<T extends Record<string, unknown>>(provider: DataProvider<T>, pageSize: number): Promise<T[]> {
+async function readAll<T extends Record<string, unknown>>(provider: DataProvider<T>, pageSize: number, filter?: FilterExpression): Promise<T[]> {
   const out: T[] = [];
   for (let page = 1; ; page++) {
-    const { data, total } = await provider.getList({ pagination: { page, pageSize } });
+    const { data, total } = await provider.getList({ ...(filter ? { filter } : {}), pagination: { page, pageSize } });
     out.push(...data);
     if (!data.length || data.length < pageSize || out.length >= total) return out;
   }

@@ -35,6 +35,7 @@ export {
   DEFAULT_EDGE_KINDS,
   EXCLUSIVE,
   type FamilyRule,
+  type PersistedRule,
   type NodeId,
   type EdgeId,
   type Edge,
@@ -191,6 +192,11 @@ export {
 // ── intensional ("smart") groups ────────────────────────────────────────────
 export {
   extentOf,
+  fluidExtent,
+  pinnedOf,
+  excludedOf,
+  isExcluded,
+  EXCLUDES,
   unfiled,
   multiHomed,
   smartGroup,

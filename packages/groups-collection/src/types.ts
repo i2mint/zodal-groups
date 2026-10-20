@@ -14,7 +14,7 @@
  */
 
 import type { Edge, EdgeDelta, EdgeKind, GroupProfile, GroupSpace, GroupStore, Node, ProfileName, Violation } from '@zodal/groups-core';
-import type { FilterCondition, OperationDefinition } from '@zodal/core';
+import type { FilterCondition, FilterExpression, OperationDefinition } from '@zodal/core';
 import type { DataProvider } from '@zodal/store';
 import type { GroupsCommand } from './commands.js';
 
@@ -226,6 +226,11 @@ export interface TagOptions extends SpaceOption {
 
 export type MoveOptions = SpaceOption & Position;
 
+export interface SetRuleOptions extends SpaceOption {
+  /** The label of the group, when `setRule` creates it. A group that exists keeps its label (`renameGroup`). */
+  readonly label?: string;
+}
+
 export interface BulkTagChange extends TagOptions {
   readonly add?: readonly string[];
   readonly remove?: readonly string[];
@@ -299,6 +304,29 @@ export interface TaggedCollection<T extends Record<string, unknown>> {
   mergeGroups(from: string, into: string, options?: SpaceOption): Promise<OperationResult<T>>;
   /** Ordered spaces: move `id` within `group` to just before or after another member (its rank only). */
   moveInGroup(id: string, group: string, options: MoveOptions): Promise<OperationResult<T>>;
+
+  // ── fluid (smart) groups: a persisted rule, edited by hand (D36) ──
+  /**
+   * Give `group` a rule — a `FilterExpression` over the item records, stored on the group's node
+   * (`Node.rule`) — or remove it (`null`). Creates the group when it does not exist. Store spaces
+   * only: an embedded space persists no group node (declare a rule on a `vocabulary` node instead).
+   * Pin an item with `tag`; keep one out with `exclude`.
+   */
+  setRule(group: string, rule: FilterExpression | null, options?: SetRuleOptions): Promise<OperationResult<T>>;
+  /**
+   * Keep each item out of `group` even when its rule matches: an `excludes` edge, replacing the
+   * item's pin (membership) if it had one. Store spaces only (an embedded field says only `contains`).
+   */
+  exclude(ids: readonly string[], group: string, options?: SpaceOption): Promise<OperationResult<T>>;
+  /** Drop each item's exclusion from `group`: the rule decides again. */
+  unexclude(ids: readonly string[], group: string, options?: SpaceOption): Promise<OperationResult<T>>;
+  /**
+   * The ids of the items in `group`: the records its rule selects (asked of the provider, so a
+   * remote one evaluates it server-side), then its pinned members, minus those it excludes —
+   * `fluidExtent`. A group without a rule yields its direct members, minus exclusions.
+   */
+  extent(group: string, options?: SpaceOption): Promise<string[]>;
+
   /** Apply an inverse. Same per-item semantics; returns the inverse of the revert (a redo). */
   revert(inverse: CollectionInverse<T>): Promise<OperationResult<T>>;
 
