@@ -42,6 +42,40 @@ describe('inferProfile picks the tightest fitting profile', () => {
     expect(r.evidence.equivalent).toContain('flatTags');
   });
 
+  it('an exclusion or an alias, unasserted, does not block folksonomy: only membership edges are triples (#61)', () => {
+    const by = (who: string) => ({ meta: { assertedBy: who } });
+    const r = inferProfile(
+      space(
+        e('cute', 'cat', by('ann')),
+        e('funny', 'cat', by('bob')),
+        e('cute', 'dog', { kind: 'excludes' }),
+        e('kitty', 'cute', { kind: 'alias_of' }),
+      ),
+    );
+    expect(r.profile.name).toBe('folksonomy');
+    expect(r.evidence.observed).toMatchObject({ edges: 4, membershipEdges: 2, assertedByEdges: 2 });
+  });
+
+  it('the other dials ignore non-membership kinds: an excluded node is no item, an aliased one no group (#61)', () => {
+    const r = inferProfile(space(e('cute', 'cat'), e('cute', 'dog', { kind: 'excludes' }), e('kitty', 'cute', { kind: 'alias_of' })));
+    expect(r.evidence.observed).toMatchObject({
+      groups: 1,
+      items: 1,
+      maxParentsPerItem: 1,
+      maxParentsPerGroup: 0,
+      maxDepth: 0,
+      groupsContainGroups: false,
+      groupsContainItems: true,
+    });
+  });
+
+  it('an asserted alias does not stand in for an unasserted membership', () => {
+    const by = (who: string) => ({ meta: { assertedBy: who } });
+    const r = inferProfile(space(e('cute', 'cat', by('ann')), e('funny', 'cat'), e('kitty', 'cute', { kind: 'alias_of', ...by('ann') })));
+    expect(r.profile.name).toBe('flatTags');
+    expect(r.evidence.observed.assertedByEdges).toBe(1);
+  });
+
   it('a label tree with multi-labelled items → nestedTags, with labels as its equivalent', () => {
     const r = inferProfile(space(e('work', 'clients'), e('clients', 'msg-1'), e('urgent', 'msg-1')));
     expect(r.profile.name).toBe('nestedTags');

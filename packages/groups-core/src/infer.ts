@@ -10,7 +10,8 @@
  * "Tightest" is a partial order over the structural dials: profile A is at least as tight as B when
  * every cap of A is ≤ B's (`null` = unbounded) and every permission A grants, B grants too. Profiles
  * with identical dials are **equivalent** and are told apart by evidence the dials cannot see:
- * `folksonomy` over `flatTags` when every edge records `meta.assertedBy`; `thesaurus` over
+ * `folksonomy` over `flatTags` when every membership edge records `meta.assertedBy` (an alias, an
+ * exclusion or a `related` link files nothing, so it is not asked to); `thesaurus` over
  * `polyhierarchy` when an edge kind other than `contains` is in use; otherwise the earlier candidate.
  * When two fitting profiles are incomparable (a one-level, single-homed space is both a
  * `filesystem` and `flatTags`), the one whose restrictions the data visibly *exercises* most wins
@@ -33,7 +34,10 @@ import { edgesOf, isGroup, isMembershipKind, membershipParentCount, validateProf
 /** The dials measured on the data itself. */
 export interface ObservedDials {
   readonly nodes: number;
+  /** Every edge, of every kind. */
   readonly edges: number;
+  /** Edges of a membership kind — what files something somewhere (not `related`, `alias_of`, `excludes`). */
+  readonly membershipEdges: number;
   /** Nodes with at least one member. */
   readonly groups: number;
   /** Nodes in at least one group and with no members. */
@@ -42,13 +46,15 @@ export interface ObservedDials {
   readonly maxParentsPerItem: number;
   /** The most parents any group has. */
   readonly maxParentsPerGroup: number;
-  /** The deepest group-in-group nesting through transitive kinds (0 = flat). Cycle-safe. */
+  /** The deepest group-in-group nesting through transitive membership kinds (0 = flat). Cycle-safe. */
   readonly maxDepth: number;
   readonly groupsContainGroups: boolean;
   readonly groupsContainItems: boolean;
   /** Edge count per kind. */
   readonly edgeKinds: Readonly<Record<string, number>>;
-  /** Edges whose `meta.assertedBy` is set — the folksonomy triple. */
+  /** Membership edges whose `meta.assertedBy` is set — the folksonomy triple (user, tag, resource).
+   *  A non-membership edge (an alias, an exclusion, an associative link) files nothing, so it is
+   *  not a triple and is not counted. */
   readonly assertedByEdges: number;
 }
 
@@ -172,7 +178,7 @@ function exercised(p: GroupProfile, o: ObservedDials): number {
 /** Tell equivalent profiles apart by what their names promise beyond the dials. */
 function preferByEvidence(equivalents: readonly GroupProfile[], o: ObservedDials): GroupProfile | undefined {
   const named = (name: string) => equivalents.find((p) => p.name === name);
-  if (o.edges > 0 && o.assertedByEdges === o.edges && named('folksonomy')) return named('folksonomy');
+  if (o.membershipEdges > 0 && o.assertedByEdges === o.membershipEdges && named('folksonomy')) return named('folksonomy');
   // An alias is a second name, and an exclusion an edit to a smart group, not a typed relation:
   // neither makes a space a thesaurus.
   const typedKinds = Object.keys(o.edgeKinds).some((k) => k !== 'contains' && k !== 'alias_of' && k !== 'excludes');
@@ -200,13 +206,15 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
   }
 
   const edgeKinds: Record<string, number> = {};
+  let membershipEdges = 0;
   let assertedByEdges = 0;
   let groupsContainGroups = false;
   let groupsContainItems = false;
   for (const edge of space.edges.values()) {
     edgeKinds[edge.kind] = (edgeKinds[edge.kind] ?? 0) + 1;
-    if (edge.meta?.assertedBy !== undefined) assertedByEdges += 1;
     if (!isMembershipKind(space.profile, edge.kind)) continue;
+    membershipEdges += 1;
+    if (edge.meta?.assertedBy !== undefined) assertedByEdges += 1;
     if (isGroup(space, edge.child)) groupsContainGroups = true;
     else groupsContainItems = true;
   }
@@ -222,7 +230,7 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
     onPath.add(node);
     let deepest = 0;
     for (const edge of edgesOf(space, node)) {
-      if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
+      if (!space.profile.edgeKinds[edge.kind]?.transitive || !isMembershipKind(space.profile, edge.kind)) continue;
       if (!isGroup(space, edge.child)) continue;
       deepest = Math.max(deepest, 1 + depthBelow(edge.child));
     }
@@ -236,6 +244,7 @@ export function observeDials<P>(space: GroupSpace<P>): ObservedDials {
   return {
     nodes: space.nodes.size,
     edges: space.edges.size,
+    membershipEdges,
     groups,
     items,
     maxParentsPerItem,
