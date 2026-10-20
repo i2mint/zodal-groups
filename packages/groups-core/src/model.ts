@@ -132,9 +132,10 @@ export const DEFAULT_EDGE_KINDS: Readonly<Record<string, EdgeKindDef>> = Object.
   // even when its rule matches. Not a membership (it files nothing), never followed by closure,
   // and never combined with a membership between the same two nodes: an item is pinned (`contains`)
   // or excluded, not both. Read by `fluidExtent`; projections ignore it, as they ignore `related`.
+  // Not acyclic: it orders nothing, so it never joins the membership kinds' cycle check.
   excludes: {
     transitive: false,
-    acyclic: true,
+    acyclic: false,
     membership: false,
     disjointWith: ['contains', 'is_a', 'part_of', 'instance_of', 'related', 'alias_of'],
   },

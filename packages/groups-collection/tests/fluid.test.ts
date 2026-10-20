@@ -122,4 +122,39 @@ describe('fluid groups', () => {
     expect((await cmd('setRule').execute({ group: 'evening', rule: null })).ok).toBe(true);
     expect(await tc.extent('evening')).toEqual([]);
   });
+
+  it('refuses a malformed rule before storing it: a typo would select everything', async () => {
+    const tc = collection();
+    await expect(tc.setRule('g', {} as never)).rejects.toThrow(/rule.field/);
+    await expect(tc.setRule('g', { field: 'path', operator: 'startWith', value: 'm' } as never)).rejects.toThrow(/rule.operator/);
+    await expect(tc.setRule('g', { or: 'x' } as never)).rejects.toThrow(/rule.or: expected a non-empty array/);
+    await expect(tc.setRule('g', { and: [{ field: 'path', operator: 'in', value: 'm' }] } as never)).rejects.toThrow(/rule.and\[0\].value/);
+    expect(tc.space().nodes.has('g' as never)).toBe(false);
+  });
+
+  it('filters locally when the provider cannot filter on the rule\'s field', async () => {
+    const inner = createInMemoryProvider(tracks());
+    const filters: unknown[] = [];
+    const provider = {
+      ...inner,
+      getCapabilities: () => ({ ...inner.getCapabilities!(), serverFilter: ['id'] }),
+      async getList(params: Parameters<typeof inner.getList>[0]) {
+        filters.push(params.filter);
+        return inner.getList({ ...params, filter: undefined });
+      },
+    };
+    const tc = defineTaggedCollection<Track>({ provider, spaces: { playlists: { edges: createMemoryGroupStore({ profile: 'polyhierarchy' }) } } });
+    await tc.setRule('evening', jazzAndBlues);
+    expect(sorted(await tc.extent('evening'))).toEqual(['t1', 't2', 't3']);
+    expect(filters.every((f) => f === undefined)).toBe(true);
+  });
+
+  it('clearing the rule of a node that is nothing else drops the node', async () => {
+    const tc = collection();
+    await tc.setRule('bare', jazzAndBlues);
+    const clear = await tc.setRule('bare', null);
+    expect(tc.space().nodes.has('bare' as never)).toBe(false);
+    await tc.revert(clear.inverse);
+    expect(tc.space().nodes.get('bare' as never)?.rule).toEqual(jazzAndBlues);
+  });
 });

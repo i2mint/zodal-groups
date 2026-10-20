@@ -16,10 +16,12 @@ import {
   isExcluded,
   isGroup,
   makeEdge,
+  mergeDelta,
   nodeId,
   orphansOf,
   pinnedOf,
   smartGroup,
+  unfiled,
   type Edge,
 } from '../src/index.js';
 
@@ -47,7 +49,7 @@ describe('fluid groups', () => {
     expect(fluidExtent(s, n('smart'), [n('a'), n('b')])).toEqual(['a', 'b']);
   });
 
-  it('extentOf applies the edits on the node of the same id to a predicate rule', () => {
+  it('fluidExtent edits a predicate rule\'s extent; extentOf alone stays the predicate', () => {
     const base = createGroupSpace<{ year: number }>({
       profile: 'polyhierarchy',
       nodes: [
@@ -58,7 +60,9 @@ describe('fluid groups', () => {
       edges: [e('recent', 'old'), e('recent', 'newer', 'excludes')],
     });
     const recent = smartGroup<{ year: number }>(n('recent'), 'Recent', (p) => (p?.year ?? 0) >= 2000);
-    expect(extentOf(base, recent, [n('old'), n('new'), n('newer')])).toEqual(['new', 'old']);
+    const pool = [n('old'), n('new'), n('newer')];
+    expect(extentOf(base, recent, pool)).toEqual(['new', 'newer']);
+    expect(fluidExtent(base, recent.id, extentOf(base, recent, pool))).toEqual(['new', 'old']);
   });
 
   it('excludes is not a membership: it files nothing and makes no group', () => {
@@ -91,5 +95,34 @@ describe('fluid groups', () => {
     const s = space();
     expect(codes(applyDelta(s, { upsertNodes: [{ id: n('g'), rule: 'path ~ music/*' as never }] }))).toEqual(['malformed']);
     expect(codes(applyDelta(s, { upsertNodes: [{ id: n('g'), rule: { value: () => true } }] }))).toEqual(['malformed']);
+  });
+
+  it('pins come in rank order in an ordered space', () => {
+    const ranked = (child: string, order?: string) => makeEdge(n('list'), n(child), { id: edgeId(`list>${child}`), ...(order ? { order } : {}) });
+    const s = createGroupSpace({ profile: 'filesystem', edges: [ranked('c', 'a2'), ranked('x'), ranked('a', 'a0'), ranked('b', 'a1')] });
+    expect(pinnedOf(s, n('list'))).toEqual(['a', 'b', 'c', 'x']);
+  });
+
+  it('a node with a rule is a group before anything is pinned, never an unfiled item', () => {
+    const s = ok(applyDelta(space(e('folder', 'a')), { upsertNodes: [{ id: n('smart'), rule: { field: 'x', operator: 'eq', value: 1 } }] }));
+    expect(isGroup(s, n('smart'))).toBe(true);
+    expect(orphansOf(s)).not.toContain(n('smart'));
+    expect(unfiled(n('u')).rule(s.nodes.get(n('smart'))!, s)).toBe(false);
+  });
+
+  it('an exclusion is no ordering: it never closes a cycle', () => {
+    const s = space(e('top', 'mid'), e('mid', 'smart'));
+    expect(codes(applyDelta(s, { added: [e('smart', 'top', 'excludes')] }))).toEqual([]);
+  });
+
+  it('a merge carries the rule over to a group without one', () => {
+    const rule = { field: 'x', operator: 'eq', value: 1 };
+    const s = ok(applyDelta(space(e('smart', 'p'), e('smart', 'x', 'excludes'), e('plain', 'q')), { upsertNodes: [{ id: n('smart'), rule }] }));
+    const merged = ok(applyDelta(s, mergeDelta(s, n('smart'), n('plain'))));
+    expect(merged.nodes.get(n('plain'))?.rule).toEqual(rule);
+    expect(excludedOf(merged, n('plain'))).toEqual(['x']);
+    const other = { field: 'x', operator: 'eq', value: 2 };
+    const both = ok(applyDelta(s, { upsertNodes: [{ id: n('plain'), rule: other }] }));
+    expect(ok(applyDelta(both, mergeDelta(both, n('smart'), n('plain')))).nodes.get(n('plain'))?.rule).toEqual(other);
   });
 });

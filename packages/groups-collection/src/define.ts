@@ -35,6 +35,7 @@ import {
 import type { FilterExpression } from '@zodal/core';
 import type { DataProvider } from '@zodal/store';
 import { createCommands, operations } from './commands.js';
+import { canPushFilter, filterProblem, localFilter } from './rule.js';
 import { combine, concatDeltas, partition } from './delta.js';
 import { emptyInverse, execute, PENDING_ID, type EngineContext, type Plan, type Unit } from './engine.js';
 import {
@@ -567,17 +568,26 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         if (rt.mode === 'embedded') {
           throw new Error(`setRule: space '${rt.name}' stores group ids in the '${rt.field}' field, so a rule cannot be persisted; declare it on a vocabulary node, or use a GroupStore space.`);
         }
-        const g = nodeId(canonical(rt, group));
-        if (rule === null && rt.current.nodes.get(g)?.rule === undefined) return done(g);
+        const problem = rule === null ? undefined : filterProblem(rule);
+        if (problem) throw new Error(`setRule: ${problem}.`);
+        if (rule === null && rt.current.nodes.get(nodeId(canonical(rt, group)))?.rule === undefined) return done(canonical(rt, group));
         return {
           operation: 'setRule',
           units: [],
           spaces: [rt],
-          subject: g,
+          subject: canonical(rt, group),
+          // Resolved again on the space the write is built on: a retry after a conflict sees new aliases.
           build: (_r, space) => {
-            const created = !space.nodes.has(g);
-            if (created && rule === null) return {};
-            return { upsertNodes: [{ id: g, rule: rule ?? undefined, ...(created && opts.label !== undefined ? { label: opts.label } : {}) }] };
+            const g = resolveAlias(space, nodeId(group));
+            const live = space.nodes.get(g);
+            if (!live) return rule === null ? {} : { upsertNodes: [{ id: g, rule, ...(opts.label !== undefined ? { label: opts.label } : {}) }] };
+            if (rule === null) {
+              // Clearing the rule of a node that is nothing else (no label, payload, family, edge) drops it.
+              const { id: _id, rule: _rule, ...rest } = live;
+              const bare = !Object.values(rest).some((x) => x !== undefined) && !edgesOf(space, g).length && !edgesInto(space, g).length;
+              return bare ? { removedNodes: [live as Node] } : { upsertNodes: [{ id: g, rule: undefined }] };
+            }
+            return { upsertNodes: [{ id: g, rule }] };
           },
         };
       });
@@ -623,7 +633,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
         const space = runtime(opts.space).current;
         const g = resolveAlias(space, nodeId(group));
         const rule = space.nodes.get(g)?.rule as FilterExpression | undefined;
-        const matches = rule ? (await readAll(provider, pageSize, rule)).map((r) => nodeId(String(r[idField]))) : [];
+        const problem = rule === undefined ? undefined : filterProblem(rule);
+        if (problem) throw new Error(`extent: group '${g}' carries a malformed rule (${problem}); replace it with setRule.`);
+        const records = !rule ? [] : canPushFilter(provider, rule) ? await readAll(provider, pageSize, rule) : localFilter(await readAll(provider, pageSize), rule);
+        const matches = records.map((r) => nodeId(String(r[idField])));
         return fluidExtent(space, g, matches).map(String);
       });
     },
