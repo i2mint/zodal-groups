@@ -95,7 +95,7 @@ Multi-parenthood is then conveyed **semantically, never structurally**:
 | `breadcrumbs(space, node, {arrivedVia})` | `NodePath?` | **honour `arrivedVia`** — the route the user walked. |
 | `otherLocations(space, node)` | `OtherLocation[]` | the affordance a tree cannot have. |
 | `facetPanel(space, opts)` | `FacetValue[]` | de-duplicated counts; empty facets hidden. One pass over the pool: each candidate's `closureScope` (each group in its closure, with the item-edge kinds that compose up to it) is inverted once, so cost is O(items × direct edges), not O(values × items). An item counts towards a group exactly when it is in `descendants(group)`: the item's own edge kind composes too (`wheel part_of car is_a vehicle` is not counted in `vehicle`; issue #27). `groupsOfItem(…, 'closure')` is `ancestors`, and `matchingItems` uses the same scope. `tests/facets.test.ts` checks against a per-candidate loop over that definition and a 100 ms budget at 610 items × 5 families. |
-| `scopeFilter(space, group)` | a `FilterExpression` | **groups only**, never items. Over-matches on mixed-kind spaces (the item's field has no kinds); exact: index the item's `groupsOfItem` 'direct' ∪ 'closure' groups and filter `expand: 'direct'`. |
+| `scopeFilter(space, group)` | a `FilterExpression` | **groups only**, never items. Over-matches on mixed-kind spaces (the item's field has no kinds); exact: index `parentsOf(item)` ∪ `groupsOfItem(item, 'closure')` and filter `expand: 'direct'`. |
 | `ancestors` / `descendants` | `Set<NodeId>` | memoized, cycle-safe, per-kind. |
 | `membersOf(space, g, {expand})` | `NodeId[]` | `'direct' \| 'closure'` — **Zotero's checkbox**. Closure = direct members ∪ what `descendants` reaches (`closureScope`: the member's own edge kind counts). |
 
