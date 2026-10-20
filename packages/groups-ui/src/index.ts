@@ -54,6 +54,20 @@ export {
 } from './chips.js';
 
 export {
+  toFacetSidebar,
+  toggleFacetValue,
+  clearFacetFamily,
+  facetFamilyValues,
+  FACET_SIDEBAR_LABELS,
+  type AppliedFacet,
+  type FacetSidebarFamily,
+  type FacetSidebarLabels,
+  type FacetSidebarOptions,
+  type FacetSidebarValue,
+  type FacetSidebarView,
+} from './facet-sidebar.js';
+
+export {
   resolveDrop,
   applyDrop,
   DROP_MOVE_HINT,

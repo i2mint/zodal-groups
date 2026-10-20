@@ -1,6 +1,6 @@
 # @zodal/groups-ui-vanilla
 
-Zero-dependency DOM renderers for [zodal-groups](https://github.com/i2mint/zodal-groups): a tree, Miller columns, breadcrumbs, facets, group chips, a tag input and the selection tagging menu. Plain DOM, no framework, no build step needed.
+Zero-dependency DOM renderers for [zodal-groups](https://github.com/i2mint/zodal-groups): a tree, Miller columns, breadcrumbs, facets, a multi-family facet sidebar, group chips, a tag input and the selection tagging menu. Plain DOM, no framework, no build step needed.
 
 ```ts
 import { defineGroups } from '@zodal/groups-core';
@@ -68,7 +68,30 @@ window.addEventListener('popstate', () => chips.setSelection({ path: fromUrl() }
 - Options: `selection`, `items` (a list or a function read on each render), `onNavigate(selection)`, `ungrouped` (offer the chip, default `true`), `hideEmpty` (default `true`; the chosen chip always stays), `sort` (`'label'`, default, or `'count'`), `labels` (`all`, `allOf`, `ungrouped`, `rootRow`, `subRow`, `count`), `label` (the widget's accessible name). `allChipItems` (a list or a function) makes the All chip stand for another set, such as a "recently viewed" home: relabel it with `labels.all`; its count and `items()` follow that set, in its order, while the group chips and Ungrouped still count the whole pool.
 - Returns `{ selection, setSelection(sel) → normalized, items(), render(), destroy(), element }`. `setSelection` drops an invalid tail and never calls `onNavigate`.
 - Each chip is a `<button aria-pressed>` whose accessible name carries the count; each row is a labelled `role="group"`.
-- The rows come from `toGroupChips` in `@zodal/groups-ui`, so other renderers draw the same thing. It is the phone counterpart of the facet sidebar planned in [#15](https://github.com/i2mint/zodal-groups/issues/15).
+- The rows come from `toGroupChips` in `@zodal/groups-ui`, so other renderers draw the same thing. It is the phone counterpart of `renderFacetSidebar`.
+
+## renderFacetSidebar
+
+Filter a list by several families at once: one button per family (a group whose children are the values: `Genre` → Rock, Jazz), an inline "any of" panel of checkboxes with counts, and the applied filters as removable chips, `Genre: Rock or Jazz` and `Mood: Calm`. Within a family the values are ORed, between families ANDed, and each family is counted over what the *other* families leave, so ticking Rock never zeroes Jazz. Counts include subgroups (an item in `Rock/Indie` is in Rock) and are never double.
+
+```ts
+const sidebar = renderFacetSidebar(el, groups, {
+  families: ['genre', 'mood'],             // display order
+  items: () => songs.map((s) => s.id),     // what to count and filter
+  selected: fromUrl(),                     // value ids, across families
+  onSelect: (selected) => {                // a box, a chip, Clear, Clear all (or a deleted value)
+    history.pushState(null, '', toUrl(selected));
+    showSongs(sidebar.items());            // the ids the selection matches, in pool order
+  },
+});
+window.addEventListener('popstate', () => sidebar.setSelected(fromUrl()));  // no echo
+```
+
+- Options: `families`, `selected`, `open` (the family whose panel starts open), `items` (a list or a function read on each render), `onSelect(selected, view)`, `onOpen(family | null)`, `hideEmpty` (default `true`; a selected value always stays), `sort` (`'count'`, default, or `'label'`), `labels` (`anyOf`, `or`, `and`, `clear`, `clearAll`, `applied`, `remove`, `count`, `family`), `label` (the widget's accessible name, default "Filters").
+- Returns `{ selected, open, setSelected(ids) → normalized, setOpen(family | null), items(), view(), render(), destroy(), element }`. Selected ids that are no listed family's value are dropped.
+- Each family button has `aria-expanded` and `aria-controls`; its accessible name says how many values are selected. One panel is open at a time (only its counts are computed). Removing a chip or clearing a family moves focus to that family's button. A polite live region says what the filter matches ("genre: rock. 2 items match").
+- A group that is a value of two listed families is selected in both at once (one chip in each; unticking or clearing either drops it). The labels also include `matching(n)` and `none`.
+- The view comes from `toFacetSidebar` in `@zodal/groups-ui` (with `toggleFacetValue` and `clearFacetFamily`), so a React renderer draws the same thing.
 
 ## renderTagInput
 

@@ -55,7 +55,7 @@ function parse(text: string): Rule[] {
 }
 
 const rules = parse(css);
-const ROOTS = ['.zg-tree', '.zg-columns', '.zg-breadcrumbs', '.zg-facets', '.zg-tags', '.zg-tagmenu', '.zg-group-chips'];
+const ROOTS = ['.zg-tree', '.zg-columns', '.zg-breadcrumbs', '.zg-facets', '.zg-tags', '.zg-tagmenu', '.zg-group-chips', '.zg-facet-sidebar'];
 const coarse = rules.filter((r) => r.media.some((m) => m.includes('(pointer: coarse)')));
 const coarseDecl = (selector: string, prop: string): string | undefined =>
   coarse.find((r) => r.selectors.includes(selector) && r.decls.has(prop))?.decls.get(prop);
@@ -93,6 +93,7 @@ describe('styles.css', () => {
   it.each([
     '.zg-row', '.zg-column-row', '.zg-facet', '.zg-tag-option', '.zg-tagmenu-option', '.zg-group-chip',
     '.zg-crumb', '.zg-other-paths', '.zg-tagmenu-actions button', '.zg-tag-input', '.zg-tagmenu-search',
+    '.zg-facet-chip', '.zg-facet-family-toggle', '.zg-facet-clear', '.zg-facet-clear-all',
   ])('on a coarse pointer, %s is at least 44px tall', (selector) => {
     expect(coarseDecl(selector, 'min-height')).toBe('max(var(--zg-row-min, 0px), var(--zg-tap-min, 44px))');
   });
