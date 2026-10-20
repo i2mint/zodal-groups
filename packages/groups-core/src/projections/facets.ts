@@ -207,12 +207,14 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
  * profile with several transitive kinds that do not all compose (`thesaurus`) this over-matches:
  * `wheel part_of car is_a vehicle` puts `car` in `vehicle`'s scope, and the wheel's `['car']`
  * matches, though `descendants(vehicle)` has no wheel. Single-kind spaces are exact. For exact
- * scoping on a mixed-kind space, index each item's whole closure instead
- * (`[...groupsOfItem(space, item, 'closure')]`, which composes kinds from the item up) and filter
- * with `expand: 'direct'`:
+ * scoping on a mixed-kind space, index each item's direct groups plus its closure instead
+ * (`groupsOfItem(…, 'closure')` composes kinds from the item up, but has no group the item is in by
+ * a non-transitive kind such as `instance_of`, so the direct ones are added) and filter with
+ * `expand: 'direct'`:
  *
  * @example
- * // on write: record.groups = [...groupsOfItem(space, item, 'closure')]
+ * // on write:
+ * record.groups = [...new Set([...groupsOfItem(space, item, 'direct'), ...groupsOfItem(space, item, 'closure')])];
  * provider.getList({ filter: scopeFilter(space, vehicle, { expand: 'direct' }) });
  */
 export function scopeFilter<P>(
