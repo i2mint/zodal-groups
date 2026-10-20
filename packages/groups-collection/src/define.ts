@@ -795,16 +795,19 @@ async function readAll<T extends Record<string, unknown>>(
   const base = filter ? { filter } : {};
   const caps = provider.getCapabilities?.();
   const sortable = caps?.serverSort === true || (Array.isArray(caps?.serverSort) && caps.serverSort.includes(idField));
+  let size = pageSize;
   if (!sortable) {
     const all = await provider.getList(base);
-    if (all.data.length >= all.total) return all.data;
+    if (!all.data.length || all.data.length >= all.total) return all.data;
+    // Capped: page no larger than the cap, or every page would come back short and end the loop.
+    size = Math.min(pageSize, all.data.length);
   }
   const params = sortable ? { ...base, sort: [{ id: idField, desc: false }] } : base;
   const out = new Map<string, T>();
   for (let page = 1; ; page++) {
-    const { data, total } = await provider.getList({ ...params, pagination: { page, pageSize } });
+    const { data, total } = await provider.getList({ ...params, pagination: { page, pageSize: size } });
     for (const r of data) if (!out.has(String(r[idField]))) out.set(String(r[idField]), r);
-    if (!data.length || data.length < pageSize || page * pageSize >= total) return [...out.values()];
+    if (!data.length || data.length < size || page * size >= total) return [...out.values()];
   }
 }
 

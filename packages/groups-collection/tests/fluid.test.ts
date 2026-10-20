@@ -205,6 +205,13 @@ describe('reading the rule\'s matches (#60)', () => {
     expect(calls[0]!.pagination).toBeUndefined();
     expect(calls.slice(1).every((c) => c.pagination && !c.sort)).toBe(true);
   });
+
+  it('pages no larger than the cap when the cap is below the page size', async () => {
+    const { tc, calls } = spy({ serverSort: false }, 1);
+    await tc.setRule('evening', jazzAndBlues);
+    expect(sorted(await tc.extent('evening'))).toEqual(['t1', 't2', 't3']);
+    expect(calls.slice(1).every((c) => c.pagination?.pageSize === 1)).toBe(true);
+  });
 });
 
 describe('a fluid group in an ordered space (D37)', () => {
