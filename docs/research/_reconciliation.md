@@ -81,6 +81,7 @@ rejected.
 | **D31** | **`@zodal/groups-collection` runs every operation in one order — dry-run the rules, write records, write each store once with `expectedRevision`, update embedded caches — and returns an inverse split per item.** Per item, record and edges succeed together or are compensated; bulk keeps what succeeded; no history. | Edges first (the common failure, a record write, would then always need a compensating store write); one undo stack in the facade (the app's history owns undo, zgroups_05 §1.8); an all-or-nothing bulk (acture: partial stays applied). | §8.8; [#1](https://github.com/i2mint/zodal-groups/issues/1) |
 | **D33** | **Valued tags are a preset, not a field**: `keyedTags` = `{ maxParentsPerGroup: 1, maxDepth: 1 }`; a key is a group with `family` (`EXCLUSIVE`: one value per key), its values are child groups, values stay nodes (D1). Not a default `inferProfile` candidate | a `value` field on edges; a preset called `facets`; inferring it from dials (it would rename every shallow `nestedTags` space) | §8.10; [#42](https://github.com/i2mint/zodal-groups/issues/42) |
 | **D34** | **Aliases are an edge kind, resolved by the facade**: built-in `alias_of` (not transitive, not membership, acyclic, `maxPerChild: 1`); `resolveAlias` collapses chains; `groups-collection` resolves on write | `related` as "same as"; `applyDelta` rewriting a delta; keeping alias chains | §8.11; [#43](https://github.com/i2mint/zodal-groups/issues/43) |
+| **D35** | **Projections judge structure by the edges they walk**: `rootsOf`/`orphansOf` count incoming *membership* edges only; the browse projections (tree, columns, facet candidates) start at `browseRootsOf` (no incoming *transitive* edge) and count `childCount`/`otherParentCount` over transitive edges, so an expander always opens to something; a pure alias (`isAliasName`: child of an `alias_of` edge, no members) is left out of all of them; an alias that still has members stays visible | any incoming edge as a parent (an alias with members, and its members, vanished); counting `related`/`alias_of` edges as children (an expander that opens to nothing); showing an alias next to its canonical node | §8.12; [#53](https://github.com/i2mint/zodal-groups/issues/53) |
 
 ---
 
@@ -482,6 +483,10 @@ Implications ("A implies B", Hydrus parents) were already covered by a transitiv
 - Read-side resolution in the tag input and search UI is a follow-up ([#51](https://github.com/i2mint/zodal-groups/issues/51)), and so is how projections treat non-membership edges (an alias, a `related` link) as structure ([#53](https://github.com/i2mint/zodal-groups/issues/53)). `membersOf` / `countIn` count membership edges only.
 
 ---
+
+### 8.12 Projections and non-membership edges (D35) — [#53](https://github.com/i2mint/zodal-groups/issues/53)
+
+Found reviewing D34. Every projection used to read *any* incoming edge as a parent and *any* outgoing edge as a child, while walking only transitive kinds. So an alias that still had members (`to-do contains a`, then `to-do alias_of todo`) was neither a root nor reachable, and it and `a` vanished from the tree, columns and facet panel; a canonical tag whose only edge out was an alias showed an expander that opened to nothing. Two readings now, each matching what it is for: the semantic one (`rootsOf`, `orphansOf`: in no group, by membership) and the browse one (`browseRootsOf`, `walkedChildCount`, `walkedParentCount`: by the transitive edges the projections walk, so a node reached only by `instance_of`, `related` or a foreign kind is a browse root rather than unreachable). A pure alias is another name for its canonical node, which `resolveAlias` maps to on read and write, so no projection lists it; the tag-input read side is #51.
 
 ## REFERENCES
 

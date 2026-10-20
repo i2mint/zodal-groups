@@ -21,7 +21,7 @@
  */
 
 import type { GroupSpace, NodeId } from './../model.js';
-import { edgesOf } from './../space.js';
+import { browseRootsOf, edgesOf, walkedChildCount, walkedParentCount } from './../space.js';
 import { compareOrder } from './../order.js';
 import { pathKeyOf, type PathNode } from './tree.js';
 
@@ -58,8 +58,7 @@ export interface ColumnsOptions {
  */
 export function projectColumns<P>(space: GroupSpace<P>, options: ColumnsOptions = {}): Column[] {
   const { trail = [], includeItems = true } = options;
-  const roots =
-    options.roots ?? [...space.nodes.keys()].filter((id) => !space.inverse.has(id));
+  const roots = options.roots ?? browseRootsOf(space);
 
   const columns: Column[] = [];
 
@@ -100,10 +99,11 @@ function rowsFor<P>(
 ): PathNode[] {
   const rows: PathNode[] = [];
   for (const id of ids) {
-    const childCount = space.forward.get(id)?.size ?? 0;
+    // Counted as the columns walk (D35): an alias or `related` edge opens no column.
+    const childCount = walkedChildCount(space, id);
     if (!includeItems && childCount === 0) continue;
     const path = [...parentPath, id];
-    const parentCount = space.inverse.get(id)?.size ?? 0;
+    const parentCount = walkedParentCount(space, id);
     // The row's edge: a transitive one when there is one (that is what put the row in the column).
     const between = parentPath.length ? edgesOf(space, parentPath[parentPath.length - 1]!).filter((e) => e.child === id) : [];
     const edge = between.find((e) => space.profile.edgeKinds[e.kind]?.transitive) ?? between[0];

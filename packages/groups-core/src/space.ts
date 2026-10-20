@@ -352,18 +352,46 @@ export function membershipParentCount(space: GroupSpace, id: NodeId): number {
   return count;
 }
 
-/** Nodes with no parents — the browse entry points. */
-export function rootsOf(space: GroupSpace): NodeId[] {
-  const roots: NodeId[] = [];
-  for (const id of space.nodes.keys()) {
-    if (!space.inverse.has(id)) roots.push(id);
-  }
-  return roots;
+/**
+ * Is `id` only another name for a node: the child of an `alias_of` (or `kind`) edge, with no members
+ * of its own? Such a node is reached through its canonical node, so `rootsOf`, `orphansOf` and the
+ * browse projections leave it out (D35); `resolveAlias` maps it on read and write. An alias that
+ * still has members (data written before its alias edge) is a group, and stays visible.
+ */
+export function isAliasName(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): boolean {
+  return !isGroup(space, id) && edgesInto(space, id).some((e) => e.kind === kind);
 }
 
-/** Nodes in no group at all — Zotero's "Unfiled Items". */
+/** Nodes in no group — no incoming membership edge (a `related` or `alias_of` link is no parent),
+ *  aliases left out (D35). The semantic entry points; the browse projections use `browseRootsOf`. */
+export function rootsOf(space: GroupSpace): NodeId[] {
+  return [...space.nodes.keys()].filter((id) => membershipParentCount(space, id) === 0 && !isAliasName(space, id));
+}
+
+/** Items in no group at all — Zotero's "Unfiled Items". A group is never unfiled, nor an alias. */
 export const orphansOf = (space: GroupSpace): NodeId[] =>
-  [...space.nodes.keys()].filter((id) => !space.inverse.has(id) && !isGroup(space, id));
+  rootsOf(space).filter((id) => !isGroup(space, id));
+
+/** Does a browse projection (tree, columns, facets) walk this edge? Only transitive kinds (D35). */
+export const isWalkedEdge = (space: GroupSpace, edge: Edge): boolean =>
+  space.profile.edgeKinds[edge.kind]?.transitive === true;
+
+/** How many edges a browse projection walks out of `id`: what its expander opens to (D35). */
+export const walkedChildCount = (space: GroupSpace, id: NodeId): number =>
+  edgesOf(space, id).filter((e) => isWalkedEdge(space, e)).length;
+
+/** How many edges a browse projection walks into `id`: how many places it shows up in (D35). */
+export const walkedParentCount = (space: GroupSpace, id: NodeId): number =>
+  edgesInto(space, id).filter((e) => isWalkedEdge(space, e)).length;
+
+/**
+ * Where the browse projections start: nodes no walked edge leads to, aliases left out (D35). A
+ * node reached only through a non-transitive kind (`instance_of`, `related`, a foreign kind) is a
+ * root here, or it would be unreachable; `rootsOf` is the semantic reading.
+ */
+export function browseRootsOf(space: GroupSpace): NodeId[] {
+  return [...space.nodes.keys()].filter((id) => walkedParentCount(space, id) === 0 && !isAliasName(space, id));
+}
 
 // ── cycle detection ─────────────────────────────────────────────────────────
 
