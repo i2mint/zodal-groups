@@ -23,8 +23,8 @@
  * @see `docs/research/_reconciliation.md` — D17, §6.
  */
 
-import type { GroupSpace, NodeId } from './../model.js';
-import { closureIds, descendants } from './../closure.js';
+import type { EdgeKind, GroupSpace, NodeId } from './../model.js';
+import { ancestors, closureScope, descendants } from './../closure.js';
 import { edgesInto, edgesOf, isGroup } from './../space.js';
 
 /** One row in a facet panel. */
@@ -56,38 +56,22 @@ export interface FacetOptions {
  * The groups an item belongs to, transitively — the item's "facet values".
  *
  * This is the inverse index plus closure, and it is what a search backend would store denormalized
- * on the item row (as an indexed set, for `arrayContainsAny`).
+ * on the item row (as an indexed set, for `arrayContainsAny`). `'closure'` is exactly
+ * `ancestors(space, item)`: the walk composes edge kinds from the item's own edge up, so with
+ * `wheel part_of car is_a vehicle` the wheel is in `car`, not in `vehicle`.
  */
 export function groupsOfItem<P>(space: GroupSpace<P>, item: NodeId, expand: 'direct' | 'closure' = 'closure'): Set<NodeId> {
-  const direct = edgesInto(space, item)
-    .filter((e) => space.profile.edgeKinds[e.kind]?.transitive)
-    .map((e) => e.parent);
-  if (expand === 'direct') return new Set(direct);
-
-  const out = new Set<NodeId>(direct);
-  for (const g of direct) {
-    // Walk *up* from each direct group: an item in `poodle` is also in `dog` and `animal`.
-    for (const ancestor of ancestorsOf(space, g)) out.add(ancestor);
-  }
-  return out;
+  if (expand === 'closure') return ancestors(space, item);
+  return new Set(
+    edgesInto(space, item)
+      .filter((e) => space.profile.edgeKinds[e.kind]?.transitive)
+      .map((e) => e.parent),
+  );
 }
 
-function ancestorsOf<P>(space: GroupSpace<P>, node: NodeId): Set<NodeId> {
-  const out = new Set<NodeId>();
-  const stack = [node];
-  const seen = new Set<NodeId>([node]);
-  while (stack.length) {
-    const current = stack.pop()!;
-    for (const edge of edgesInto(space, current)) {
-      if (!space.profile.edgeKinds[edge.kind]?.transitive) continue;
-      if (seen.has(edge.parent)) continue;
-      seen.add(edge.parent);
-      out.add(edge.parent);
-      stack.push(edge.parent);
-    }
-  }
-  return out;
-}
+/** Does one of the item's own edges land in the scope, with a kind the scope accepts there? */
+const inScope = <P>(space: GroupSpace<P>, item: NodeId, scope: ReadonlyMap<NodeId, ReadonlySet<EdgeKind>>): boolean =>
+  edgesInto(space, item).some((e) => scope.get(e.parent)?.has(e.kind) === true);
 
 /** Every non-group node. */
 export const allItems = <P>(space: GroupSpace<P>): NodeId[] =>
@@ -109,18 +93,18 @@ export function matchingItems<P>(
   const pool = [...items];
   if (!groups.length) return new Set(pool);
 
-  // Expand every selected group to its closure once, then test membership.
-  const expanded = new Set<NodeId>();
-  for (const g of groups) for (const id of closureIds(space, g)) expanded.add(id);
+  // Expand every selected group to its closure scope once (each group with the item-edge kinds that
+  // reach the selection through it), then test each item's own edges.
+  const scope = new Map<NodeId, Set<EdgeKind>>();
+  for (const g of groups) {
+    for (const [id, kinds] of closureScope(space, g)) {
+      const set = scope.get(id);
+      if (set) for (const k of kinds) set.add(k);
+      else scope.set(id, new Set(kinds));
+    }
+  }
 
-  return new Set(
-    pool.filter((item) => {
-      for (const g of groupsOfItem(space, item, 'direct')) {
-        if (expanded.has(g)) return true;
-      }
-      return false;
-    }),
-  );
+  return new Set(pool.filter((item) => inScope(space, item, scope)));
 }
 
 /**
@@ -160,17 +144,16 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
   // One pass over the pool, not one per candidate (that was O(values × items): ~600 ms for four
   // panels over 650 items). Invert each candidate's scope once — "which candidates does a direct
   // group count towards?" — so each item costs O(its direct groups). The scope is still each
-  // candidate's own closure, walked *down* with its edge-kind composition, so the counts are the
-  // same sets as before.
-  const countsTowards = new Map<NodeId, NodeId[]>();
+  // candidate's own closure scope, walked *down* with its edge-kind composition, and the item's own
+  // edge kind must compose with it too: the count is exactly `descendants(candidate) ∩ pool`.
+  const transitiveKinds = new Set(Object.keys(space.profile.edgeKinds).filter((k) => space.profile.edgeKinds[k]?.transitive));
+  const countsTowards = new Map<NodeId, Array<{ readonly group: NodeId; readonly kinds: ReadonlySet<EdgeKind> }>>();
   for (const group of candidates) {
-    const scope = expand === 'closure' ? closureIds(space, group) : [group];
-    for (const g of scope) {
-      // Only a node with outgoing edges can be an item's direct group: skip the items in the closure.
-      if (!space.forward.get(g)?.size) continue;
+    const scope = expand === 'closure' ? closureScope(space, group) : new Map([[group, transitiveKinds]]);
+    for (const [g, kinds] of scope) {
       const list = countsTowards.get(g);
-      if (list) list.push(group);
-      else countsTowards.set(g, [group]);
+      if (list) list.push({ group, kinds });
+      else countsTowards.set(g, [{ group, kinds }]);
     }
   }
 
@@ -179,9 +162,9 @@ export function facetPanel<P>(space: GroupSpace<P>, options: FacetOptions = {}):
   const counts = new Map<NodeId, number>();
   const lastCounted = new Map<NodeId, NodeId>();
   for (const item of pool) {
-    for (const g of groupsOfItem(space, item, 'direct')) {
-      for (const group of countsTowards.get(g) ?? []) {
-        if (lastCounted.get(group) === item) continue;
+    for (const e of edgesInto(space, item)) {
+      for (const { group, kinds } of countsTowards.get(e.parent) ?? []) {
+        if (!kinds.has(e.kind) || lastCounted.get(group) === item) continue;
         lastCounted.set(group, item);
         counts.set(group, (counts.get(group) ?? 0) + 1);
       }

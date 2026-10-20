@@ -167,6 +167,12 @@ function downChain(profile: GroupProfile): Chain<UpperChain> {
 const upChains = new WeakMap<GroupProfile, Chain<EdgeKind | null>>();
 const downChains = new WeakMap<GroupProfile, Chain<UpperChain>>();
 
+function downChainOf(profile: GroupProfile): Chain<UpperChain> {
+  let chain = downChains.get(profile);
+  if (!chain) downChains.set(profile, (chain = downChain(profile)));
+  return chain;
+}
+
 function walk(
   space: GroupSpace,
   start: NodeId,
@@ -179,12 +185,49 @@ function walk(
     if (!chain) upChains.set(profile, (chain = upChain(profile)));
     return walkChain(space, start, 'up', chain, options);
   }
-  let chain = downChains.get(profile);
-  if (!chain) downChains.set(profile, (chain = downChain(profile)));
-  return walkChain(space, start, 'down', chain, options);
+  return walkChain(space, start, 'down', downChainOf(profile), options);
 }
 
-function walkChain<S>(space: GroupSpace, start: NodeId, direction: 'up' | 'down', chain: Chain<S>, options: WalkOptions): Set<NodeId> {
+/**
+ * Where an item must sit to be in `group`'s closure: each group in the closure (`group` included),
+ * with the kinds the item's OWN edge into it may have.
+ *
+ * The kind of the item's edge matters, because closure composes: with `wheel part_of car` and
+ * `car is_a vehicle`, `car` is in `vehicle`'s closure, but `wheel` is not (`part_of ∘ is_a` does
+ * not compose). So "is the item's group in the closure?" over-counts; "is the item's group in the
+ * scope, with an edge of an accepted kind?" is exactly `descendants(space, group).has(item)`,
+ * answered from the item's side without walking the items. This is what facet counts and matching
+ * use, so they agree with `ancestors` and `descendants`.
+ *
+ * Only nodes with children appear (an item's group has at least that item).
+ */
+export function closureScope(space: GroupSpace, group: NodeId, options: WalkOptions = {}): Map<NodeId, ReadonlySet<EdgeKind>> {
+  const profile = space.profile;
+  const chain = downChainOf(profile);
+  const allowed = options.kinds ? new Set(options.kinds) : null;
+  const kinds = Object.keys(profile.edgeKinds).filter((k) => profile.edgeKinds[k]?.transitive && (!allowed || allowed.has(k)));
+  const scope = new Map<NodeId, Set<EdgeKind>>();
+  walkChain(space, group, 'down', chain, options, (node, state) => {
+    if (!space.forward.get(node)?.size) return;
+    for (const k of kinds) {
+      if (!chain.step(state, k)?.reached) continue;
+      const set = scope.get(node);
+      if (set) set.add(k);
+      else scope.set(node, new Set([k]));
+    }
+  });
+  return scope;
+}
+
+function walkChain<S>(
+  space: GroupSpace,
+  start: NodeId,
+  direction: 'up' | 'down',
+  chain: Chain<S>,
+  options: WalkOptions,
+  /** Called for each (node, chain state) the walk expands, `start` included. */
+  onExpand?: (node: NodeId, state: S) => void,
+): Set<NodeId> {
   const out = new Set<NodeId>();
   const allowed = options.kinds ? new Set(options.kinds) : null;
   const maxDepth = options.maxDepth ?? Infinity;
@@ -200,6 +243,7 @@ function walkChain<S>(space: GroupSpace, start: NodeId, direction: 'up' | 'down'
   while (frontier.length && depth < maxDepth) {
     const next: Array<{ node: NodeId; state: S }> = [];
     for (const { node, state } of frontier) {
+      onExpand?.(node, state);
       const edges = direction === 'down' ? edgesOf(space, node) : edgesInto(space, node);
       for (const edge of edges) {
         if (allowed && !allowed.has(edge.kind)) continue;
