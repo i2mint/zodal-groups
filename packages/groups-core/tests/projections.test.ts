@@ -41,6 +41,23 @@ describe('faceted browsing', () => {
     expect(g.members('dog', { expand: 'closure', itemsOnly: true }).sort()).toEqual(['bella', 'rex']);
   });
 
+  it('closure members compose edge kinds, like descendants (#38)', () => {
+    // wheel part_of car is_a vehicle: the wheel is in `car`, not in `vehicle`. bus is_a vehicle, and
+    // b1 instance_of bus: b1 is a member of `bus` (directly), not of `vehicle` (instance_of does not walk).
+    const g = defineGroups({ profile: 'thesaurus' });
+    g.add('car', 'vehicle', { kind: 'is_a' });
+    g.add('wheel', 'car', { kind: 'part_of' });
+    g.add('bus', 'vehicle', { kind: 'is_a' });
+    g.add('b1', 'bus', { kind: 'instance_of' });
+    g.add('sedan', 'car', { kind: 'is_a' });
+    const closure = (x: string) => g.members(x, { expand: 'closure' }).sort();
+    expect(closure('vehicle')).toEqual(['bus', 'car', 'sedan']);
+    expect(closure('vehicle')).toEqual([...g.descendants('vehicle')].sort());
+    expect(closure('car')).toEqual(['sedan', 'wheel']);
+    expect(closure('bus')).toEqual(['b1']); // a direct member, by any kind
+    expect(g.count('vehicle', { expand: 'closure' })).toBe(1); // sedan: car and bus are groups
+  });
+
   it('produces a filter that scopes a store query to a group and its subgroups', () => {
     const g = build();
     const filter = g.scope('animal');
