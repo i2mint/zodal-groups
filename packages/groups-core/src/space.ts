@@ -119,6 +119,8 @@ const GONE: unique symbol = Symbol('gone');
  */
 class CowMap<K, V> implements StagingMap<K, V> {
   protected readonly changed = new Map<K, V | typeof GONE>();
+  /** Base keys deleted and set again: they iterate after the base, in `changed`'s order. */
+  private readonly reinserted = new Set<K>();
   constructor(protected readonly base: ReadonlyMap<K, V>) {}
 
   get(key: K): V | undefined {
@@ -130,6 +132,12 @@ class CowMap<K, V> implements StagingMap<K, V> {
     return this.changed.has(key) ? this.changed.get(key) !== GONE : this.base.has(key);
   }
   set(key: K, value: V): void {
+    // A deleted base key comes back at the END, as in a real Map (iteration order reaches
+    // violation order and messages, which must match `applyDelta`'s).
+    if (this.changed.get(key) === GONE) {
+      this.changed.delete(key);
+      this.reinserted.add(key);
+    }
     this.changed.set(key, value);
   }
   delete(key: K): void {
@@ -148,12 +156,12 @@ class CowMap<K, V> implements StagingMap<K, V> {
   *entries(): MapIterator<[K, V]> {
     for (const [k, v] of this.base) {
       if (!this.changed.has(k)) yield [k, v];
-      else {
+      else if (!this.reinserted.has(k)) {
         const c = this.changed.get(k)!;
         if (c !== GONE) yield [k, c];
       }
     }
-    for (const [k, c] of this.changed) if (c !== GONE && !this.base.has(k)) yield [k, c];
+    for (const [k, c] of this.changed) if (c !== GONE && (!this.base.has(k) || this.reinserted.has(k))) yield [k, c];
   }
   *keys(): MapIterator<K> {
     for (const [k] of this.entries()) yield k;
@@ -188,7 +196,8 @@ class SetOverlay<T> implements Iterable<T> {
   constructor(private readonly base: ReadonlySet<T> = new Set()) {}
 
   add(value: T): void {
-    if (this.removed.delete(value) || this.base.has(value)) return;
+    // A removed base member stays hidden there and comes back at the END, as in a real Set.
+    if (this.base.has(value) && !this.removed.has(value)) return;
     this.added.add(value);
   }
   delete(value: T): void {
