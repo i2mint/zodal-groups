@@ -1,6 +1,6 @@
 ---
 name: zodal-groups-dev-model
-description: Use when working on the zodal-groups CANONICAL MODEL or CONSTRAINT PROFILES — the keystone every other package consumes. Triggers when defining or changing Edge / Node / GroupSpace / EdgeDelta / NodeId, the GroupProfile dials (maxParentsPerItem, maxParentsPerGroup, maxDepth, groupsMayContainGroups, groupsAreItems), the named profiles (filesystem, flatTags, nestedTags, labels, polyhierarchy, taxonomy, thesaurus, folksonomy), edge KINDS and their closure semantics (transitive / composesWith / disjointWith), applyDelta, invert / undo, tombstones (removedNodes, deleteNodeDelta), per-family cardinality (Node.family, exclusive families), inferProfile / validateProfile, cycle enforcement, validateEdge, or the forward/inverse index pair. Also when someone proposes "just store a parent pointer" or "make Item and Group different types". Read BEFORE writing model code — the edge contract and the acyclicity invariant are easy to get wrong and expensive to change later.
+description: Use when working on the zodal-groups CANONICAL MODEL or CONSTRAINT PROFILES — the keystone every other package consumes. Triggers when defining or changing Edge / Node / GroupSpace / EdgeDelta / NodeId, the GroupProfile dials (maxParentsPerItem, maxParentsPerGroup, maxDepth, groupsMayContainGroups, groupsAreItems), the named profiles (filesystem, flatTags, nestedTags, labels, keyedTags, polyhierarchy, taxonomy, thesaurus, folksonomy), edge KINDS and their closure semantics (transitive / composesWith / disjointWith), applyDelta, invert / undo, tombstones (removedNodes, deleteNodeDelta), per-family cardinality (Node.family, exclusive families), inferProfile / validateProfile, cycle enforcement, validateEdge, or the forward/inverse index pair. Also when someone proposes "just store a parent pointer" or "make Item and Group different types". Read BEFORE writing model code — the edge contract and the acyclicity invariant are easy to get wrong and expensive to change later.
 metadata:
   audience: developers
 ---
@@ -144,6 +144,7 @@ Framing borrowed from **OWL 2 Profiles**; report shape from **SHACL** (whose `sh
 | `flatTags` | `maxDepth: 0, groupsMayContainGroups: false` | tags, no tagging-of-tags |
 | `nestedTags` | `maxParentsPerGroup: 1` | Obsidian/Bear — *but with real edges* |
 | `labels` | `maxParentsPerItem: null, maxParentsPerGroup: 1` | **Gmail** |
+| `keyedTags` | `maxParentsPerGroup: 1, maxDepth: 1` | S3 tags / Kubernetes labels / TMSU `key=value`: a key is a group with `family` (`EXCLUSIVE`: one value per key), values are its child groups, items attach to values. Never inferred by default (D33) |
 | `polyhierarchy` | defaults, acyclic | the general case |
 | ~~`taxonomy`~~ | `groupsMayContainItems: false` | **deprecated** (warns once; not inferred): fits no space with an edge. A vocabulary is a separate space |
 | `thesaurus` | typed `edgeKinds` | Z39.19 / SKOS |

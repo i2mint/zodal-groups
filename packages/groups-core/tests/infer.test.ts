@@ -103,6 +103,12 @@ describe('options', () => {
     expect(r.profile.name).toBe('twoTagsMax');
   });
 
+  it('keyedTags is never a default candidate, but fits when asked (D33)', () => {
+    const keyed = space(e('year', '2017'), e('2017', 'photo'), e('env', 'prod'), e('prod', 'photo'));
+    expect(inferProfile(keyed).profile.name).toBe('nestedTags');
+    expect(inferProfile(keyed, { candidates: ['nestedTags', 'keyedTags'] }).profile.name).toBe('keyedTags');
+  });
+
   it('measures an empty space without throwing', () => {
     const r = inferProfile(createGroupSpace());
     expect(r.violations).toEqual([]);

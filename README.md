@@ -57,6 +57,7 @@ The hierarchy is a *view*, not a fact.
 defineGroups({ profile: 'filesystem' })     // an item lives in exactly one place
 defineGroups({ profile: 'flatTags' })       // many tags per item; no tagging of tags
 defineGroups({ profile: 'labels' })         // Gmail: items multi-parent, label tree is a tree
+defineGroups({ profile: 'keyedTags' })      // key=value tags: keys (with `family`) hold values; items take values
 defineGroups({ profile: 'polyhierarchy' })  // the general case
 defineGroups({ profile: 'thesaurus' })      // typed edges: is_a / part_of / related
 
