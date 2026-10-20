@@ -161,6 +161,7 @@
 .zg-tagmenu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zg-tagmenu-path, .zg-tagmenu-count, .zg-tagmenu-inherited { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
 .zg-tagmenu-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zg-tagmenu-alias { font-size: .85em; font-style: italic; color: color-mix(in srgb, currentColor 75%, transparent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zg-tagmenu-count { font-variant-numeric: tabular-nums; }
 .zg-tagmenu-inherited { font-style: italic; }
 .zg-tagmenu-inherited[hidden], .zg-tagmenu-apply[hidden] { display: none; }

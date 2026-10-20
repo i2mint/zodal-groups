@@ -384,6 +384,8 @@ export interface TaggingMessages {
     readonly change: { readonly add: number; readonly remove: number };
     /** Selected items in the group only through a subgroup (`TagRow.inherited`). */
     readonly inherited?: number;
+    /** The other name the search matched (`TagRow.matchedAlias`), so the name says why the row is listed. */
+    readonly matchedAlias?: string;
   }) => string;
   /** A row's "2 through a subgroup": selected items in it by closure only. */
   readonly inheritedCount: (n: number) => string;
@@ -450,7 +452,8 @@ export const TAGGING_MESSAGES: TaggingMessages = {
       ? [row.change.add ? `will add to ${row.change.add}` : '', row.change.remove ? `will remove from ${row.change.remove}` : '']
       : [];
     const through = row.inherited ? `${row.inherited} more through a subgroup` : '';
-    return [row.path ?? row.label, now, through, ...staged].filter(Boolean).join(', ');
+    const alias = row.matchedAlias ? `also called ${q(row.matchedAlias)}` : '';
+    return [row.path ?? row.label, alias, now, through, ...staged].filter(Boolean).join(', ');
   },
   inheritedCount: (n) => `${n} through a subgroup`,
   createOption: (label) => `Create ${q(label)}`,
