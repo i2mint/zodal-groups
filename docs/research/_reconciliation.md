@@ -465,6 +465,7 @@ The view contract (polytag `ui-patterns.md` §4.2, M5 and M9) asks every view fo
 
 **Decision.** A named preset `keyedTags = { maxParentsPerGroup: 1, maxDepth: 1 }`: a value sits under one key, and a value has no values of its own. "One value per key" is the key's `family: EXCLUSIVE`, not a dial, because which groups are keys is run-time data. Not called `facets` (it would clash with the facet projection and with zodal-dials).
 
+- **What it enforces, and what it does not.** The dials hold a value under one key and stop a value having values *once the value holds an item*: an empty value is an item (D29), so it may sit under two keys until it is tagged onto something, and that tag is then refused. One value per key needs the key's `family`; nothing makes a key carry one, and nothing stops an item being put in a key directly. Those are the host's conventions (a `keyedTags` facade could check them; no consumer needs it yet).
 - **Not inferred by default.** Its dials alone describe a shallow `nestedTags`, so as a default candidate it would rename every such space (`inferProfile` picks the tightest fit). It is considered only when passed in `candidates`.
 - **Out of scope** until a consumer needs range or ordering queries over values (`year=2017`, `rating>=4`): typed values on `Edge.meta` with a store index.
 

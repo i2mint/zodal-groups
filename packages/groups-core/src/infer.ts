@@ -72,7 +72,7 @@ export interface InferredProfile {
 }
 
 export interface InferProfileOptions {
-  /** The profiles to choose from, in preference order. Defaults to every non-deprecated built-in profile. */
+  /** The profiles to choose from, in preference order. Defaults to every non-deprecated built-in profile except `keyedTags` (`NOT_INFERRED`). */
   readonly candidates?: readonly (ProfileName | GroupProfile)[];
 }
 

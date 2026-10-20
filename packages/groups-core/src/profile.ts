@@ -109,7 +109,10 @@ export const PROFILES = {
    * Valued tags (`year=2017`, `env=prod`), as in S3 object tags, Kubernetes labels or TMSU: a KEY
    * is a group carrying `family` (`EXCLUSIVE` for one value per key), its VALUES are its child
    * groups, and items attach to values. Values stay nodes (D1): no `value` field on edges.
-   * `maxParentsPerGroup: 1` keeps a value under one key; `maxDepth: 1` stops a value having values.
+   * `maxParentsPerGroup: 1` keeps a value under one key and `maxDepth: 1` stops a value having
+   * values, both once the value holds an item (a value with no items is itself an item, D29).
+   * The rest is the caller's convention, not enforced: a key needs `family` for one-value-per-key,
+   * and an item put directly in a key is accepted (it then has no value for that key).
    * Not inferred by default (D33): its dials alone are a shallow `nestedTags`.
    */
   keyedTags: {
