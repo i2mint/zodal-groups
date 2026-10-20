@@ -98,6 +98,8 @@ reference is `packages/groups-ui-vanilla/src/tag-menu.ts`. What a renderer must 
   `storesLabels: collection.storesLabels(space)`, so the menu never offers a Create the backing
   cannot keep; a row another writer moved stays staged and the sentence says so. Do not close the menu
   while a write is in flight.
+- **Immediate commit is opt-in** (`commit: 'immediate'` on the vanilla menu, Zotero-style): each click is its own `onApply`, so its own undo step; clicks during a write are queued, not dropped; no Apply button (and no Ctrl+Enter); a click that cannot be written, or whose write fails, is announced and reset, never left staged behind a hidden button. A host `rowLabel` override should keep `row.inherited`: the visible "through a subgroup" note is `aria-hidden`.
+- **`row.inherited`** counts selected items in the group only through a subgroup (`tagged poodle` is in `dog`). Show it beside the count ("2 through a subgroup", `messages.tagging.inheritedCount`); it is already in `row.aria.label`. It is not part of the tri-state: ticking still adds direct memberships. `inherited: false` skips the walk for huge selections.
 - **One polite live region** (`role="status"`, present from mount; clear it, then fill it a beat
   later) says what no option shows: "Applying…", `complete()`'s sentence (*"Applied: tagged 12 items,
   2 refused: …"*), `view.blocked`, a conflict (once — not as an alert, not in the option's

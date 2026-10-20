@@ -99,8 +99,15 @@ export interface TagRow {
   readonly state: TagState;
   /** The state now, before anything staged. */
   readonly originalState: TagState;
-  /** How many selected items are in the group now. */
+  /** How many selected items are in the group now (directly). */
   readonly count: number;
+  /**
+   * How many selected items are in the group only by closure — through a subgroup, not directly
+   * (an item tagged `poodle` is in `dog`). Not part of the tri-state: ticking the row still adds
+   * direct memberships. Like `count`, it describes the space now: staged changes do not move it
+   * until Apply. 0 with `inherited: false`.
+   */
+  readonly inherited: number;
   /** The selection size. */
   readonly total: number;
   /** The state differs from the original. */
@@ -241,6 +248,11 @@ export interface TaggingOptions {
    * (`resetTag` still restores a row).
    */
   readonly restoreMixed?: boolean;
+  /**
+   * Count each row's `inherited` (selected items in it through a subgroup only). One ancestor walk
+   * per selected item, when rows are (re)computed. Default `true`; `false` for very large selections.
+   */
+  readonly inherited?: boolean;
   /** Row order. Default: by path (or label), with a locale-aware, numeric collator. */
   readonly compare?: (a: TagRow, b: TagRow) => number;
 }
@@ -363,6 +375,9 @@ interface RowEntry {
  */
 export type RowCache = Map<NodeId, RowEntry>;
 
+/** `TagRow.inherited` per group, valid exactly as long as the row cache it is keyed by. */
+const inheritedByCache = new WeakMap<RowCache, Map<NodeId, number>>();
+
 function computeCore(
   space: GroupSpace,
   selection: readonly NodeId[],
@@ -391,6 +406,23 @@ function computeCore(
       set.add(item);
     }
   }
+
+  // Selected items in a group only by closure: computed once per row cache (so once per space and
+  // selection, not per toggle), on the first row that needs it.
+  let inheritedOf: Map<NodeId, number> | undefined = inheritedByCache.get(cache);
+  const inheritedIn = (group: NodeId): number => {
+    if (options.inherited === false) return 0;
+    if (!inheritedOf) {
+      inheritedOf = new Map();
+      inheritedByCache.set(cache, inheritedOf);
+      for (const item of selection) {
+        for (const a of ancestors(space, item)) {
+          if (!membersOf.get(a)?.has(item)) inheritedOf.set(a, (inheritedOf.get(a) ?? 0) + 1);
+        }
+      }
+    }
+    return inheritedOf.get(group) ?? 0;
+  };
 
   // The candidates, then the groups created in the menu (never filtered away).
   const selectionSet = new Set(selection);
@@ -531,6 +563,7 @@ function computeCore(
       state: now,
       originalState,
       count,
+      inherited: inheritedIn(group),
       total,
       pending: now !== originalState,
       isNew: createdLabel.has(group) && !node,
@@ -975,7 +1008,10 @@ export function createTaggingSession<P>(source: SpaceSource<P>, options: Tagging
 
   /** The expensive part (dry runs, plan): recomputed when the model, the staging or the selection changes — and then only the rows the change can affect. */
   const ensureCore = (space: GroupSpace): Core => {
-    if (!core || !coreKey || coreKey.space !== space || coreKey.selection !== selection) rowCache.clear();
+    if (!core || !coreKey || coreKey.space !== space || coreKey.selection !== selection) {
+      rowCache.clear();
+      inheritedByCache.delete(rowCache);
+    }
     if (
       !core ||
       !coreKey ||

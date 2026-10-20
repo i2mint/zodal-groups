@@ -158,9 +158,11 @@
 .zg-tagmenu-option[data-state="some"] .zg-tagmenu-box::before { content: '–'; }
 .zg-tagmenu-text { display: flex; flex-direction: column; min-width: 0; }
 .zg-tagmenu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zg-tagmenu-path, .zg-tagmenu-count { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
+.zg-tagmenu-path, .zg-tagmenu-count, .zg-tagmenu-inherited { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
 .zg-tagmenu-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zg-tagmenu-count { font-variant-numeric: tabular-nums; }
+.zg-tagmenu-inherited { font-style: italic; }
+.zg-tagmenu-inherited[hidden], .zg-tagmenu-apply[hidden] { display: none; }
 .zg-tagmenu-reason, .zg-tagmenu-conflicts { font-size: .85em; color: color-mix(in srgb, currentColor 65%, var(--zg-danger)); }
 .zg-tagmenu-reason { grid-column: 2 / -1; }
 .zg-tagmenu-reason::before, .zg-tagmenu-conflicts:not(:empty)::before { content: '⚠ '; } /* not colour alone */
