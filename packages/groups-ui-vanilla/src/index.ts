@@ -17,6 +17,9 @@
  * // On a phone: drill-down chips (All · groups with counts · Ungrouped), the path in your URL.
  * renderGroupChips(document.querySelector('#browse')!, groups, { onNavigate: (s) => setUrl(s) });
  *
+ * // Filter by several families: Genre: Rock or Jazz, and Mood: Calm.
+ * renderFacetSidebar(document.querySelector('#filters')!, groups, { families: ['genre', 'mood'] });
+ *
  * // Tag a selection: tri-state per group, staged until "Apply to N items".
  * renderTagMenu(document.querySelector('#labels')!, groups, { selection: ['a', 'b', 'c'] });
  * ```
@@ -26,6 +29,11 @@ export { renderTree, type TreeRenderer, type TreeRendererOptions } from './tree.
 export { renderColumns, type ColumnsRenderer, type ColumnsRendererOptions } from './columns.js';
 export { renderBreadcrumbs, type BreadcrumbsRenderer } from './breadcrumbs.js';
 export { renderFacets, type FacetsRenderer } from './facets.js';
+export {
+  renderFacetSidebar,
+  type FacetSidebarRenderer,
+  type FacetSidebarRendererOptions,
+} from './facet-sidebar.js';
 export {
   renderTagInput,
   TAG_INPUT_LABELS,
