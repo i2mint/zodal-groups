@@ -41,6 +41,7 @@ export {
   type GroupsCommand,
 } from './commands.js';
 export { isEmptyInverse } from './engine.js';
+export { filterProblem, canPushFilter, FILTER_OPERATORS } from './rule.js';
 export { recordEdgeId, isRecordEdge, fieldGroups, RECORD_EDGE_PREFIX } from './spaces.js';
 export type {
   BulkTagChange,
@@ -56,6 +57,7 @@ export type {
   OperationResult,
   RecordOp,
   RenameOptions,
+  SetRuleOptions,
   SpaceConfig,
   SpaceEdges,
   SpaceOption,

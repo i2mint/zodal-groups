@@ -57,7 +57,7 @@ export const edgeId = (s: string): EdgeId => s as EdgeId;
  *
  * The `(string & {})` union keeps the built-in names auto-completable without closing the set.
  */
-export type EdgeKind = 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | 'alias_of' | (string & {});
+export type EdgeKind = 'contains' | 'is_a' | 'part_of' | 'instance_of' | 'related' | 'alias_of' | 'excludes' | (string & {});
 
 /**
  * The declared semantics of an edge kind. **This is the part most tagging libraries forget**, and
@@ -128,6 +128,17 @@ export const DEFAULT_EDGE_KINDS: Readonly<Record<string, EdgeKindDef>> = Object.
     maxPerChild: 1,
     disjointWith: ['contains', 'is_a', 'part_of', 'instance_of', 'related'],
   },
+  // `excludes` (fluid groups, D36): `smart excludes x` keeps `x` out of the smart group `smart`
+  // even when its rule matches. Not a membership (it files nothing), never followed by closure,
+  // and never combined with a membership between the same two nodes: an item is pinned (`contains`)
+  // or excluded, not both. Read by `fluidExtent`; projections ignore it, as they ignore `related`.
+  // Not acyclic: it orders nothing, so it never joins the membership kinds' cycle check.
+  excludes: {
+    transitive: false,
+    acyclic: false,
+    membership: false,
+    disjointWith: ['contains', 'is_a', 'part_of', 'instance_of', 'related', 'alias_of'],
+  },
 });
 
 // ── the canonical relation ──────────────────────────────────────────────────
@@ -197,7 +208,23 @@ export interface Node<P = unknown> {
    * while the node has no subgroups. Any node may carry it: group-ness is still data, not type.
    */
   readonly family?: FamilyRule;
+  /**
+   * Makes this node a **fluid (smart) group**: its extent is the items this rule selects, plus its
+   * pinned members (ordinary membership edges into it), minus the items it `excludes` (D36).
+   * Persisted like any other field, so every `GroupStore` keeps it and `invert` undoes edits to it.
+   * Opaque to this package: a `FilterExpression` from `@zodal/core` over the item records, which
+   * `@zodal/groups-collection` evaluates (`extent`), locally or pushed to the provider. Plain JSON.
+   */
+  readonly rule?: PersistedRule;
 }
+
+/**
+ * A persisted smart-group rule: a `FilterExpression` (`@zodal/core`) over the item records, e.g.
+ * `{ or: [{ field: 'path', operator: 'startsWith', value: 'music/jazz/' }, …] }`. Kept structural
+ * here (`object`, so an interface such as `FilterCondition` fits) to keep this package free of
+ * `@zodal/*`; validated on write as a plain JSON object.
+ */
+export type PersistedRule = object;
 
 // ── members: literal or reference ───────────────────────────────────────────
 

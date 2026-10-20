@@ -173,8 +173,9 @@ function exercised(p: GroupProfile, o: ObservedDials): number {
 function preferByEvidence(equivalents: readonly GroupProfile[], o: ObservedDials): GroupProfile | undefined {
   const named = (name: string) => equivalents.find((p) => p.name === name);
   if (o.edges > 0 && o.assertedByEdges === o.edges && named('folksonomy')) return named('folksonomy');
-  // An alias is a second name, not a typed relation: it does not make a space a thesaurus.
-  const typedKinds = Object.keys(o.edgeKinds).some((k) => k !== 'contains' && k !== 'alias_of');
+  // An alias is a second name, and an exclusion an edit to a smart group, not a typed relation:
+  // neither makes a space a thesaurus.
+  const typedKinds = Object.keys(o.edgeKinds).some((k) => k !== 'contains' && k !== 'alias_of' && k !== 'excludes');
   if (typedKinds && named('thesaurus')) return named('thesaurus');
   return undefined;
 }

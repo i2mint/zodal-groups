@@ -89,7 +89,8 @@ export function nodeProblem(node: unknown): string | undefined {
   if (node.family !== undefined && !isFamilyRule(node.family)) {
     return `family: expected { maxPerItem: an integer ≥ 1 }, got ${safe(node.family)}`;
   }
-  return jsonProblem(node.payload, 'payload');
+  if (node.rule !== undefined && !isObject(node.rule)) return `rule: expected a filter expression (an object), got ${safe(node.rule)}`;
+  return jsonProblem(node.rule, 'rule') ?? jsonProblem(node.payload, 'payload');
 }
 
 /** What is structurally wrong with an edge, as `"field: problem"`, or `undefined` if nothing is. */

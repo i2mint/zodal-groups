@@ -22,7 +22,7 @@
 
 import type { EdgeDelta, GroupSpace, NodeId, Violation } from './model.js';
 import { ancestors, descendants } from './closure.js';
-import { edgesOf, isGroup } from './space.js';
+import { edgesOf, isGroup, isMembershipKind } from './space.js';
 
 /** Does `group` or anything above it root a family? Cheap pre-check before the full rule check. */
 export function hasFamilyAtOrAbove(space: GroupSpace, group: NodeId): boolean {
@@ -82,7 +82,7 @@ export function familyViolations(
   };
 
   for (const edge of delta.added ?? []) {
-    if (!space.edges.has(edge.id)) continue;
+    if (!space.edges.has(edge.id) || !isMembershipKind(space.profile, edge.kind)) continue;
     if (!hasFamilyAtOrAbove(space, edge.parent)) continue;
     if (isGroup(space, edge.child)) itemsUnder(edge.child);
     else items.add(edge.child);

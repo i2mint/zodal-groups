@@ -15,6 +15,9 @@ import {
   edgesInto,
   edgesOf,
   isGroup,
+  EXCLUDES,
+  fluidExtent,
+  isExcluded,
   isMembershipKind,
   mergeDelta,
   newEpoch,
@@ -29,8 +32,10 @@ import {
   type Node,
   type NodeId,
 } from '@zodal/groups-core';
+import type { FilterExpression } from '@zodal/core';
 import type { DataProvider } from '@zodal/store';
 import { createCommands, operations } from './commands.js';
+import { canPushFilter, filterProblem, localFilter } from './rule.js';
 import { combine, concatDeltas, partition } from './delta.js';
 import { emptyInverse, execute, PENDING_ID, type EngineContext, type Plan, type Unit } from './engine.js';
 import {
@@ -51,6 +56,7 @@ import type {
   FailureCode,
   OperationResult,
   Position,
+  SetRuleOptions,
   SpaceConfig,
   TaggedCollection,
 } from './types.js';
@@ -556,6 +562,85 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
       });
     },
 
+    setRule(group, rule, opts: SetRuleOptions = {}) {
+      return run('setRule', () => {
+        const rt = runtime(opts.space);
+        if (rt.mode === 'embedded') {
+          throw new Error(`setRule: space '${rt.name}' stores group ids in the '${rt.field}' field, so a rule cannot be persisted; declare it on a vocabulary node, or use a GroupStore space.`);
+        }
+        const problem = rule === null ? undefined : filterProblem(rule);
+        if (problem) throw new Error(`setRule: ${problem}.`);
+        if (rule === null && rt.current.nodes.get(nodeId(canonical(rt, group)))?.rule === undefined) return done(canonical(rt, group));
+        return {
+          operation: 'setRule',
+          units: [],
+          spaces: [rt],
+          subject: canonical(rt, group),
+          // Resolved again on the space the write is built on: a retry after a conflict sees new aliases.
+          build: (_r, space) => {
+            const g = resolveAlias(space, nodeId(group));
+            const live = space.nodes.get(g);
+            if (!live) return rule === null ? {} : { upsertNodes: [{ id: g, rule, ...(opts.label !== undefined ? { label: opts.label } : {}) }] };
+            if (rule === null) {
+              // Clearing the rule of a node that is nothing else (no label, payload, family, edge) drops it.
+              const { id: _id, rule: _rule, ...rest } = live;
+              const bare = !Object.values(rest).some((x) => x !== undefined) && !edgesOf(space, g).length && !edgesInto(space, g).length;
+              return bare ? { removedNodes: [live as Node] } : { upsertNodes: [{ id: g, rule: undefined }] };
+            }
+            return { upsertNodes: [{ id: g, rule }] };
+          },
+        };
+      });
+    },
+
+    exclude(ids, alias, opts = {}) {
+      return run('exclude', () => {
+        const rt = runtime(opts.space);
+        checkKind(rt, EXCLUDES);
+        return {
+          operation: 'exclude',
+          units: units(ids),
+          spaces: [rt],
+          build: (r, space, live) => {
+            const g = resolveAlias(space, nodeId(alias));
+            const fresh = live.filter((id) => !isExcluded(space, g, nodeId(id)));
+            // A pin and an exclusion are disjoint: the pin goes in the same write.
+            return concatDeltas([untagDelta(r, space, live, g), { added: fresh.map((id) => r.mintEdge(g, id, EXCLUDES)) }]);
+          },
+        };
+      });
+    },
+
+    unexclude(ids, alias, opts = {}) {
+      return run('unexclude', () => {
+        const rt = runtime(opts.space);
+        checkKind(rt, EXCLUDES);
+        return {
+          operation: 'unexclude',
+          units: units(ids),
+          spaces: [rt],
+          build: (_r, space, live) => {
+            const g = resolveAlias(space, nodeId(alias));
+            return { removed: live.flatMap((id) => edgesInto(space, nodeId(id)).filter((e) => e.parent === g && e.kind === EXCLUDES).map((e) => e.id)) };
+          },
+        };
+      });
+    },
+
+    extent(group, opts = {}) {
+      return serialize(async () => {
+        await ensureLoaded();
+        const space = runtime(opts.space).current;
+        const g = resolveAlias(space, nodeId(group));
+        const rule = space.nodes.get(g)?.rule as FilterExpression | undefined;
+        const problem = rule === undefined ? undefined : filterProblem(rule);
+        if (problem) throw new Error(`extent: group '${g}' carries a malformed rule (${problem}); replace it with setRule.`);
+        const records = !rule ? [] : canPushFilter(provider, rule) ? await readAll(provider, pageSize, rule) : localFilter(await readAll(provider, pageSize), rule);
+        const matches = records.map((r) => nodeId(String(r[idField])));
+        return fluidExtent(space, g, matches).map(String);
+      });
+    },
+
     moveInGroup(id, alias, opts) {
       return run('moveInGroup', () => {
         const rt = runtime(opts.space);
@@ -698,10 +783,10 @@ export function defineTaggedCollection<T extends Record<string, unknown>>(
 }
 
 /** Read every record, page by page (a provider may cap an unpaginated list). */
-async function readAll<T extends Record<string, unknown>>(provider: DataProvider<T>, pageSize: number): Promise<T[]> {
+async function readAll<T extends Record<string, unknown>>(provider: DataProvider<T>, pageSize: number, filter?: FilterExpression): Promise<T[]> {
   const out: T[] = [];
   for (let page = 1; ; page++) {
-    const { data, total } = await provider.getList({ pagination: { page, pageSize } });
+    const { data, total } = await provider.getList({ ...(filter ? { filter } : {}), pagination: { page, pageSize } });
     out.push(...data);
     if (!data.length || data.length < pageSize || out.length >= total) return out;
   }

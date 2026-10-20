@@ -329,10 +329,12 @@ export function isMembershipKind(profile: GroupProfile, kind: string): boolean {
 }
 
 /**
- * A node is a *group* iff something is in it — through a membership kind. Group-ness is data, not
- * type; an associative link (`related`) makes nobody a group.
+ * A node is a *group* iff something is in it — through a membership kind — or it carries a smart
+ * group's rule (`Node.rule`, D36: its members are computed, so it may have no edge yet). Group-ness
+ * is data, not type; an associative link (`related`, `excludes`) makes nobody a group.
  */
 export function isGroup(space: GroupSpace, id: NodeId): boolean {
+  if (space.nodes.get(id)?.rule !== undefined) return true;
   const out = space.forward.get(id);
   if (!out) return false;
   for (const edgeId of out) {
@@ -1206,7 +1208,8 @@ export interface MergeOptions {
  *    the edge between `from` and `into` themselves is dropped rather than made a self-edge;
  * 3. `from` is deleted with a tombstone (`deleteNodeDelta`), so `invert` undoes the whole merge.
  *
- * `into` keeps its own label and payload; `from`'s live on only in the tombstone. A merge that
+ * `into` keeps its own label and payload; `from`'s live on only in the tombstone. A smart group's
+ * rule (`Node.rule`) is carried over when `into` has none, so its pins and exclusions keep meaning. A merge that
  * would close a cycle (`into` sits below `from` through a third group) is refused by `applyDelta`
  * with the path, like any other cyclic delta. `into` is created bare if it does not exist (a
  * rename by merge). Returns an empty delta for an unknown `from`.
@@ -1231,7 +1234,10 @@ export function mergeDelta<P>(space: GroupSpace<P>, from: NodeId, into: NodeId, 
     const id = mint(e.parent, into, e.kind);
     added.push(makeEdge(e.parent, into, { ...carriedFields(e), ...(id !== undefined ? { id } : {}) }));
   }
-  return { ...deleteNodeDelta(space, from), added };
+  // A smart group's rule moves with its pins and exclusions, unless `into` has a rule of its own.
+  const rule = space.nodes.get(from)?.rule;
+  const carryRule = rule !== undefined && space.nodes.get(into)?.rule === undefined ? { upsertNodes: [{ id: into, rule }] } : {};
+  return { ...deleteNodeDelta(space, from), ...carryRule, added };
 }
 
 /** Delete a node entirely, and every edge touching it. This *is* destructive — but invertible. */
