@@ -131,3 +131,17 @@ describe('a cap of N > 1', () => {
     if (!r.ok) expect(r.violations[0]!.message).toMatch(/allows 2 per item\.$/);
   });
 });
+
+describe('family rules agree with validateProfile on mixed edge kinds (issue #6)', () => {
+  it('an accepted tightening is a valid state', () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    const a = n('a');
+    g.add('f', 'a', { kind: 'part_of' });
+    g.add('d', 'a', { kind: 'is_a' });
+    g.add('b', 'd', { kind: 'contains' });
+    g.add('b', 'f', { kind: 'is_a' });
+    const result = g.apply({ upsertNodes: [{ id: a, family: { maxPerItem: 1 } }] });
+    if (result.ok) expect(validateProfile(g.space)).toEqual([]);
+    else expect(result.violations.length).toBeGreaterThan(0);
+  });
+});

@@ -90,4 +90,38 @@ describe('the manifest lock', () => {
     await writeFile(lock, JSON.stringify({ pid: process.ppid, at: Date.now() }));
     expect((await createFsGroupStore({ path, lockTimeoutMs: 50 }).load()).edges.size).toBe(1);
   });
+
+  it('breaks a stale lock through one breaker, and leaves no .break file (issue #6)', async () => {
+    await writeFile(lock, JSON.stringify({ pid: await deadPid(), at: Date.now() }));
+    const stores = Array.from({ length: 4 }, () => createFsGroupStore({ path }));
+    const results = await Promise.all(stores.map((s, i) => s.apply({ added: [e('g', `n${i}`)] })));
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect((await readdir(dir)).filter((n) => n.includes('.break') || n.includes('.stale.'))).toEqual([]);
+    expect((await createFsGroupStore({ path }).load()).edges.size).toBe(4);
+  });
+
+  it("clears a dead breaker's leftover .break file", async () => {
+    await writeFile(lock, JSON.stringify({ pid: await deadPid(), at: Date.now() }));
+    await writeFile(`${lock}.break`, JSON.stringify({ pid: await deadPid(), at: Date.now() }));
+    expect((await createFsGroupStore({ path, lockTimeoutMs: 5_000 }).apply({ added: [e('g', 'a')] })).ok).toBe(true);
+    expect(await exists(`${lock}.break`)).toBe(false);
+    expect(await exists(lock)).toBe(false);
+  });
+
+  it('refuses lock options next to a custom io, which would ignore them', () => {
+    const io = nodeManifestIO();
+    expect(() => createFsGroupStore({ path, io, lockTimeoutMs: 100 })).toThrow(TypeError);
+    expect(() => createFsGroupStore({ path, io, staleLockMs: 100 })).toThrow(/nodeManifestIO/);
+    expect(() => createFsGroupStore({ path, io })).not.toThrow();
+  });
+
+  it('loadVersioned: no epoch before the first write, then the epoch every write reports', async () => {
+    const store = createFsGroupStore({ path });
+    expect((await store.loadVersioned!()).epoch).toBeUndefined();
+    const applied = await store.apply({ added: [e('g', 'a')] });
+    if (!applied.ok) throw new Error('write refused');
+    const loaded = await store.loadVersioned!();
+    expect(loaded.epoch).toBe(applied.value.epoch);
+    expect(loaded.space.revision).toBe(applied.value.revision);
+  });
 });

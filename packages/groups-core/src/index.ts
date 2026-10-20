@@ -92,7 +92,7 @@ export {
 } from './space.js';
 
 // ── structure: the one node/edge validator for write and read ──────────────
-export { isFamilyRule, jsonProblem, nodeProblem, edgeProblem } from './structure.js';
+export { isFamilyRule, jsonProblem, MAX_JSON_DEPTH, nodeProblem, edgeProblem } from './structure.js';
 
 // ── families: per-family cardinality ────────────────────────────────────────
 export { familyValuesOf, familyViolations, hasFamilyAtOrAbove } from './family.js';
@@ -127,6 +127,7 @@ export {
   type GroupStoreChange,
   type MemoryGroupStoreOptions,
   type StoreApplied,
+  type StoreLoaded,
   type StoreApplyOptions,
 } from './store.js';
 

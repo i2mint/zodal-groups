@@ -14,7 +14,7 @@
  *
  * **2. Everything must be de-duplicated, and everything must terminate.** In a DAG a node is
  * reachable by many paths, so an un-memoized traversal is O(2^n) and an un-deduplicated count
- * double-counts. Every function here memoizes on node id and guards against revisits — including
+ * double-counts. Every function here memoizes (on node id, or node + chain state) and guards against revisits — including
  * against *cycles*, which the write path forbids but which can still arrive from a store adapter or
  * an import that never heard of our invariant. A projection that assumes acyclicity is a projection
  * that hangs the browser on someone else's bad data.
@@ -33,17 +33,21 @@ import type { EdgeKind, GroupSpace, NodeId } from './model.js';
 import type { GroupProfile } from './profile.js';
 import { edgesInto, edgesOf, isAcyclicKind } from './space.js';
 
-/** Does a chain arriving as `carried` extend through an edge of kind `next`? */
-function compose(profile: GroupProfile, carried: EdgeKind | null, next: EdgeKind): EdgeKind | null {
-  const def = profile.edgeKinds[next];
-  if (!def?.transitive) return null;
-  if (carried === null) return next; // first hop
-  const carriedDef = profile.edgeKinds[carried];
-  if (!carriedDef?.transitive) return null;
+/**
+ * The kind of the chain `lower` then `upper`, read child-first as the Gene Ontology writes it
+ * (`A is_a B`, `B part_of C` ⇒ `A part_of C`: `is_a ∘ part_of → part_of`), or `null` when it does
+ * not compose. `composesWith` is declared on the lower (child-side) kind and keyed by the upper
+ * one, and this is the ONE order both walks use: going up, the chain so far is the lower part;
+ * going down, it is the upper part. (Composing in walk order instead made `ancestors` and
+ * `descendants` disagree on mixed-kind chains — issue #6.)
+ */
+function composeKinds(profile: GroupProfile, lower: EdgeKind, upper: EdgeKind): EdgeKind | null {
+  const lowerDef = profile.edgeKinds[lower];
+  if (!lowerDef?.transitive || !profile.edgeKinds[upper]?.transitive) return null;
   // With no declared composition, a chain only continues through the *same* kind. This is the
   // conservative reading, and it is the one that keeps `part_of ∘ is_a` from concluding nonsense.
-  if (!carriedDef.composesWith) return carried === next ? carried : null;
-  return carriedDef.composesWith[next] ?? null;
+  if (!lowerDef.composesWith) return lower === upper ? lower : null;
+  return lowerDef.composesWith[upper] ?? null;
 }
 
 export interface WalkOptions {
@@ -73,34 +77,107 @@ export function ancestors(space: GroupSpace, node: NodeId, options: WalkOptions 
   return walk(space, node, 'up', options);
 }
 
+/**
+ * How a walk carries a chain: `start` is the state before the first hop, `step` extends it by one
+ * edge — `undefined` when nothing further along can be reached, else the new state, whether the
+ * node at the far end is in the closure, and whether a longer chain could still compose. `key` makes a state hashable for the visited set.
+ */
+interface Chain<S> {
+  readonly start: S;
+  step(state: S, kind: EdgeKind): { readonly state: S; readonly reached: boolean; readonly extends: boolean } | undefined;
+  key(state: S): string;
+}
+
+/**
+ * Up: the chain so far is the lower part, so it is folded child-first as it is walked — the state
+ * is the composed kind (`null` before the first hop).
+ */
+function upChain(profile: GroupProfile): Chain<EdgeKind | null> {
+  return {
+    start: null,
+    step(carried, kind) {
+      const composed = carried === null ? (profile.edgeKinds[kind]?.transitive ? kind : null) : composeKinds(profile, carried, kind);
+      // A composed kind that is not transitive (a custom `composesWith` may yield one) still
+      // reaches this node, and ends the chain.
+      return composed === null ? undefined : { state: composed, reached: true, extends: profile.edgeKinds[composed]?.transitive === true };
+    },
+    key: (carried) => carried ?? '',
+  };
+}
+
+/**
+ * Down: the chain so far is the UPPER part, but the fold is child-first, and composition need not
+ * be associative (`is_a ∘ part_of` composes, `part_of ∘ is_a` does not). So the state is the upper
+ * part as a function: for each kind a chain could arrive with from below, the kind it ends as at
+ * the start (or `null`). A node is reached when its own edge, as the first hop, survives that
+ * function — exactly what `ancestors` would conclude from below. A node that is not reached still
+ * passes the function on: a longer chain through it may compose where its own edge does not.
+ */
+type UpperChain = 'identity' | ReadonlyMap<EdgeKind, EdgeKind | null>;
+
+function downChain(profile: GroupProfile): Chain<UpperChain> {
+  const transitive = Object.keys(profile.edgeKinds).filter((k) => profile.edgeKinds[k]?.transitive);
+  // The identity is a marker, not a map over the transitive kinds: a composed kind may be one that
+  // is not transitive (or not declared), and the empty upper chain must still map it to itself.
+  const look = (above: UpperChain, k: EdgeKind): EdgeKind | null => (above === 'identity' ? k : (above.get(k) ?? null));
+  return {
+    start: 'identity',
+    step(above, kind) {
+      if (!profile.edgeKinds[kind]?.transitive) return undefined; // no chain passes through it
+      const reached = look(above, kind) !== null;
+      const state = new Map<EdgeKind, EdgeKind | null>();
+      let alive = false;
+      for (const k of transitive) {
+        const composed = composeKinds(profile, k, kind);
+        const end = composed === null ? null : look(above, composed);
+        state.set(k, end);
+        if (end !== null) alive = true;
+      }
+      return alive || reached ? { state, reached, extends: alive } : undefined;
+    },
+    key: (state) => (state === 'identity' ? '\u0002' : [...state.values()].map((v) => v ?? '').join('\u0001')),
+  };
+}
+
 function walk(
   space: GroupSpace,
   start: NodeId,
   direction: 'up' | 'down',
   options: WalkOptions,
 ): Set<NodeId> {
+  return direction === 'up'
+    ? walkChain(space, start, 'up', upChain(space.profile), options)
+    : walkChain(space, start, 'down', downChain(space.profile), options);
+}
+
+function walkChain<S>(space: GroupSpace, start: NodeId, direction: 'up' | 'down', chain: Chain<S>, options: WalkOptions): Set<NodeId> {
   const out = new Set<NodeId>();
   const allowed = options.kinds ? new Set(options.kinds) : null;
   const maxDepth = options.maxDepth ?? Infinity;
 
-  // `visited` is keyed by node — memoization, and the cycle guard, in one.
-  const visited = new Set<NodeId>([start]);
-  let frontier: Array<{ node: NodeId; carried: EdgeKind | null }> = [{ node: start, carried: null }];
+  // `visited` is keyed by (node, chain state): the same node reached with a different chain may
+  // compose further, so reachability never depends on BFS order. Still finite (nodes × states),
+  // so still the cycle guard.
+  const visitKey = (node: NodeId, state: S) => `${chain.key(state)}\u0000${node}`;
+  const visited = new Set<string>([visitKey(start, chain.start)]);
+  let frontier: Array<{ node: NodeId; state: S }> = [{ node: start, state: chain.start }];
   let depth = 0;
 
   while (frontier.length && depth < maxDepth) {
-    const next: Array<{ node: NodeId; carried: EdgeKind | null }> = [];
-    for (const { node, carried } of frontier) {
+    const next: Array<{ node: NodeId; state: S }> = [];
+    for (const { node, state } of frontier) {
       const edges = direction === 'down' ? edgesOf(space, node) : edgesInto(space, node);
       for (const edge of edges) {
         if (allowed && !allowed.has(edge.kind)) continue;
-        const composed = compose(space.profile, carried, edge.kind);
-        if (composed === null) continue; // the chain does not compose — stop here, don't lie
+        const stepped = chain.step(state, edge.kind);
+        if (!stepped) continue; // the chain does not compose — stop here, don't lie
         const target = direction === 'down' ? edge.child : edge.parent;
-        if (visited.has(target)) continue;
-        visited.add(target);
-        out.add(target);
-        next.push({ node: target, carried: composed });
+        if (stepped.reached && target !== start) out.add(target);
+        if (!stepped.extends) continue;
+        const k = visitKey(target, stepped.state);
+        if (visited.has(k)) continue;
+        visited.add(k);
+        next.push({ node: target, state: stepped.state });
       }
     }
     frontier = next;

@@ -455,6 +455,19 @@ export async function groupStoreContract(options: GroupStoreContractOptions): Pr
     sameSpace(await store.load(), before, 'load() after the refused write');
   });
 
+  add('loadVersioned (when offered) gives the (epoch, revision) a write can expect', async ({ store }) => {
+    if (!store.loadVersioned) return;
+    const applied = expectOk(await store.apply({ added: [edge('g', 'a')] }), 'first write');
+    const loaded = await store.loadVersioned();
+    equal(loaded.epoch, applied.epoch, 'loadVersioned().epoch');
+    equal(loaded.space.revision, applied.revision, 'loadVersioned().space.revision');
+    sameSpace(loaded.space, await store.load(), 'loadVersioned().space vs load()');
+    expectOk(
+      await store.apply({ added: [edge('g', 'b')] }, { expectedEpoch: loaded.epoch!, expectedRevision: loaded.space.revision }),
+      'a write expecting what loadVersioned read',
+    );
+  });
+
   add('concurrent applies each get the inverse of their own write (exactly one creates the contested node)', async ({ store }) => {
     // Six writers file an item under a group X that does not exist yet. Exactly one of them
     // creates X, so exactly one inverse may tombstone it. A store that computes inverses from a

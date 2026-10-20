@@ -24,8 +24,12 @@
  *   lose an update; a symlinked manifest stays a symlink (its target is replaced);
  * - **other processes are excluded** — every `apply` holds an exclusive `<manifest>.lock` (created
  *   with `wx`, holding pid + timestamp) from its read to its rename. A lock whose process is dead,
- *   or older than `staleLockMs` (30 s), is broken safely; a live holder is waited for with backoff
- *   until `lockTimeoutMs` (10 s), then `ManifestLockError`. Reads take no lock (renames are atomic).
+ *   or older than `staleLockMs` (30 s), is broken by one breaker at a time (`<manifest>.lock.break`,
+ *   also `wx`), which removes it only if it is still the lock it judged stale; a live holder is
+ *   waited for with backoff until `lockTimeoutMs` (default: `staleLockMs` + 5 s, so a lock whose
+ *   holder is gone, even one whose pid was reused, is broken before a waiter gives up), then
+ *   `ManifestLockError`. Reads take no lock (renames are atomic). A custom `io` without `lock()`
+ *   has no cross-process lock at all: only the re-read check below.
  *   On top of that, the manifest is re-read just before the rename, and a change since this write's
  *   read (a hand edit, a writer that ignores the lock) is returned as `conflict`, not overwritten —
  *   but that check alone leaves a window of ~270 µs median between check and rename, which lost
@@ -145,20 +149,26 @@ export interface ManifestIO {
   /**
    * Take an exclusive, cross-process lock on the manifest; resolve to its release. The store holds
    * it from the read to the rename of every `apply`. Optional: without it, writers in other
-   * processes are only *detected* (best effort), not excluded.
+   * processes are only *detected* (best effort), not excluded. To keep the default lock around a
+   * custom `read`/`write`, spread `nodeManifestIO({ lockTimeoutMs, staleLockMs })` into your io.
    */
   lock?(path: string): Promise<() => Promise<void>>;
 }
 
 export interface NodeManifestIOOptions {
-  /** Give up taking the lock after this long (`ManifestLockError`). Default 10 s. */
+  /** Give up taking the lock after this long (`ManifestLockError`). Default `staleLockMs` + 5 s (10 s if that is infinite). */
   readonly lockTimeoutMs?: number;
   /** A lock older than this is broken even if its process is alive (it hung). Default 30 s. */
   readonly staleLockMs?: number;
 }
 
-const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
+/** The lock timeout when stale-breaking is off (`staleLockMs: Infinity`). */
+const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+/** A `.break` file is judged stale by age no sooner than this, however small `staleLockMs` is. */
+const MIN_STALE_BREAK_MS = 2_000;
+/** The default lock timeout outlasts the stale age by this much (issue #6: a reused pid). */
+const LOCK_TIMEOUT_MARGIN_MS = 5_000;
 let lockCounter = 0;
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -182,22 +192,49 @@ async function lockHolder(lockPath: string): Promise<{ text: string; pid?: numbe
 }
 
 /**
- * Break a stale lock without ever breaking a fresh one: rename it away (atomic — only one breaker
- * wins), then check that what we took is the stale lock we judged; if someone had re-taken it in
- * between, put theirs back (`link` fails if yet another writer already holds the name).
+ * Break a stale lock, one breaker at a time: take `<lock>.break` (`wx`), re-read the lock, and
+ * remove it only if it is still the stale lock we judged. Renaming the lock aside (the earlier
+ * scheme) could take a fresh lock another process had just created, and putting it back raced a
+ * third writer — two holders. What remains: the stale holder itself releasing and a new writer
+ * locking between our re-read and our remove, which needs a hung holder to wake in that instant;
+ * the pre-rename re-read then catches nearly every case as a `conflict`. Vanishingly unlikely, but
+ * there is no portable compare-and-delete to close it.
+ *
+ * Resolves `false` when another breaker is at work (the caller backs off), `true` otherwise.
  */
-async function breakLock(lockPath: string, stale: { text: string }): Promise<void> {
-  const aside = `${lockPath}.stale.${process.pid}.${(lockCounter += 1)}`;
+async function breakLock(lockPath: string, stale: { text: string }, staleMs: number): Promise<boolean> {
+  const breakPath = `${lockPath}.break`;
+  const body = JSON.stringify({ pid: process.pid, at: Date.now(), n: (lockCounter += 1), r: Math.random() });
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    await rename(lockPath, aside);
+    handle = await open(breakPath, 'wx');
   } catch (error) {
-    if (errno(error) === 'ENOENT') return; // already released or broken by someone else
-    throw error;
+    if (errno(error) !== 'EEXIST') throw error;
+    // Another breaker is at work — or died mid-break. Clear a dead or old one (if it is still the
+    // one we judged), and let the caller retry.
+    const breaker = await lockHolder(breakPath);
+    if (breaker) {
+      const dead = breaker.pid !== undefined && breaker.pid !== process.pid && !isAlive(breaker.pid);
+      const old = Date.now() - breaker.at > Math.max(staleMs, MIN_STALE_BREAK_MS);
+      if ((dead || old) && (await readText(breakPath)) === breaker.text) {
+        await rm(breakPath, { force: true });
+      }
+    }
+    return false;
   }
+  let wrote = false;
   try {
-    if ((await readText(aside)) !== stale.text) await link(aside, lockPath).catch(() => undefined);
+    try {
+      await handle.writeFile(body, 'utf8');
+      wrote = true;
+    } finally {
+      await handle.close();
+    }
+    if ((await readText(lockPath)) === stale.text) await rm(lockPath, { force: true });
+    return true;
   } finally {
-    await rm(aside, { force: true }).catch(() => undefined);
+    // Ours to remove: the file we created, even if writing its body failed (ENOSPC).
+    if (!wrote || (await readText(breakPath)) === body) await rm(breakPath, { force: true });
   }
 }
 
@@ -226,8 +263,7 @@ async function acquireLock(path: string, timeoutMs: number, staleMs: number): Pr
     if (!holder) continue; // released between our attempt and our look: try again at once
     const dead = holder.pid !== undefined && holder.pid !== process.pid && !isAlive(holder.pid);
     if (dead || Date.now() - holder.at > staleMs) {
-      await breakLock(lockPath, holder);
-      continue;
+      if (await breakLock(lockPath, holder, staleMs)) continue;
     }
     if (Date.now() >= deadline) {
       const who = holder.pid !== undefined ? `pid ${holder.pid} since ${new Date(holder.at).toISOString()}` : 'an unreadable lock file';
@@ -271,8 +307,8 @@ async function syncDirectory(dir: string): Promise<void> {
  * lock's pid cannot be checked across machines on a network share.
  */
 export function nodeManifestIO(options: NodeManifestIOOptions = {}): ManifestIO {
-  const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const staleMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
+  const timeoutMs = options.lockTimeoutMs ?? (Number.isFinite(staleMs) ? staleMs + LOCK_TIMEOUT_MARGIN_MS : DEFAULT_LOCK_TIMEOUT_MS);
   return {
     read: readText,
     lock: (path) => acquireLock(path, timeoutMs, staleMs),
@@ -403,9 +439,13 @@ export interface FsGroupStoreOptions {
   /** The profile every write is validated against. Defaults to `polyhierarchy`. */
   readonly profile?: ProfileName | GroupProfile;
   readonly overrides?: Partial<Omit<GroupProfile, 'name'>>;
-  /** File access. Defaults to `nodeManifestIO({ lockTimeoutMs, staleLockMs })`. */
+  /**
+   * File access. Defaults to `nodeManifestIO({ lockTimeoutMs, staleLockMs })`. A custom io brings
+   * its own lock (or none: then other processes are only detected, not excluded), so passing it
+   * with `lockTimeoutMs` / `staleLockMs` throws — give those to `nodeManifestIO` instead.
+   */
   readonly io?: ManifestIO;
-  /** How long `apply` waits for another process's lock before `ManifestLockError`. Default 10 s. */
+  /** How long `apply` waits for another process's lock before `ManifestLockError`. Default `staleLockMs` + 5 s. */
   readonly lockTimeoutMs?: number;
   /** A lock older than this is broken even if its holder is alive (it hung). Default 30 s. */
   readonly staleLockMs?: number;
@@ -438,6 +478,12 @@ interface ManifestRead<P> {
 /** Create a `GroupStore` persisted as a sidecar manifest. See the module docstring. */
 export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): FsGroupStore<P> {
   const path = resolve(options.path);
+  if (options.io && (options.lockTimeoutMs !== undefined || options.staleLockMs !== undefined)) {
+    throw new TypeError(
+      'createFsGroupStore: lockTimeoutMs/staleLockMs configure the default io, and a custom `io` was given, so they would be ignored. ' +
+        'Pass them to nodeManifestIO({ lockTimeoutMs, staleLockMs }) and spread its `lock` into your io.',
+    );
+  }
   const io =
     options.io ??
     nodeManifestIO({
@@ -518,6 +564,13 @@ export function createFsGroupStore<P = unknown>(options: FsGroupStoreOptions): F
     load: async () => {
       const target = await realTarget(path);
       return enqueue(target, async () => (await read(target)).space);
+    },
+    loadVersioned: async () => {
+      const target = await realTarget(path);
+      return enqueue(target, async () => {
+        const { space, epoch } = await read(target);
+        return { space, epoch };
+      });
     },
     apply: async (delta, applyOptions) => {
       const target = await realTarget(path);

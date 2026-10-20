@@ -117,6 +117,16 @@ export interface StoreApplied<P = unknown> {
 }
 
 /**
+ * One read of a store: the space and the history it belongs to. `(epoch, space.revision)` is the
+ * pair a write computed from this read passes as `{ expectedEpoch, expectedRevision }`. `epoch` is
+ * `undefined` while the backing does not exist yet (no manifest file): the first write mints it.
+ */
+export interface StoreLoaded<P = unknown> {
+  readonly space: GroupSpace<P>;
+  readonly epoch: string | undefined;
+}
+
+/**
  * The in-memory heart of a store's `apply`: check `expectedRevision`, compute the inverse against
  * `space`, apply. A store calls it inside its serialized section, on the state it just read.
  */
@@ -171,6 +181,11 @@ export interface GroupStore<P = unknown> {
   readonly profile: GroupProfile;
   /** The persisted space. Waits for any `apply` already in flight. */
   load(): Promise<GroupSpace<P>>;
+  /**
+   * `load()` plus the store's epoch, from ONE read — so a write computed from it can pass
+   * `expectedEpoch` as well as `expectedRevision`. Optional; the memory and fs stores have it.
+   */
+  loadVersioned?(): Promise<StoreLoaded<P>>;
   /**
    * Validate and persist atomically; return the new revision and the exact inverse — or the
    * violations (including `conflict` for a stale `expectedRevision`), writing nothing.
@@ -270,6 +285,9 @@ export function createMemoryGroupStore<P = unknown>(options: MemoryGroupStoreOpt
     },
     async load() {
       return view;
+    },
+    async loadVersioned() {
+      return { space: view, epoch };
     },
     async apply(delta, applyOptions) {
       const result = commitDelta(space, delta, applyOptions ?? {}, epoch);

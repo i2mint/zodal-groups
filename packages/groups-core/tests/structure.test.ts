@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { applyDelta, createGroupSpace, isFamilyRule, nodeId, parseSnapshot, toSnapshot } from '../src/index.js';
+import { applyDelta, createGroupSpace, isFamilyRule, jsonProblem, MAX_JSON_DEPTH, nodeId, parseSnapshot, toSnapshot } from '../src/index.js';
 
 const n = nodeId;
 
@@ -103,6 +103,20 @@ describe('payload and meta must be plain JSON data (M-5)', () => {
 });
 
 describe('nothing in a delta can make applyDelta throw', () => {
+  it('a very deep payload is malformed, not a RangeError (issue #6)', () => {
+    const deep = (levels: number) => {
+      let v: unknown = 1;
+      for (let i = 0; i < levels; i++) v = { x: v };
+      return v;
+    };
+    let r: ReturnType<typeof applyDelta> | undefined;
+    expect(() => (r = applyDelta(createGroupSpace(), { upsertNodes: [{ id: n('a'), payload: deep(20_000) }] }))).not.toThrow();
+    expect(r!.ok).toBe(false);
+    if (r && !r.ok) expect(r.violations[0]!.code).toBe('malformed');
+    expect(jsonProblem(deep(MAX_JSON_DEPTH - 1))).toBeUndefined();
+    expect(jsonProblem([deep(MAX_JSON_DEPTH)])).toMatch(/nested deeper/);
+  });
+
   it('a BigInt id, family or tombstone payload is reported, not thrown', () => {
     const s = createGroupSpace({ nodes: [{ id: n('a'), label: 'A' }] });
     expect(() => applyDelta(s, { upsertNodes: [{ id: 5n as never }] })).not.toThrow();

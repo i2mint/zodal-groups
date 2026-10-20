@@ -77,8 +77,10 @@ export interface EdgeKindDef {
   /** Must this kind stay acyclic? Forced `true` whenever `transitive` is `true`. */
   readonly acyclic?: boolean;
   /**
-   * Relation composition, as the Gene Ontology does it: `is_a ∘ part_of → part_of`. Maps the
-   * *next* edge's kind to the kind the composed path should be treated as. A missing entry means
+   * Relation composition, as the Gene Ontology does it: `is_a ∘ part_of → part_of`. Read
+   * child-first: declared on the child-side edge's kind, it maps the kind of the edge *above* it
+   * (`A is_a B`, `B part_of C` ⇒ `A part_of C`) to the kind the composed path is treated as. Both
+   * `ancestors` and `descendants` read chains in this one order. A missing entry means
    * the chain does not compose, and closure stops — which is exactly the mechanism that stops
    * `wheel part_of car is_a vehicle` from concluding that a wheel is a vehicle.
    */

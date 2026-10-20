@@ -5,9 +5,12 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  ancestors,
   defineGroups,
   descendants,
   detectCycles,
+  edgeId,
+  fromSnapshot,
   createGroupSpace,
   expandedForPath,
   makeEdge,
@@ -123,6 +126,65 @@ describe('closure semantics are per edge KIND — the wheel/car/vehicle problem'
     // The chain does not compose, so closure stops. This is why SKOS makes `broader`
     // non-transitive, and it is the difference between a toy and a thesaurus.
     expect(ancestors).not.toContain('vehicle');
+  });
+
+  it('reads a chain the same way in both directions (issue #6)', () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    g.add('wheel', 'car', { kind: 'part_of' });
+    g.add('car', 'vehicle', { kind: 'is_a' });
+    // Walking down from `vehicle` used to compose in walk order and find `wheel`.
+    expect(g.descendants('vehicle')).not.toContain('wheel');
+
+    // is_a ∘ part_of → part_of: a petal is_a organ part, an organ part is part_of a flower.
+    const h = defineGroups({ profile: 'thesaurus' });
+    h.add('petal', 'organ-part', { kind: 'is_a' });
+    h.add('organ-part', 'flower', { kind: 'part_of' });
+    expect(h.ancestors('petal').sort()).toEqual(['flower', 'organ-part']);
+    expect(h.descendants('flower').sort()).toEqual(['organ-part', 'petal']);
+  });
+
+  it('a node reached by two chain kinds is walked for both (no BFS-order dependence)', () => {
+    const g = defineGroups({ profile: 'thesaurus' });
+    // `y` is reached first as part_of (one hop), then as is_a (via `z`). Only the is_a chain
+    // continues through `y is_a top`, so a walk that skips `y` the second time misses `top`.
+    g.add('leaf', 'y', { kind: 'part_of' });
+    g.add('leaf', 'z', { kind: 'is_a' });
+    g.add('z', 'y', { kind: 'is_a' });
+    g.add('y', 'top', { kind: 'is_a' });
+    expect(g.ancestors('leaf')).toContain('top');
+    expect(g.descendants('top')).toContain('leaf');
+  });
+
+  it('agrees on custom tables whose composition yields a non-transitive kind (review of #26)', () => {
+    const edgeKinds = {
+      k0: { transitive: true, acyclic: true, membership: true, composesWith: { k0: 'k1', k1: 'k1' } },
+      k1: { transitive: false, acyclic: true, membership: true, composesWith: { k0: 'k1' } },
+    };
+    const kinds = ['k0', 'k1'];
+    let seed = 7;
+    const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    for (let round = 0; round < 200; round++) {
+      const ids = ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'];
+      const edges = Array.from({ length: 8 }, (_, i) => {
+        const parent = ids[Math.floor(random() * ids.length)]!;
+        const child = ids[Math.floor(random() * ids.length)]!;
+        return makeEdge(nodeId(parent), nodeId(child), { id: edgeId(`e${i}`), kind: kinds[Math.floor(random() * 2)]! });
+      });
+      // Foreign data (cycles, self-loops included): the read path must still agree with itself.
+      const space = fromSnapshot({ nodes: ids.map((id) => ({ id: nodeId(id) })), edges }, { profile: 'thesaurus', overrides: { edgeKinds } });
+      for (const x of ids) {
+        const down = descendants(space, nodeId(x));
+        for (const y of ids) {
+          expect(down.has(nodeId(y)), `round ${round}: ${y} under ${x}`).toBe(ancestors(space, nodeId(y)).has(nodeId(x)));
+        }
+      }
+    }
+    const fixed = fromSnapshot(
+      { nodes: [], edges: [makeEdge(nodeId('n4'), nodeId('n5'), { id: edgeId('a'), kind: 'k0' }), makeEdge(nodeId('n5'), nodeId('n0'), { id: edgeId('b'), kind: 'k0' })] },
+      { profile: 'thesaurus', overrides: { edgeKinds } },
+    );
+    expect(ancestors(fixed, nodeId('n0')).has(nodeId('n4'))).toBe(true);
+    expect(descendants(fixed, nodeId('n4')).has(nodeId('n0'))).toBe(true);
   });
 
   it('DOES conclude that a poodle is an animal', () => {
