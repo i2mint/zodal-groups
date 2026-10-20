@@ -39,6 +39,7 @@ import {
   edgesInto,
   edgesOf,
   hasFamilyAtOrAbove,
+  aliasesOf,
   isGroup,
   isMembershipKind,
   makeEdge,
@@ -140,6 +141,9 @@ export interface TagRow {
     /** The accessible description: the reason, the fix, a conflict. */
     readonly description?: string;
   };
+  /** The alias the search text matched, when it matched this group only through one of its other
+   *  names (`alias_of`, D34): typing `to-do` lists `todo` once, with `matchedAlias: 'to-do'`. */
+  readonly matchedAlias?: string;
 }
 
 /** The "Create “…”" affordance, offered when the search text names no existing group. */
@@ -789,16 +793,27 @@ function viewFromCore(
   const t = messages.tagging;
   const typed = state.query.trim();
   const needle = fold(typed);
-  const rows = needle
-    ? core.allRows.filter(
-        (r) => fold(r.label).includes(needle) || (r.path !== undefined && fold(r.path).includes(needle)) || fold(r.group).includes(needle),
-      )
-    : core.allRows;
+  /** A group's other names (`alias_of`), label and id each: the read side of D34. */
+  const aliasNames = (group: NodeId): string[] =>
+    aliasesOf(space, group).flatMap((a) => [space.nodes.get(a)?.label ?? a, a]);
+  const rows: TagRow[] = [];
+  for (const r of needle ? core.allRows : []) {
+    if (fold(r.label).includes(needle) || (r.path !== undefined && fold(r.path).includes(needle)) || fold(r.group).includes(needle)) {
+      rows.push(r);
+      continue;
+    }
+    const alias = aliasNames(r.group).find((name) => fold(name).includes(needle));
+    if (alias !== undefined) rows.push({ ...r, matchedAlias: alias });
+  }
+  if (!needle) rows.push(...core.allRows);
 
   let create: CreateOption | undefined;
   if (options.allowCreate !== false && typed) {
     const group = nodeId(options.mintGroupId ? options.mintGroupId(typed, space) : typed);
-    const exists = core.allRows.some((r) => r.group === group || fold(r.label) === needle);
+    // A typed alias names its canonical group: no Create for it.
+    const exists = core.allRows.some(
+      (r) => r.group === group || fold(r.label) === needle || aliasNames(r.group).some((name) => fold(name) === needle),
+    );
     if (!exists) {
       const reason =
         selection.length === 0

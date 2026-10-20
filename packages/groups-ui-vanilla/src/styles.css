@@ -131,6 +131,7 @@
 .zg-tag-option.is-active { background: color-mix(in srgb, currentColor 12%, transparent);
   outline: 2px solid color-mix(in srgb, currentColor 70%, transparent); outline-offset: -2px; }
 .zg-tag-option-path { font-size: .85em; color: color-mix(in srgb, currentColor 75%, transparent); }
+.zg-tag-option-alias { margin-inline-start: .5em; font-size: .85em; font-style: italic; color: color-mix(in srgb, currentColor 75%, transparent); }
 .zg-tag-create { font-style: italic; }
 .zg-tag-status:empty { display: none; }
 .zg-tag-status { flex-basis: 100%; font-size: .85em; }

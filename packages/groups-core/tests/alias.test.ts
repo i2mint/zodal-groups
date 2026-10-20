@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ancestors, applyDelta, countIn, inferProfile, isGroup, membersOf, createGroupSpace, edgeId, makeEdge, nodeId, resolveAlias, type Edge } from '../src/index.js';
+import { ancestors, applyDelta, countIn, inferProfile, isGroup, membersOf, createGroupSpace, edgeId, makeEdge, nodeId, resolveAlias, aliasesOf, type Edge } from '../src/index.js';
 
 const n = nodeId;
 const e = (parent: string, child: string, kind: string) => makeEdge(n(parent), n(child), { id: edgeId(`${parent}>${child}:${kind}`), kind });
@@ -45,5 +45,15 @@ describe('alias_of', () => {
     expect(resolveAlias(s, n('to-do'))).toBe('todo');
     const poly = createGroupSpace({ profile: 'polyhierarchy', edges: [e('todo', 'to-do', 'alias_of'), e('work', 'todo', 'contains'), e('todo', 'x', 'contains')] });
     expect(inferProfile(poly).profile.name).not.toBe('thesaurus');
+  });
+});
+
+describe('aliasesOf (the read side, #51)', () => {
+  it('lists every name that resolves to a node, through a chain, and nothing for a non-canonical node', () => {
+    const s = space(e('todo', 'to-do', 'alias_of'), e('to-do', 'TODO', 'alias_of'), e('todo', 'task', 'alias_of'));
+    expect(aliasesOf(s, n('todo'))).toEqual(['to-do', 'task', 'TODO']);
+    expect(aliasesOf(s, n('to-do'))).toEqual(['TODO']);
+    expect(aliasesOf(s, n('unknown'))).toEqual([]);
+    for (const a of aliasesOf(s, n('todo'))) expect(resolveAlias(s, a)).toBe('todo');
   });
 });

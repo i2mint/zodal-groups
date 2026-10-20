@@ -353,6 +353,26 @@ export function membershipParentCount(space: GroupSpace, id: NodeId): number {
 }
 
 /**
+ * The names of `id`: every node that `resolveAlias` maps to it, through a chain too (`b alias_of a`,
+ * `c alias_of b` give `[b, c]` for `a`), in breadth-first order. The read side of D34: a search
+ * box matches these and offers `id`, once. Cycle-safe for foreign data.
+ */
+export function aliasesOf(space: GroupSpace, id: NodeId, kind: EdgeKind = 'alias_of'): NodeId[] {
+  const seen = new Set<NodeId>([id]);
+  const out: NodeId[] = [];
+  const queue = [id];
+  for (let current = queue.shift(); current !== undefined; current = queue.shift()) {
+    for (const e of edgesOf(space, current)) {
+      if (e.kind !== kind || seen.has(e.child)) continue;
+      seen.add(e.child);
+      out.push(e.child);
+      queue.push(e.child);
+    }
+  }
+  return out;
+}
+
+/**
  * Is `id` only another name for a node: the child of an `alias_of` (or `kind`) edge, in no group and
  * with no members of its own, naming a canonical node that is no alias itself? Such a node is reached
  * through its canonical node (`resolveAlias` maps it on read and write), so `rootsOf`, `orphansOf`
