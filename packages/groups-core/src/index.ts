@@ -72,6 +72,7 @@ export {
   addTo,
   removeFrom,
   moveTo,
+  moveDelta,
   deleteNode,
   deleteNodeDelta,
   mergeDelta,
@@ -89,6 +90,7 @@ export {
   orphansOf,
   type CreateSpaceOptions,
   type MergeOptions,
+  type MoveInit,
 } from './space.js';
 
 // ── structure: the one node/edge validator for write and read ──────────────

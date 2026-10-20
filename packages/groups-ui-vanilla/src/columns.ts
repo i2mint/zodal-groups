@@ -13,7 +13,7 @@
  * a `Set<pathKey>` of expansions plus a separate selection.
  */
 
-import type { Groups, NodeId, PathNode } from '@zodal/groups-core';
+import type { EdgeKind, Groups, NodeId, PathNode } from '@zodal/groups-core';
 import { FINE_POINTER, mediaMatches } from './media.js';
 
 export interface ColumnsRendererOptions {
@@ -40,7 +40,7 @@ export function renderColumns<P>(
 
   /** The entire view state of a column browser. One array. */
   let trail: NodeId[] = [];
-  let dragging: { nodeId: NodeId; parent?: NodeId } | null = null;
+  let dragging: { nodeId: NodeId; parent?: NodeId; kind?: EdgeKind } | null = null;
 
   const root = document.createElement('div');
   root.className = 'zg-columns';
@@ -110,7 +110,9 @@ export function renderColumns<P>(
     li.draggable = true;
 
     li.addEventListener('dragstart', () => {
-      dragging = { nodeId: row.nodeId, ...(parent ? { parent } : {}) };
+      // The edge on screen, so a move keeps its kind.
+      const kind = parent && row.edge?.parent === parent ? row.edge.kind : undefined;
+      dragging = { nodeId: row.nodeId, ...(parent ? { parent } : {}), ...(kind ? { kind } : {}) };
     });
 
     li.addEventListener('dragover', (e) => {
@@ -140,7 +142,7 @@ export function renderColumns<P>(
       if (!dragging) return;
       const ok =
         e.altKey && dragging.parent
-          ? groups.move(dragging.nodeId, dragging.parent, row.nodeId).ok
+          ? groups.move(dragging.nodeId, dragging.parent, row.nodeId, dragging.kind ? { kind: dragging.kind } : undefined).ok
           : groups.add(dragging.nodeId, row.nodeId).ok;
       if (ok) {
         options.onChange?.();
