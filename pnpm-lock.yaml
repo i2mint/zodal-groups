@@ -87,6 +87,21 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.5)(jsdom@29.1.1)
 
+  packages/groups-store-http:
+    devDependencies:
+      '@zodal/groups-core':
+        specifier: workspace:*
+        version: link:../groups-core
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.18)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.5)(jsdom@29.1.1)
+
   packages/groups-ui:
     devDependencies:
       '@zodal/groups-core':

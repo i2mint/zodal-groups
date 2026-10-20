@@ -32,6 +32,8 @@ interface GroupStore<P = unknown> {
 
 Shipped: `createMemoryGroupStore()` in groups-core (the default — real, not a stub) and `@zodal/groups-store-fs` (`packages/groups-store-fs`, the reference persistent adapter). IndexedDB and Supabase are TODO.
 
+`@zodal/groups-store-http` is the browser store over a server you own: one revisioned snapshot document (`GET`, `PUT` with `baseRevision`, `409 { current }`), each apply replayed on a newer document unless pinned, plus `rebase(remote, pendingDeltas)` for offline work. Its README is the protocol; `memorySnapshotEndpoint()` is the reference server, as a `fetch`.
+
 The main consumer is `@zodal/groups-collection`, which takes any `GroupStore` as a space's `edges` and writes it with `expectedRevision`/`expectedEpoch`, retrying on `conflict` — so a store that honours the contract (and the kit) works there unchanged. See `zodal-groups-dev-collection`.
 
 **Writing an adapter** (copy `groups-store-fs`'s layout):
